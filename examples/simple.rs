@@ -1,4 +1,4 @@
-use wgpu_font_renderer::Font;
+use wgpu_font_renderer::Store;
 
 use wgpu::{
     CommandEncoderDescriptor, CompositeAlphaMode, DeviceDescriptor, Features, Instance,
@@ -21,13 +21,8 @@ fn main() {
 
 async fn run() {
 
-    let font = Font::from_file("examples/Roboto-Regular.ttf", 0);
-    if let Some(font) = font {
-        println!("{:#?}", font.as_ref().features().fold(String::new(), |mut acc, feature| {
-            acc.push_str(&format!("{}", feature.name().unwrap()));
-            acc
-        }));
-    }
+    let mut font_store = Store::new();
+    font_store.load("examples/Roboto-Regular.ttf");
 
     // Set up window
     let (width, height) = (800, 600);
