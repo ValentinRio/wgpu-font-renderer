@@ -2,7 +2,7 @@ use swash::CacheKey;
 
 use std::collections::HashMap;
 
-use crate::{atlas::Atlas, loader::Font};
+use crate::{atlas::Atlas, loader::Font, LoadingError};
 
 pub struct Store {
     cache: HashMap<CacheKey, Font>,
@@ -17,14 +17,18 @@ impl Store {
         }
     }
 
-    pub fn load(&mut self, font_file_path: &str) {
-        let font = Font::from_file(font_file_path, 0);
-        if let Some(font) = font {
-            println!("{:#?}", font.as_ref().features().fold(String::new(), |mut acc, feature| {
-                acc.push_str(&format!("{}", feature.name().unwrap()));
-                acc
-            }));
-            self.cache.insert(font.key, font);
-        }
+    pub fn load(&mut self, font_file_path: &str) -> Result<CacheKey, LoadingError>{
+        let font = Font::from_file(font_file_path, 0)?;
+
+        println!("{:#?}", font.as_ref().features().fold(String::new(), |mut acc, feature| {
+            acc.push_str(&format!("{}", feature.name().unwrap()));
+            acc
+        }));
+
+        let cache_key = font.key.clone();
+
+        self.cache.insert(cache_key, font);
+
+        Ok(cache_key)
     }
 }

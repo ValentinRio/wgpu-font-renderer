@@ -22,7 +22,7 @@ fn main() {
 async fn run() {
 
     let mut font_store = Store::new();
-    font_store.load("examples/Roboto-Regular.ttf");
+    let font_key = font_store.load("examples/Roboto-Regular.ttf");
 
     // Set up window
     let (width, height) = (800, 600);
