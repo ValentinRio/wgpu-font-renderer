@@ -1,3 +1,5 @@
+use wgpu_font_renderer::Font;
+
 use wgpu::{
     CommandEncoderDescriptor, CompositeAlphaMode, DeviceDescriptor, Features, Instance,
     InstanceDescriptor, Limits, LoadOp, Operations, PresentMode,
@@ -18,6 +20,15 @@ fn main() {
 }
 
 async fn run() {
+
+    let font = Font::from_file("examples/Roboto-Regular.ttf", 0);
+    if let Some(font) = font {
+        println!("{:#?}", font.as_ref().features().fold(String::new(), |mut acc, feature| {
+            acc.push_str(&format!("{}", feature.name().unwrap()));
+            acc
+        }));
+    }
+
     // Set up window
     let (width, height) = (800, 600);
     let event_loop = EventLoop::new().unwrap();
