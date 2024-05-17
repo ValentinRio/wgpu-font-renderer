@@ -4,3 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+owned_ttf_parser = { version = "0.21.0", default-features = false }
+swash = "0.1.15"
+
+[dev-dependencies]
+winit = { version = "0.29.10", features = ["rwh_05"] }
+wgpu = { version = "0.20", default-features = true }
+pollster = "0.3.0"
