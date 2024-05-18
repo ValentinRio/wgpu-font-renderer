@@ -61,8 +61,10 @@ impl Font {
         // Generate struct that hold TTF face tables
         let face = OwnedFace::from_vec(data.clone(), index as u32).or(Err(LoadingError::InvalidFile))?;
 
+        let cache_preset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789,;:!ù*^$=)àç_è-('\"é&²<>+°§/.?";
+
         // Generate glyph cache for each glyph present in the font file
-        let glyph_cache = create_glyph_cache(&face);
+        let glyph_cache = create_glyph_cache(&face, cache_preset);
 
         Ok(Self { data, face, offset, key, glyph_cache })
     }
@@ -78,49 +80,47 @@ impl Font {
 }
 
 
-fn create_glyph_cache(face: &OwnedFace) -> HashMap<GlyphId, Glyph> {
+fn create_glyph_cache(face: &OwnedFace, cache_preset: &str) -> HashMap<GlyphId, Glyph> {
     let mut glyph_cache = HashMap::new();
 
     let face = face.as_face_ref();
 
     let ascender = face.ascender();
 
-    println!("{:#?}", face.number_of_glyphs());
-
-    for id in 0..face.number_of_glyphs() {
-        let glyph_id = GlyphId(id);
-
-        if let Some(bbox) = face.glyph_bounding_box(glyph_id) {
-            let height = bbox.height();
-            let left_side_bearing = bbox.x_min;
-
-            let (descent, distance_from_baseline) = if bbox.y_min <= 0 {
-                (bbox.y_min, 0)
-            } else {
-                (0, bbox.y_min)
-            };
-
-            let total_height = height + descent + distance_from_baseline;
-            let y_offset = ascender - distance_from_baseline - height;
-
-            let mut builder = BezierBuilder::new(total_height as f32);
-
-            face.outline_glyph(glyph_id, &mut builder);
-
-            let curves_count = builder.curves.len() as u32;
-
-            let glyph = Glyph {
-                curves: builder.curves,
-                atlas_slot: AtlasSlot { position: [0., 0.], size: curves_count, layer: 0 },
-                bbox,
-                descent: descent,
-                y_offset: y_offset,
-                left_side_bearing,
-            };
+    for code_point in cache_preset.chars() { 
+        if let Some(glyph_id) = face.glyph_index(code_point) {
+            if let Some(bbox) = face.glyph_bounding_box(glyph_id) {
+                let height = bbox.height();
+                let left_side_bearing = bbox.x_min;
     
-            println!("{:#?}", glyph);
-
-            glyph_cache.insert(glyph_id, glyph);
+                let (descent, distance_from_baseline) = if bbox.y_min <= 0 {
+                    (bbox.y_min, 0)
+                } else {
+                    (0, bbox.y_min)
+                };
+    
+                let total_height = height + descent + distance_from_baseline;
+                let y_offset = ascender - distance_from_baseline - height;
+    
+                let mut builder = BezierBuilder::new(total_height as f32);
+    
+                face.outline_glyph(glyph_id, &mut builder);
+    
+                let curves_count = builder.curves.len() as u32;
+    
+                let glyph = Glyph {
+                    curves: builder.curves,
+                    atlas_slot: AtlasSlot { position: [0., 0.], size: curves_count, layer: 0 },
+                    bbox,
+                    descent: descent,
+                    y_offset: y_offset,
+                    left_side_bearing,
+                };
+        
+                println!("{:#?}", glyph);
+    
+                glyph_cache.insert(glyph_id, glyph);
+            }
         }
     }
 
