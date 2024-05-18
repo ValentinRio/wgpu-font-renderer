@@ -2,19 +2,12 @@ use std::{collections::HashMap, fmt};
 use owned_ttf_parser::{AsFaceRef, GlyphId, OutlineBuilder, OwnedFace, Rect};
 use swash::{CacheKey, FontRef};
 
-use crate::atlas::Atlas;
-
-#[derive(Debug)]
-pub struct AtlasSlot {
-    position: [f32; 2], // Start position of the glyph data representation in the texture
-    size: u32, // Number of curves that compose the glyph
-    layer: u32, // Layer where the glyph is stored
-}
+use crate::atlas::{allocation::Allocation, Atlas};
 
 #[derive(Debug)]
 pub struct Glyph {
     curves: Vec<f32>,
-    atlas_slot: AtlasSlot,
+    allocation: Allocation,
     bbox: Rect,
     descent: i16,
     y_offset: i16,
@@ -49,7 +42,15 @@ impl fmt::Display for LoadingError {
 }
 
 impl Font {
-    pub fn from_file(path: &str, index: usize) -> Result<Font> {
+    pub fn from_file(
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        queue: &wgpu::Queue,
+        path: &str,
+        index: usize,
+        cache_preset: &str,
+        atlas: &mut Atlas
+    ) -> Result<Font> {
         // Read the font file as bytes
         let data = std::fs::read(path).or(Err(LoadingError::FileNotFound))?;
         // Create a temporary font reference for the font available in the file at `index`.
@@ -61,10 +62,8 @@ impl Font {
         // Generate struct that hold TTF face tables
         let face = OwnedFace::from_vec(data.clone(), index as u32).or(Err(LoadingError::InvalidFile))?;
 
-        let cache_preset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789,;:!ù*^$=)àç_è-('\"é&²<>+°§/.?";
-
         // Generate glyph cache for each glyph present in the font file
-        let glyph_cache = create_glyph_cache(&face, cache_preset);
+        let glyph_cache = create_glyph_cache(device, encoder, queue, &face, cache_preset, atlas);
 
         Ok(Self { data, face, offset, key, glyph_cache })
     }
@@ -80,7 +79,14 @@ impl Font {
 }
 
 
-fn create_glyph_cache(face: &OwnedFace, cache_preset: &str) -> HashMap<GlyphId, Glyph> {
+fn create_glyph_cache(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    queue: &wgpu::Queue,
+    face: &OwnedFace,
+    cache_preset: &str,
+    atlas: &mut Atlas
+) -> HashMap<GlyphId, Glyph> {
     let mut glyph_cache = HashMap::new();
 
     let face = face.as_face_ref();
@@ -108,18 +114,24 @@ fn create_glyph_cache(face: &OwnedFace, cache_preset: &str) -> HashMap<GlyphId, 
     
                 let curves_count = builder.curves.len() as u32;
     
-                let glyph = Glyph {
-                    curves: builder.curves,
-                    atlas_slot: AtlasSlot { position: [0., 0.], size: curves_count, layer: 0 },
-                    bbox,
-                    descent: descent,
-                    y_offset: y_offset,
-                    left_side_bearing,
+                let bytes = unsafe {
+                    std::slice::from_raw_parts(builder.curves.as_ptr() as *const u8, builder.curves.len() * 4)
                 };
+
+                if let Some(allocation) = atlas.upload(curves_count, bytes, device, encoder, queue) {
+                    let glyph = Glyph {
+                        curves: builder.curves,
+                        allocation,
+                        bbox,
+                        descent: descent,
+                        y_offset: y_offset,
+                        left_side_bearing,
+                    };
+            
+                    println!("{:#?}", glyph);
         
-                println!("{:#?}", glyph);
-    
-                glyph_cache.insert(glyph_id, glyph);
+                    glyph_cache.insert(glyph_id, glyph);
+                }
             }
         }
     }

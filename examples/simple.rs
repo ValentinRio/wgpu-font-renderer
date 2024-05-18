@@ -20,10 +20,6 @@ fn main() {
 }
 
 async fn run() {
-
-    let mut font_store = Store::new();
-    let font_key = font_store.load("examples/Roboto-Regular.ttf");
-
     // Set up window
     let (width, height) = (800, 600);
     let event_loop = EventLoop::new().unwrap();
@@ -70,6 +66,12 @@ async fn run() {
         desired_maximum_frame_latency: 2,
     };
     surface.configure(&device, &config);
+
+    let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
+
+    let mut font_store = Store::new(&device, &config);
+    let cache_preset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789,;:!ù*^$=)àç_è-('\"é&²<>+°§/.?";
+    let _font_key = font_store.load(&device, &mut encoder, &queue, "examples/Roboto-Regular.ttf", cache_preset);
 
     let _physical_width = (width as f64 * scale_factor) as f32;
     let _physical_height = (height as f64 * scale_factor) as f32;

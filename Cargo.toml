@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+wgpu = { version = "0.20", default-features = true }
 owned_ttf_parser = { version = "0.21.0", default-features = false }
 swash = "0.1.15"
 
