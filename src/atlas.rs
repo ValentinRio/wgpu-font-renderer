@@ -3,7 +3,7 @@ pub mod allocation;
 pub mod layer;
 
 use layer::Layer;
-use wgpu::SurfaceConfiguration;
+use wgpu::{SurfaceConfiguration, TextureFormat};
 
 use self::{allocation::Allocation, allocator::Allocator};
 
@@ -31,11 +31,11 @@ impl Atlas {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: surface_config.format,
+            format: TextureFormat::R32Float,
             usage: wgpu::TextureUsages::COPY_DST
                  | wgpu::TextureUsages::COPY_SRC
                  | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[surface_config.format],
+            view_formats: &[TextureFormat::R32Float],
         });
 
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor {
@@ -47,7 +47,7 @@ impl Atlas {
             texture,
             texture_view,
             layers: vec![Layer::Empty],
-            texture_format: surface_config.format,
+            texture_format: TextureFormat::R32Float,
         }
     }
 
@@ -205,11 +205,11 @@ impl Atlas {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: self.texture_format,
+            format: TextureFormat::R32Float,
             usage: wgpu::TextureUsages::COPY_DST
                  | wgpu::TextureUsages::COPY_SRC
                  | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[self.texture_format],
+            view_formats: &[TextureFormat::R32Float],
         });
 
         let layers_to_copy = self.layers.len() - amount;

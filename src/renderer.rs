@@ -111,7 +111,7 @@ impl TextRenderer {
                     binding: 0,
                     visibility: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                     ty: BindingType::Texture {
-                        sample_type: TextureSampleType::Float { filterable: true },
+                        sample_type: TextureSampleType::Float { filterable: false },
                         view_dimension: TextureViewDimension::D2Array,
                         multisampled: false,
                     },
@@ -276,8 +276,6 @@ impl TextRenderer {
                 }
             })
         });
-
-        // println!("{:#?}", self.instances);
 
         self.instances_buffer = Some(device.create_buffer_init(&BufferInitDescriptor {
             label: Some("Text instances buffer"),

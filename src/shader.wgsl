@@ -97,47 +97,8 @@ fn sign_bezier(A: vec2<f32>, B: vec2<f32>, C: vec2<f32>, p: vec2<f32>) -> f32 {
     ) * test_cross(A, C, B);
 }
 
-fn texel_to_float(tx: vec4<f32>) -> f32 {
-    let r = u32(tx.a * 255.);
-    let g = u32(tx.b * 255.);
-    let b = u32(tx.g * 255.);
-    let a = u32(tx.r * 255.);
-
-    var bits: u32 = (r << 24u) | (g << 16u) | (b << 8u) | (a);
-
-    var sign: u32 = (bits & (1u << 31u)) >> 31u;
-
-    var fsign: f32 = -1.;
-
-    if sign == 0u {
-        fsign = 1.;
-    }
-
-    var e: u32 = (bits & 213909504u) >> 23u;
-
-    var m = 8388608u;
-
-    if e == 0u {
-        m = (bits & 8388607u) << 1u;
-    } else {
-        m = (bits & 8388607u) | 8388608u;
-    }
-
-    let p = pow(2., f32(e) - 150.);
-
-    return floor(fsign * f32(m) * p);
-}
-
 fn remap(value: f32, from1: f32, to1: f32, from2: f32, to2: f32) -> f32 {
     return (value - from1) / (to1 - from1) * (to2 - from2) + from2;
-}
-
-fn linear_component(u: f32) -> f32 {
-    if u < 0.0031308 {
-        return u * 12.92;
-    } else {
-        return 1.055 * pow(u, 0.41666) - 0.055;
-    }
 }
 
 fn solve_cubic(a: f32, b: f32, c: f32) -> vec3<f32> {
@@ -192,8 +153,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     var uv = input.uv;
 
     uv.x = remap(uv.x, 0., 1., 0., input.size.x * input.units_per_em / font_size);
-    uv.y += input.left_side_bearing;
-    uv.x = remap(uv.y, 0., 1., 0., input.size.y * input.units_per_em / font_size);
+    uv.x += input.left_side_bearing;
+    uv.y = remap(uv.y, 0., 1., 0., input.size.y * input.units_per_em / font_size);
 
     var curve_points_count = input.atlas_size;
     var sideR = 0.;
@@ -223,41 +184,27 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                 curve_points_count = curve_points_count - i;
             }
 
-            let curve_Ax = textureSample(atlas_texture, atlas_sampler, vec2<f32>(atlas_x_offset / 2048., y_offset / 2048.), i32(0));
-            let curve_Ay = textureSample(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 1.) / 2048., y_offset / 2048.), i32(0));
-            let curve_Az = textureSample(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 2.) / 2048., y_offset / 2048.), i32(0));
-            let curve_Aw = textureSample(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 3.) / 2048., y_offset / 2048.), i32(0));
-            let curve_Bx = textureSample(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 4.) / 2048., y_offset / 2048.), i32(0));
-            let curve_By = textureSample(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 5.) / 2048., y_offset / 2048.), i32(0));
+            let ax = textureSample(atlas_texture, atlas_sampler, vec2<f32>(atlas_x_offset / 2048., y_offset / 2048.), i32(0)).x;
+            let ay = textureSample(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 1.) / 2048., y_offset / 2048.), i32(0)).x;
+            let az = textureSample(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 2.) / 2048., y_offset / 2048.), i32(0)).x;
+            let aw = textureSample(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 3.) / 2048., y_offset / 2048.), i32(0)).x;
+            let bx = textureSample(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 4.) / 2048., y_offset / 2048.), i32(0)).x;
+            let by = textureSample(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 5.) / 2048., y_offset / 2048.), i32(0)).x;
 
-            let ax = vec4<f32>(linear_component(curve_Ax.r), linear_component(curve_Ax.g), linear_component(curve_Ax.b), curve_Ax.a);
-            let ay = vec4<f32>(linear_component(curve_Ay.r), linear_component(curve_Ay.g), linear_component(curve_Ay.b), curve_Ay.a);
-            let az = vec4<f32>(linear_component(curve_Az.r), linear_component(curve_Az.g), linear_component(curve_Az.b), curve_Az.a);
-            let aw = vec4<f32>(linear_component(curve_Aw.r), linear_component(curve_Aw.g), linear_component(curve_Aw.b), curve_Aw.a);
-            let bx = vec4<f32>(linear_component(curve_Bx.r), linear_component(curve_Bx.g), linear_component(curve_Bx.b), curve_Bx.a);
-            let by = vec4<f32>(linear_component(curve_By.r), linear_component(curve_By.g), linear_component(curve_By.b), curve_By.a);
-
-            let f_ax = texel_to_float(ax);
-            let f_ay = texel_to_float(ay);
-            let f_az = texel_to_float(az);
-            let f_aw = texel_to_float(aw);
-            let f_bx = texel_to_float(bx);
-            let f_by = texel_to_float(by);
-
-            if ((uv.y > f_ay && uv.y < f_by) || (uv.y > f_by && uv.y < f_ay)) {
-                let snR = sign_bezier(vec2<f32>(f_ax, f_ay), vec2<f32>(f_az, f_aw), vec2<f32>(f_bx, f_by), uv - vec2(1./3., 0.));
-                let snG = sign_bezier(vec2<f32>(f_ax, f_ay), vec2<f32>(f_az, f_aw), vec2<f32>(f_bx, f_by), uv);
-                let snB = sign_bezier(vec2<f32>(f_ax, f_ay), vec2<f32>(f_az, f_aw), vec2<f32>(f_bx, f_by), uv + vec2(1./3., 0.));
+            if ((uv.y > ay && uv.y < by) || (uv.y > by && uv.y < ay)) {
+                let snR = sign_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv - vec2(1./3., 0.));
+                let snG = sign_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv);
+                let snB = sign_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv + vec2(1./3., 0.));
                 sideR += snR;
                 sideG += snG;
                 sideB += snB;
             }
 
-            let x = abs(sd_bezier(vec2<f32>(f_ax, f_ay), vec2<f32>(f_az, f_aw), vec2<f32>(f_bx, f_by), uv));
+            let x = abs(sd_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv));
             if distG == 0. || x < distG {
-                distR = abs(sd_bezier(vec2<f32>(f_ax, f_ay), vec2<f32>(f_az, f_aw), vec2<f32>(f_bx, f_by), uv - vec2(1./3., 0.)));
+                distR = abs(sd_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv - vec2(1./3., 0.)));
                 distG = x;
-                distB = abs(sd_bezier(vec2<f32>(f_ax, f_ay), vec2<f32>(f_az, f_aw), vec2<f32>(f_bx, f_by), uv + vec2(1./3., 0.)));
+                distB = abs(sd_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv + vec2(1./3., 0.)));
             }
 
             continuing {
@@ -282,6 +229,4 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     return vec4(input.color.rgb, 1 - triplet_alpha.r);
-
-    // return vec4(textureSample(atlas_texture, atlas_sampler, input.uv, i32(0)).xyz, 1.);
 }

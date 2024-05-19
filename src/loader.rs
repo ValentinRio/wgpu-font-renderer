@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt};
+use std::{collections::HashMap, fmt, io::Read};
 use owned_ttf_parser::{AsFaceRef, GlyphId, OutlineBuilder, OwnedFace, Rect};
 use swash::{CacheKey, FontRef};
 
@@ -111,7 +111,7 @@ fn create_glyph_cache(
                 let mut builder = BezierBuilder::new(total_height as f32);
     
                 face.outline_glyph(glyph_id, &mut builder);
-    
+
                 let curves_count = builder.curves.len() as u32;
     
                 let bytes = unsafe {
@@ -171,7 +171,7 @@ impl OutlineBuilder for BezierBuilder {
     }
 
     fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
-        self.curves.extend_from_slice(&[x1, self.total_height - y1, x2, self.total_height -  y2, x, self.total_height - y, 0., 0.]);
+        self.curves.extend_from_slice(&[x1, self.total_height - y1, x2, self.total_height - y2, x, self.total_height - y, 0., 0.]);
         self.last_position = [x, self.total_height - y];
     }
 
