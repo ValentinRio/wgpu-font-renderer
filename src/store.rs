@@ -5,12 +5,12 @@ use std::collections::HashMap;
 
 use crate::{atlas::Atlas, loader::Font, LoadingError};
 
-pub struct Store {
+pub struct FontStore {
     cache: HashMap<CacheKey, Font>,
     atlas: Atlas,
 }
 
-impl Store {
+impl FontStore {
     pub fn new(device: &wgpu::Device, surface_config: &SurfaceConfiguration) -> Self {
         Self {
             cache: HashMap::new(),
@@ -37,6 +37,10 @@ impl Store {
         self.cache.insert(cache_key, font);
 
         Ok(cache_key)
+    }
+
+    pub fn atlas(&self) -> &Atlas {
+        &self.atlas
     }
 
     pub fn get(&self, font_key: CacheKey) -> Option<&Font> {

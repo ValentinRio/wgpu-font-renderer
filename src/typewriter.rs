@@ -1,7 +1,7 @@
 use owned_ttf_parser::{AsFaceRef, GlyphId};
 use swash::{shape::ShapeContext, text::Script, CacheKey};
 
-use crate::{loader::Glyph, Store};
+use crate::{loader::Glyph, FontStore};
 
 pub struct Paragraph {
     glyphs: Vec<(GlyphId, f32)>,
@@ -40,7 +40,7 @@ impl TypeWriter {
         }
     }
 
-    pub fn shape_text(&mut self, font_store: Store, font_key: CacheKey, position: [f32; 2], size: u16, text: &str) -> Option<Paragraph> {
+    pub fn shape_text(&mut self, font_store: &FontStore, font_key: CacheKey, position: [f32; 2], size: u16, text: &str) -> Option<Paragraph> {
         if let Some(font) = font_store.get(font_key) {
             let mut shaper = self.context.builder(font.as_ref())
                 .script(Script::Latin)

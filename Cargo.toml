@@ -7,6 +7,7 @@ edition = "2021"
 wgpu = { version = "0.20", default-features = true }
 owned_ttf_parser = { version = "0.21.0", default-features = false }
 swash = "0.1.15"
+bytemuck = { version = "1.16.0", features = ["derive"] }
 
 [dev-dependencies]
 winit = { version = "0.29.10", features = ["rwh_05"] }

@@ -1670,6 +1670,7 @@ dependencies = [
 name = "wgpu-font-renderer"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "owned_ttf_parser",
  "pollster",
  "swash",
