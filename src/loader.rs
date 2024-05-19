@@ -34,9 +34,9 @@ impl fmt::Display for LoadingError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             LoadingError::FileNotFound =>
-                write!(f, "please use a vector with at least one element"),
+                write!(f, "TTF Font file not found"),
             LoadingError::InvalidFile =>
-                write!(f, "the provided string could not be parsed as int"),
+                write!(f, "TTF Font file provided is invalid"),
         }
     }
 }

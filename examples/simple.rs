@@ -1,4 +1,4 @@
-use wgpu_font_renderer::Store;
+use wgpu_font_renderer::{Store, TypeWriter};
 
 use wgpu::{
     CommandEncoderDescriptor, CompositeAlphaMode, DeviceDescriptor, Features, Instance,
@@ -67,11 +67,12 @@ async fn run() {
     };
     surface.configure(&device, &config);
 
-    let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
-
     let mut font_store = Store::new(&device, &config);
     let cache_preset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789,;:!ù*^$=)àç_è-('\"é&²<>+°§/.?";
-    let _font_key = font_store.load(&device, &mut encoder, &queue, "examples/Roboto-Regular.ttf", cache_preset);
+    let font_key = font_store.load(&device, &queue, "examples/Roboto-Regular.ttf", cache_preset).expect("Couldn't load the font");
+
+    let mut type_writer = TypeWriter::new();
+    let paragraph = type_writer.shape_text(font_store, font_key, [100., 100.], 18, "Salut, c'est cool!");
 
     let _physical_width = (width as f64 * scale_factor) as f32;
     let _physical_height = (height as f64 * scale_factor) as f32;
