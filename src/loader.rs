@@ -6,12 +6,12 @@ use crate::atlas::{allocation::Allocation, Atlas};
 
 #[derive(Debug)]
 pub struct Glyph {
-    curves: Vec<f32>,
-    allocation: Allocation,
-    bbox: Rect,
-    descent: i16,
-    y_offset: i16,
-    left_side_bearing: i16,
+    pub curves: Vec<f32>,
+    pub allocation: Allocation,
+    pub bbox: Rect,
+    pub descent: i16,
+    pub y_offset: i16,
+    pub left_side_bearing: i16,
 }
 
 pub struct Font {
@@ -127,8 +127,6 @@ fn create_glyph_cache(
                         y_offset: y_offset,
                         left_side_bearing,
                     };
-            
-                    println!("{:#?}", glyph);
         
                     glyph_cache.insert(glyph_id, glyph);
                 }

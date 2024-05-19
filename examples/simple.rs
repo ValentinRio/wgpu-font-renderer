@@ -61,7 +61,7 @@ async fn run() {
         width: size.width,
         height: size.height,
         present_mode: PresentMode::Fifo,
-        alpha_mode: CompositeAlphaMode::Opaque,
+        alpha_mode: CompositeAlphaMode::Auto,
         view_formats: vec![],
         desired_maximum_frame_latency: 2,
     };
@@ -74,11 +74,11 @@ async fn run() {
     let mut paragraphs = Vec::new();
 
     let mut type_writer = TypeWriter::new();
-    if let Some(paragraph) = type_writer.shape_text(&font_store, font_key, [100., 100.], 18, "Salut, c'est cool!") {
+    if let Some(paragraph) = type_writer.shape_text(&font_store, font_key, [100., 100.], 36, [0.68, 0.5, 0.12, 1.], "Salut, c'est cool!") {
         paragraphs.push(paragraph);
     }
 
-    let text_renderer = TextRenderer::new(&device, &config, font_store.atlas());
+    let mut text_renderer = TextRenderer::new(&device, &config, font_store.atlas());
 
     let _physical_width = (width as f64 * scale_factor) as f32;
     let _physical_height = (height as f64 * scale_factor) as f32;
@@ -96,23 +96,25 @@ async fn run() {
                         config.height = size.height;
                         surface.configure(&device, &config);
                         window.request_redraw();
+                        text_renderer.update_uniforms(&device, [size.width, size.height]);
                     }
                     WindowEvent::RedrawRequested => {
                         
                         // Prepare should happen here
+                        text_renderer.prepare(&device, &paragraphs, &font_store);
                         
                         let frame = surface.get_current_texture().unwrap();
                         let view = frame.texture.create_view(&TextureViewDescriptor::default());
                         let mut encoder = device
                             .create_command_encoder(&CommandEncoderDescriptor { label: None });
                         {
-                            let mut _pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                                 label: None,
                                 color_attachments: &[Some(RenderPassColorAttachment {
                                     view: &view,
                                     resolve_target: None,
                                     ops: Operations {
-                                        load: LoadOp::Clear(wgpu::Color::BLACK),
+                                        load: LoadOp::Clear(wgpu::Color::WHITE),
                                         store: wgpu::StoreOp::Store,
                                     },
                                 })],
@@ -122,6 +124,7 @@ async fn run() {
                             });
 
                             // Render should happen here
+                            text_renderer.render(&mut pass, [config.width, config.height]);
                         }
 
                         queue.submit(Some(encoder.finish()));

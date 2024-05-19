@@ -3,6 +3,7 @@ mod store;
 mod atlas;
 mod renderer;
 mod typewriter;
+mod ortho;
 pub use renderer::TextRenderer;
 pub use store::FontStore;
 pub use loader::LoadingError;

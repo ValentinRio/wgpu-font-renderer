@@ -4,21 +4,23 @@ use swash::{shape::ShapeContext, text::Script, CacheKey};
 use crate::{loader::Glyph, FontStore};
 
 pub struct Paragraph {
-    glyphs: Vec<(GlyphId, f32)>,
-    position: [f32; 2],
-    width: f32,
-    size: u16,
-    units_per_em: u16,
+    pub glyphs: Vec<(GlyphId, f32)>,
+    pub position: [f32; 2],
+    pub width: f32,
+    pub size: u16,
+    pub font_key: CacheKey,
+    pub color: [f32; 4],
 }
 
 impl Paragraph {
-    pub fn new(position: [f32; 2], size: u16, units_per_em: u16) -> Self {
+    pub fn new(position: [f32; 2], size: u16, color: [f32; 4], font_key: CacheKey) -> Self {
         Self {
             glyphs: Vec::new(),
             position,
             width: 0.,
             size,
-            units_per_em,
+            font_key,
+            color,
         }
     }
 
@@ -26,6 +28,8 @@ impl Paragraph {
         self.width += left;
         self.glyphs.push((glyph_id, left));
     }
+
+
 }
 
 pub struct TypeWriter {
@@ -40,7 +44,7 @@ impl TypeWriter {
         }
     }
 
-    pub fn shape_text(&mut self, font_store: &FontStore, font_key: CacheKey, position: [f32; 2], size: u16, text: &str) -> Option<Paragraph> {
+    pub fn shape_text(&mut self, font_store: &FontStore, font_key: CacheKey, position: [f32; 2], size: u16, color: [f32; 4], text: &str) -> Option<Paragraph> {
         if let Some(font) = font_store.get(font_key) {
             let mut shaper = self.context.builder(font.as_ref())
                 .script(Script::Latin)
@@ -49,7 +53,7 @@ impl TypeWriter {
 
             let face = font.face.as_face_ref();
 
-            let mut paragraph = Paragraph::new(position, size, face.units_per_em());
+            let mut paragraph = Paragraph::new(position, size, color, font_key);
 
             shaper.add_str(text);
             shaper.shape_with(|cluster| {

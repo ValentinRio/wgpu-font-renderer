@@ -1,101 +1,118 @@
 use std::mem;
 
 use bytemuck::{Pod, Zeroable};
-use wgpu::{core::pipeline, util::DeviceExt};
+use owned_ttf_parser::AsFaceRef;
+use wgpu::{
+    util::{self, BufferInitDescriptor, DeviceExt, StagingBelt}, vertex_attr_array, BindGroup, BindGroupDescriptor, 
+    BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, 
+    BindingType, BlendComponent, BlendFactor, BlendOperation, BlendState, Buffer, BufferBinding, 
+    BufferBindingType, BufferDescriptor, BufferSize, BufferUsages, ColorTargetState, ColorWrites, 
+    Device, FilterMode, FragmentState, FrontFace, MultisampleState, PipelineLayoutDescriptor, 
+    PrimitiveState, PrimitiveTopology, RenderPass, RenderPipeline, RenderPipelineDescriptor, 
+    SamplerBindingType, SamplerDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages, 
+    SurfaceConfiguration, TextureSampleType, TextureViewDimension, VertexAttribute, VertexBufferLayout, 
+    VertexFormat, VertexState, VertexStepMode
+};
 
-use crate::atlas::{self, Atlas};
+use crate::{atlas::Atlas, ortho::orthographic_projection_matrix, typewriter::Paragraph, FontStore};
 
 pub struct TextRenderer {
-    pipeline: wgpu::RenderPipeline,
-    uniforms: wgpu::Buffer,
-    vertices: wgpu::Buffer,
-    indices: wgpu::Buffer,
-    instances_buffer: Option<wgpu::Buffer>,
+    pipeline: RenderPipeline,
+    uniforms: Buffer,
+    vertices: Buffer,
+    indices: Buffer,
+    instances_buffer: Option<Buffer>,
     instances: Vec<Instance>,
-    constants: wgpu::BindGroup,
-    texture: wgpu::BindGroup,
+    constants: BindGroup,
+    texture: BindGroup,
     texture_version: usize,
-    texture_layout: wgpu::BindGroupLayout,
+    texture_layout: BindGroupLayout,
     screen_size: [u32; 2],
 }
 
 impl TextRenderer {
-    pub fn new(device: &wgpu::Device, surface_config: &wgpu::SurfaceConfiguration, atlas: &Atlas) -> Self {
+    pub fn new(device: &Device, surface_config: &SurfaceConfiguration, atlas: &Atlas) -> Self {
         let screen_size = [surface_config.width, surface_config.height];
 
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        let sampler = device.create_sampler(&SamplerDescriptor {
             label: Some("Text sampler"),
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mag_filter: FilterMode::Nearest,
+            min_filter: FilterMode::Nearest,
+            mipmap_filter: FilterMode::Nearest,
             lod_min_clamp: 0f32,
             lod_max_clamp: 0f32,
             ..Default::default()
         });
 
-        let constant_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let constant_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("Text constants layout"),
             entries: &[
-                wgpu::BindGroupLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
+                    visibility: ShaderStages::VERTEX,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(
+                        min_binding_size:BufferSize::new(
                             mem::size_of::<Params>() as u64,
                         ),
                     },
                     count: None,
                 },
-                wgpu::BindGroupLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(
-                        wgpu::SamplerBindingType::NonFiltering,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Sampler(
+                        SamplerBindingType::NonFiltering,
                     ),
                     count: None,
                 }
             ],
         });
 
-        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+        let uniforms = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("Text uniforms buffer"),
-            size: mem::size_of::<Params>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            contents: bytemuck::bytes_of(&Params {
+                screen_resolution: Resolution {
+                    width: screen_size[0],
+                    height: screen_size[1],
+                },
+                _pad: [0, 0],
+                transform: orthographic_projection_matrix(0., screen_size[0] as f32, screen_size[1] as f32, 0.)
+            }),
         });
 
-        let constant_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let constant_bind_group = device.create_bind_group(&BindGroupDescriptor {
             label: Some("Text texture bind group"),
             layout: &constant_layout,
             entries:  &[
-                wgpu::BindGroupEntry {
+                BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::Buffer(
-                        wgpu::BufferBinding {
+                    resource: BindingResource::Buffer(
+                        BufferBinding {
                             buffer: &uniforms,
                             offset: 0,
                             size: None,
                         },
                     ),
                 },
-                wgpu::BindGroupEntry {
+                BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
+                    resource: BindingResource::Sampler(&sampler),
                 },
             ],
         });
 
-        let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let texture_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("Text texture layout"),
             entries: &[
-                wgpu::BindGroupLayoutEntry {
+                BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                    visibility: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
+                    ty: BindingType::Texture {
+                        sample_type: TextureSampleType::Float { filterable: true },
+                        view_dimension: TextureViewDimension::D2Array,
                         multisampled: false,
                     },
                     count: None,
@@ -103,38 +120,38 @@ impl TextRenderer {
             ],
         });
 
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("text pipeline layout"),
             bind_group_layouts: &[&constant_layout, &texture_layout],
             push_constant_ranges: &[],
         });
 
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let shader = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("Text shader"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("shader.wgsl"))),
+            source: ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("shader.wgsl"))),
         });
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
             label: Some("Text pipeline"),
             layout: Some(&layout),
-            vertex: wgpu::VertexState {
+            vertex: VertexState {
                 module: &shader,
                 entry_point: "vs_main",
                 compilation_options: Default::default(),
                 buffers: &[
-                    wgpu::VertexBufferLayout {
+                    VertexBufferLayout {
                         array_stride: mem::size_of::<Vertex>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &[wgpu::VertexAttribute {
+                        step_mode: VertexStepMode::Vertex,
+                        attributes: &[VertexAttribute {
                             shader_location: 0,
-                            format: wgpu::VertexFormat::Float32x2,
+                            format: VertexFormat::Float32x2,
                             offset: 0,
                         }],
                     },
-                    wgpu::VertexBufferLayout {
+                    VertexBufferLayout {
                         array_stride: mem::size_of::<Instance>() as u64,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &wgpu::vertex_attr_array!(
+                        step_mode: VertexStepMode::Instance,
+                        attributes: &vertex_attr_array!(
                             1 => Float32x2,
                             2 => Float32,
                             3 => Float32,
@@ -143,60 +160,61 @@ impl TextRenderer {
                             6 => Uint32,
                             7 => Float32,
                             8 => Sint32,
+                            9 => Float32x4
                         ),
                     }
                 ],
             },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                front_face: wgpu::FrontFace::Cw,
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleList,
+                front_face: FrontFace::Cw,
                 ..Default::default()
             },
             depth_stencil: None,
-            multisample: wgpu::MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
-            fragment: Some(wgpu::FragmentState {
+            multisample: MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
+            fragment: Some(FragmentState {
                 module: &shader,
                 entry_point: "fs_main",
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
+                targets: &[Some(ColorTargetState {
                     format: surface_config.format,
-                    blend: Some(wgpu::BlendState {
-                        color: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::SrcAlpha,
-                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                            operation: wgpu::BlendOperation::Add,
+                    blend: Some(BlendState {
+                        color: BlendComponent {
+                            src_factor: BlendFactor::SrcAlpha,
+                            dst_factor: BlendFactor::OneMinusSrcAlpha,
+                            operation: BlendOperation::Add,
                         },
-                        alpha: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                            operation: wgpu::BlendOperation::Add,
+                        alpha: BlendComponent {
+                            src_factor: BlendFactor::One,
+                            dst_factor: BlendFactor::OneMinusSrcAlpha,
+                            operation: BlendOperation::Add,
                         },
                     }),
-                    write_mask: wgpu::ColorWrites::ALL,
+                    write_mask: ColorWrites::ALL,
                 })],
             }),
             multiview: None,
         });
 
-        let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let vertices = device.create_buffer_init(&util::BufferInitDescriptor {
             label: Some("Text vertex buffer"),
             contents: bytemuck::cast_slice(&VERTICES),
-            usage: wgpu::BufferUsages::VERTEX,
+            usage: BufferUsages::VERTEX,
         });
 
-        let indices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let indices = device.create_buffer_init(&util::BufferInitDescriptor {
             label: Some("Text indice buffer"),
             contents: bytemuck::cast_slice(&INDICES),
-            usage: wgpu::BufferUsages::INDEX,
+            usage: BufferUsages::INDEX,
         });
 
-        let texture = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let texture = device.create_bind_group(&BindGroupDescriptor {
             label: Some("Text texture atlas bind group"),
             layout: &texture_layout,
             entries:  &[
-                wgpu::BindGroupEntry {
+                BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(
+                    resource: BindingResource::TextureView(
                         atlas.view(),
                     ),
                 },
@@ -217,17 +235,103 @@ impl TextRenderer {
             screen_size,
         }
     }
+
+    pub fn prepare(&mut self, device: &Device, paragraphs: &Vec<Paragraph>, store: &FontStore) {
+        self.instances = Vec::new();
+        let mut glyph_count = 0;
+
+        paragraphs.iter().for_each(|paragraph| {
+
+            let font = store.get(paragraph.font_key).expect("Paragraph has been created without valid font");
+
+            let units_per_em = font.face.as_face_ref().units_per_em() as f32;
+
+            let mut glyph_x = paragraph.position[0];
+
+            paragraph.glyphs.iter().for_each(|(glyph_id, left)| {
+                if let Some(glyph) = font.glyph_cache.get(glyph_id) {
+                    let glyph_y = paragraph.position[0] + (glyph.y_offset as f32 / units_per_em * paragraph.size as f32) + (f32::abs(glyph.descent as f32) / units_per_em * paragraph.size as f32);
+
+                    let size = [
+                        (glyph.bbox.width() as f32 * paragraph.size as f32 / units_per_em),
+                        (glyph.bbox.height() as f32 * paragraph.size as f32 / units_per_em),
+                    ];
+
+                    let instance = Instance {
+                        _position: [glyph_x, glyph_y],
+                        _left_side_bearing: glyph.left_side_bearing as f32,
+                        _font_size: paragraph.size as f32,
+                        _size: size,
+                        _position_in_atlas: [glyph.allocation.position()[0] as f32, glyph.allocation.position()[1] as f32],
+                        _size_in_atlas: glyph.allocation.size(),
+                        _units_per_em: units_per_em,
+                        _layer: glyph.allocation.layer() as u32,
+                        _color: paragraph.color,
+                    };
+
+                    self.instances.push(instance);
+
+                    glyph_x += left;
+                    glyph_count += 1;
+                }
+            })
+        });
+
+        // println!("{:#?}", self.instances);
+
+        self.instances_buffer = Some(device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("Text instances buffer"),
+            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+            contents: bytemuck::cast_slice(&self.instances[0..self.instances.len()])
+        }));
+    }
+
+    pub fn update_uniforms(&mut self, device: &Device, screen_size: [u32; 2]) {
+        self.uniforms = device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("Text uniforms buffer"),
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            contents: bytemuck::bytes_of(&Params {
+                screen_resolution: Resolution {
+                    width: screen_size[0],
+                    height: screen_size[1],
+                },
+                _pad: [0, 0],
+                transform: orthographic_projection_matrix(0., screen_size[0] as f32, screen_size[1] as f32, 0.)
+            }),
+        });
+    }
+
+    pub fn render<'rpass>(&'rpass mut self, render_pass: &mut RenderPass<'rpass>, screen_size: [u32; 2]) {
+
+        if self.instances.is_empty() {
+            return;
+        }
+
+        render_pass.set_pipeline(&self.pipeline);
+        render_pass.set_bind_group(0, &self.constants, &[]);
+        render_pass.set_bind_group(1, &self.texture, &[]);
+        render_pass.set_index_buffer(
+            self.indices.slice(..),
+            wgpu::IndexFormat::Uint16,
+        );
+        render_pass.set_vertex_buffer(0, self.vertices.slice(..));
+        render_pass.set_vertex_buffer(1, self.instances_buffer.as_ref().unwrap().slice(..));
+
+        render_pass.set_scissor_rect(0, 0, screen_size[0], screen_size[1]);
+
+        render_pass.draw_indexed(0..INDICES.len() as u32, 0, 0..self.instances.len() as u32);
+    }
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Pod, Zeroable)]
 pub struct Resolution {
     pub width: u32,
     pub height: u32,
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct Params {
     screen_resolution: Resolution,
     _pad: [u32; 2],
@@ -245,6 +349,7 @@ struct Instance {
     _size_in_atlas: u32,
     _units_per_em: f32,
     _layer: u32,
+    _color: [f32; 4],
 }
 
 #[repr(C)]
