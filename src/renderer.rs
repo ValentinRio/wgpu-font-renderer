@@ -271,9 +271,10 @@ impl TextRenderer {
 
                     self.instances.push(instance);
 
-                    glyph_x += left;
                     glyph_count += 1;
                 }
+                
+                glyph_x += left;
             })
         });
 

@@ -58,10 +58,6 @@ impl TypeWriter {
             shaper.add_str(text);
             shaper.shape_with(|cluster| {
                 let glyph_id = GlyphId(cluster.glyphs[0].id);
-                if let None = font.glyph_cache.get(&glyph_id) {
-                    return;
-                }
-
                 paragraph.append(glyph_id, cluster.glyphs[0].advance)
             });
 
