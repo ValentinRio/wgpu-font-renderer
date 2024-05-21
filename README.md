@@ -7,6 +7,7 @@
 <h3 align="center">wgpu-font-renderer</h3>
   <div align="center">
     <a href="https://crates.io/crates/wgpu-font-renderer"><img src="https://img.shields.io/crates/v/wgpu-font-renderer.svg?label=wgpu-font-renderer" alt="crates.io"></a>
+    <a href="https://docs.rs/wgpu-font-renderer"><img src="https://docs.rs/wgpu-font-renderer/badge.svg" alt="docs.rs"></a>
   </div>
   <p align="center">
     GPU-Centered Font Rendering crate
