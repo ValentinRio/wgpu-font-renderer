@@ -7,7 +7,7 @@
 <h3 align="center">wgpu-font-renderer</h3>
 
   <p align="center">
-    GPU-Centered Font Rendering lib
+    GPU-Centered Font Rendering crate
     <br />
     <a href="https://github.com/ValentinRio/wgpu-font-renderer/tree/main/examples">View Demo</a>
     ·
