@@ -76,7 +76,7 @@ This is an example of how you use this crate to generate paragraphs programatica
 
 Add dependency to you cargo.toml
 
-```
+```toml
 [dependencies]
 wgpu-font-renderer = "0.1.0"
 ```
@@ -90,7 +90,7 @@ wgpu-font-renderer = "0.1.0"
 
 First you need to load the TTF file in the FontStore by passing the file path and and preset string that will define the list of characters used by your app.
 
-```
+```rust
 let mut font_store = FontStore::new(&device, &config);
 let cache_preset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789,;:!ù*^$=)àç_è-('\"é&²<>+°§/.? ";
 let font_key = font_store.load(&device, &queue, "examples/Roboto-Regular.ttf", cache_preset).expect("Couldn't load the font");
@@ -103,7 +103,7 @@ Then during the runtime you can create new paragraphs to be rendered. Those can 
 - Linear RGBA color
 - Text content
 
-```
+```rust
 let mut paragraphs = Vec::new();
 let mut type_writer = TypeWriter::new();
 if let Some(paragraph) = type_writer.shape_text(&font_store, font_key, [100., 100.], 72, [0.68, 0.5, 0.12, 1.], "Salut, c'est cool!") {
@@ -113,19 +113,19 @@ if let Some(paragraph) = type_writer.shape_text(&font_store, font_key, [100., 10
 
 Then you can initialize the predefined font rendering middleware:
 
-```
+```rust
 let mut text_renderer = TextRenderer::new(&device, &config, font_store.atlas());
 ```
 
 Call prepare to pass the paragraphs you want to render to the middleware:
 
-```
+```rust
 text_renderer.prepare(&device, &paragraphs, &font_store);
 ```
 
 Call render with an existing render pass to build the command buffer necessary to render your paragraphs:
 
-```
+```rust
 text_renderer.render(&mut pass, [config.width, config.height]);
 ```
 
