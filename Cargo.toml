@@ -3,7 +3,7 @@ name = "wgpu-font-renderer"
 version = "0.1.0"
 edition = "2021"
 description = "GPU-Centered Font Rendering crate"
-license = ""
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 wgpu = { version = "0.20", default-features = true }
