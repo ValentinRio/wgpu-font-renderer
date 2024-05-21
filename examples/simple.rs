@@ -74,7 +74,7 @@ async fn run() {
     let mut paragraphs = Vec::new();
 
     let mut type_writer = TypeWriter::new();
-    if let Some(paragraph) = type_writer.shape_text(&font_store, font_key, [100., 100.], 36, [0.68, 0.5, 0.12, 1.], "Salut, c'est cool!") {
+    if let Some(paragraph) = type_writer.shape_text(&font_store, font_key, [100., 100.], 72, [0.68, 0.5, 0.12, 1.], "Salut, c'est cool!") {
         paragraphs.push(paragraph);
     }
 
