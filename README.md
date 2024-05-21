@@ -138,10 +138,10 @@ _To see concrete example, please check [here](https://github.com/ValentinRio/wgp
 <!-- ROADMAP -->
 ## Roadmap
 
-- [ ] Separe glyph outlines into bands
-- [ ] Sort curves per band
+- [ ] Separate glyph outlines into bands
+- [ ] Sort curves inside each band
 - [ ] Optimize data-layout
-- [ ] Anti-aliasing
+- [ ] Add Anti-aliasing
 
 See the [open issues](https://github.com/ValentinRio/wgpu-font-renderer/issues) for a full list of proposed features (and known issues).
 
@@ -170,7 +170,7 @@ Don't forget to give the project a star! Thanks again!
 <!-- LICENSE -->
 ## License
 
-Distributed under the MIT License. See `LICENSE.txt` for more information.
+Distributed under the MIT License.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
