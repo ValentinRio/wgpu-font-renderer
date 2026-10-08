@@ -25,7 +25,7 @@ struct VertexOutput {
     @location(3) font_size: f32,
     @location(4) size: vec2<f32>,
     @location(5) atlas_pos: vec2<f32>,
-    @location(6) atlas_size: i32,
+    @location(6) @interpolate(flat) atlas_size: i32,
     @location(7) units_per_em: f32,
     @location(8) layer: f32,
     @location(9) color: vec4<f32>,
@@ -184,12 +184,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
                 curve_points_count = curve_points_count - i;
             }
 
-            let ax = textureSample(atlas_texture, atlas_sampler, vec2<f32>(atlas_x_offset / 2048., y_offset / 2048.), i32(0)).x;
-            let ay = textureSample(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 1.) / 2048., y_offset / 2048.), i32(0)).x;
-            let az = textureSample(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 2.) / 2048., y_offset / 2048.), i32(0)).x;
-            let aw = textureSample(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 3.) / 2048., y_offset / 2048.), i32(0)).x;
-            let bx = textureSample(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 4.) / 2048., y_offset / 2048.), i32(0)).x;
-            let by = textureSample(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 5.) / 2048., y_offset / 2048.), i32(0)).x;
+            // The atlas has one mip level; explicit LOD avoids derivatives in this varying loop.
+            let ax = textureSampleLevel(atlas_texture, atlas_sampler, vec2<f32>(atlas_x_offset / 2048., y_offset / 2048.), i32(0), 0.).x;
+            let ay = textureSampleLevel(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 1.) / 2048., y_offset / 2048.), i32(0), 0.).x;
+            let az = textureSampleLevel(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 2.) / 2048., y_offset / 2048.), i32(0), 0.).x;
+            let aw = textureSampleLevel(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 3.) / 2048., y_offset / 2048.), i32(0), 0.).x;
+            let bx = textureSampleLevel(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 4.) / 2048., y_offset / 2048.), i32(0), 0.).x;
+            let by = textureSampleLevel(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 5.) / 2048., y_offset / 2048.), i32(0), 0.).x;
 
             if ((uv.y > ay && uv.y < by) || (uv.y > by && uv.y < ay)) {
                 let snR = sign_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv - vec2(1./3., 0.));

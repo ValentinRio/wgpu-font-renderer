@@ -24,6 +24,7 @@ pub struct TextRenderer {
     instances_buffer: Option<Buffer>,
     instances: Vec<Instance>,
     constants: BindGroup,
+    sampler: wgpu::Sampler,
     texture: BindGroup,
     texture_version: usize,
     texture_layout: BindGroupLayout,
@@ -38,7 +39,7 @@ impl TextRenderer {
             label: Some("Text sampler"),
             mag_filter: FilterMode::Nearest,
             min_filter: FilterMode::Nearest,
-            mipmap_filter: FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             lod_min_clamp: 0f32,
             lod_max_clamp: 0f32,
             ..Default::default()
@@ -122,8 +123,8 @@ impl TextRenderer {
 
         let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("text pipeline layout"),
-            bind_group_layouts: &[&constant_layout, &texture_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&constant_layout), Some(&texture_layout)],
+            immediate_size: 0,
         });
 
         let shader = device.create_shader_module(ShaderModuleDescriptor {
@@ -136,10 +137,10 @@ impl TextRenderer {
             layout: Some(&layout),
             vertex: VertexState {
                 module: &shader,
-                entry_point: "vs_main",
+                entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
                 buffers: &[
-                    VertexBufferLayout {
+                    Some(VertexBufferLayout {
                         array_stride: mem::size_of::<Vertex>() as u64,
                         step_mode: VertexStepMode::Vertex,
                         attributes: &[VertexAttribute {
@@ -147,8 +148,8 @@ impl TextRenderer {
                             format: VertexFormat::Float32x2,
                             offset: 0,
                         }],
-                    },
-                    VertexBufferLayout {
+                    }),
+                    Some(VertexBufferLayout {
                         array_stride: mem::size_of::<Instance>() as u64,
                         step_mode: VertexStepMode::Instance,
                         attributes: &vertex_attr_array!(
@@ -162,7 +163,7 @@ impl TextRenderer {
                             8 => Sint32,
                             9 => Float32x4
                         ),
-                    }
+                    })
                 ],
             },
             primitive: PrimitiveState {
@@ -174,7 +175,7 @@ impl TextRenderer {
             multisample: MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
             fragment: Some(FragmentState {
                 module: &shader,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
                 compilation_options: Default::default(),
                 targets: &[Some(ColorTargetState {
                     format: surface_config.format,
@@ -193,7 +194,8 @@ impl TextRenderer {
                     write_mask: ColorWrites::ALL,
                 })],
             }),
-            multiview: None,
+            multiview_mask: None,
+            cache: None,
         });
 
         let vertices = device.create_buffer_init(&util::BufferInitDescriptor {
@@ -229,6 +231,7 @@ impl TextRenderer {
             instances_buffer: None,
             instances: Vec::new(),
             constants: constant_bind_group,
+            sampler,
             texture,
             texture_version: atlas.layer_count(),
             texture_layout,
@@ -297,6 +300,20 @@ impl TextRenderer {
                 _pad: [0, 0],
                 transform: orthographic_projection_matrix(0., screen_size[0] as f32, screen_size[1] as f32, 0.)
             }),
+        });
+        self.constants = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("Text texture bind group"),
+            layout: &self.pipeline.get_bind_group_layout(0),
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: self.uniforms.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Sampler(&self.sampler),
+                },
+            ],
         });
     }
 

@@ -166,7 +166,7 @@ impl Atlas {
 
             let data_slice = &data[offset..offset + byte_size];
 
-            queue.write_texture(wgpu::ImageCopyTexture {
+            queue.write_texture(wgpu::TexelCopyTextureInfo {
                 texture: &self.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d {
@@ -175,7 +175,7 @@ impl Atlas {
                     z: layer as u32,
                 },
                 aspect: wgpu::TextureAspect::default()
-            }, data_slice, wgpu::ImageDataLayout {
+            }, data_slice, wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(width * 4),
                 rows_per_image: Some(*height),
@@ -220,7 +220,7 @@ impl Atlas {
             }
 
             encoder.copy_texture_to_texture(
-                wgpu::ImageCopyTexture {
+                wgpu::TexelCopyTextureInfo {
                     texture: &self.texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d {
@@ -230,7 +230,7 @@ impl Atlas {
                     },
                     aspect: wgpu::TextureAspect::default()
                 },
-                wgpu::ImageCopyTexture {
+                wgpu::TexelCopyTextureInfo {
                     texture: &new_texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d {

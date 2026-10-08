@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt, io::Read};
+use std::{collections::HashMap, fmt};
 use owned_ttf_parser::{AsFaceRef, GlyphId, OutlineBuilder, OwnedFace, Rect};
 use swash::{CacheKey, FontRef};
 
@@ -53,6 +53,18 @@ impl Font {
     ) -> Result<Font> {
         // Read the font file as bytes
         let data = std::fs::read(path).or(Err(LoadingError::FileNotFound))?;
+        Self::from_bytes(device, encoder, queue, data, index, cache_preset, atlas)
+    }
+
+    pub fn from_bytes(
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        queue: &wgpu::Queue,
+        data: Vec<u8>,
+        index: usize,
+        cache_preset: &str,
+        atlas: &mut Atlas
+    ) -> Result<Font> {
         // Create a temporary font reference for the font available in the file at `index`.
         // This will do some basic validation, compute the necessary offset
         // and generate a fresh cache key for us.
