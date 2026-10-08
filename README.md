@@ -53,7 +53,7 @@
 
 [![Product Name Screen Shot][product-screenshot]](https://example.com)
 
-Render glyphs by extracting their outlines from TTF files and draw them directly from GPU. No signed distance field cache of any sort. This is based on Eric Lengyel's Slug algorithm.
+Render glyphs by extracting their outlines from TrueType or OpenType (CFF/CFF2) files and draw them directly from GPU. No signed distance field cache of any sort. This is based on Eric Lengyel's Slug algorithm.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -62,7 +62,7 @@ Render glyphs by extracting their outlines from TTF files and draw them directly
 ### Built With
 
 * Swash for text shaping - https://github.com/dfrg/swash
-* TTF Parser to read TTF files - https://github.com/RazrFalcon/ttf-parser
+* TTF Parser to read TrueType and OpenType files - https://github.com/RazrFalcon/ttf-parser
 * WGPU 30.0.1 as graphic API - https://wgpu.rs/
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
@@ -185,15 +185,18 @@ REQUIRE_GPU=1 cargo test --offline
 ```
 
 A software adapter such as Mesa lavapipe is sufficient. GPU tests are disabled on
-wasm32; tests marked `#[ignore = "bug: ..."]` remain ignored in either mode.
+wasm32. No tests are marked ignored.
 
 <!-- ROADMAP -->
 ## Roadmap
 
-- [ ] Separate glyph outlines into bands
-- [ ] Sort curves inside each band
-- [ ] Optimize data-layout
-- [ ] Add Anti-aliasing
+- [ ] Separate glyph outlines into bands, so each pixel only tests the curves that can cross it
+- [ ] Sort curves inside each band, so the shader can stop early (depends on bands)
+- [ ] Optimize the curve data layout: fetch each curve in one or two texel loads (RGBA32F or a storage buffer) instead of six sampled R32F reads, and drop the hardcoded 2048 atlas width
+- [ ] Subpixel (LCD) anti-aliasing: the R, G and B coverage samples are computed, but only R reaches the output (grayscale anti-aliasing already works)
+- [ ] Handle overlapping contours, which currently render as holes because the winding test expects exactly one crossing pair
+- [ ] Add a CFF1 (`.otf`) test font; only CFF2 is covered today
+- [ ] Let callers select variable font axes; only the default instance renders
 
 See the [open issues](https://github.com/ValentinRio/wgpu-font-renderer/issues) for a full list of proposed features (and known issues).
 

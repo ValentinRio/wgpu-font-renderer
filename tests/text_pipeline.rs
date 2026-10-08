@@ -168,6 +168,34 @@ fn ink_bounds(pixels: &[u8], width: u32) -> [u32; 4] {
     bounds
 }
 
+// The correct llvmpipe renders contain 220 dark pixels (Roboto) and 175
+// (Cantarell). Allow 15% variation for antialiasing across GPU backends.
+fn assert_hi_fill(pixels: &[u8], dark_band: std::ops::RangeInclusive<usize>) {
+    let pixel = |x: usize, y: usize| &pixels[(y * 128 + x) * 4..(y * 128 + x) * 4 + 3];
+    // Both fixtures at [24, 48], 32 px/em: this is the centre of H's left
+    // stem above its crossbar, and the open gap between its stems.
+    assert!(
+        pixel(25, 61).iter().all(|c| *c < 64),
+        "H stem must be dark: {:?}",
+        pixel(25, 61)
+    );
+    assert!(
+        pixel(32, 61).iter().all(|c| *c > 240),
+        "H gap must be white: {:?}",
+        pixel(32, 61)
+    );
+    let count = pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| p[..3].iter().any(|c| *c < 128))
+        .count();
+    assert!(
+        dark_band.contains(&count),
+        "dark count {count} outside {dark_band:?}"
+    );
+}
+
 #[test]
 fn prepare_and_resize_keep_ink_at_pixel_coordinates() {
     let Some((device, queue, config)) = gpu() else {
@@ -183,17 +211,16 @@ fn prepare_and_resize_keep_ink_at_pixel_coordinates() {
             "Hi",
         )
         .unwrap();
-    let paragraph = TypeWriter::new()
-        .shape_text(&store, key, [24., 24.], 32, [0., 0., 0., 1.], "Hi")
+    let paragraph: wgpu_font_renderer::Paragraph = TypeWriter::new()
+        .shape_text(&store, key, [24., 48.], 32, [0., 0., 0., 1.], "Hi")
         .unwrap();
     let mut renderer = TextRenderer::new(&device, &config, store.atlas());
     renderer.prepare(&device, &vec![paragraph], &store);
-    let before = ink_bounds(
-        &draw_pixels(&device, &queue, &mut renderer, [128, 128]),
-        128,
-    );
+    let pixels = draw_pixels(&device, &queue, &mut renderer, [128, 128]);
+    assert_hi_fill(&pixels, 187..=253);
+    let before = ink_bounds(&pixels, 128);
     assert!(
-        before[0] >= 24 && before[1] >= 24 && before[2] < 80 && before[3] < 72,
+        before[0] >= 24 && before[1] >= 48 && before[2] < 80 && before[3] < 96,
         "all ink must be within the expected box: {before:?}"
     );
     for size in [[256, 192], [128, 128]] {
@@ -220,7 +247,6 @@ fn prepare_and_resize_keep_ink_at_pixel_coordinates() {
 }
 
 #[test]
-#[ignore = "bug: prepare uses paragraph x instead of y for vertical placement"]
 fn prepare_uses_paragraph_y_coordinate() {
     let Some((device, queue, config)) = gpu() else {
         return;
@@ -247,4 +273,54 @@ fn prepare_uses_paragraph_y_coordinate() {
         bounds[1] >= 64 && bounds[3] < 112,
         "ink must follow the y anchor: {bounds:?}"
     );
+}
+
+#[test]
+fn cantarell_cff2_loads_outlines_and_renders_ink() {
+    let Some((device, queue, config)) = gpu() else {
+        return;
+    };
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut store = FontStore::new(&device, &config);
+    let key = store
+        .load_from_bytes(
+            &device,
+            &queue,
+            include_bytes!("fixtures/Cantarell-VF.otf"),
+            "Hi",
+        )
+        .unwrap();
+    let font = store.get(key).unwrap();
+    for c in "Hi".chars() {
+        let id = font.face.as_face_ref().glyph_index(c).unwrap();
+        let glyph = font
+            .glyph_cache
+            .get(&id)
+            .expect("CFF2 glyph must be cached");
+        assert!(!glyph.curves.is_empty());
+        let pad = font.face.as_face_ref().units_per_em() as f32 * 0.15;
+        for segment in glyph.curves.as_chunks::<8>().0 {
+            for p in segment[..6].as_chunks::<2>().0 {
+                assert!(
+                    p[0] >= glyph.bbox.x_min as f32 - pad
+                        && p[0] <= glyph.bbox.x_max as f32 + pad
+                        && p[1] >= -pad
+                        && p[1] <= glyph.bbox.height() as f32 + pad
+                );
+            }
+        }
+    }
+    let paragraph = TypeWriter::new()
+        .shape_text(&store, key, [24., 48.], 32, [0., 0., 0., 1.], "Hi")
+        .unwrap();
+    let mut renderer = TextRenderer::new(&device, &config, store.atlas());
+    renderer.prepare(&device, &vec![paragraph], &store);
+    let pixels = draw_pixels(&device, &queue, &mut renderer, [128, 128]);
+    assert_hi_fill(&pixels, 149..=201);
+    let bounds = ink_bounds(&pixels, 128);
+    assert!(
+        bounds[0] >= 24 && bounds[1] >= 48 && bounds[2] < 80 && bounds[3] < 96,
+        "CFF2 ink must be within the expected box: {bounds:?}"
+    );
+    assert!(pollster::block_on(scope.pop()).is_none());
 }

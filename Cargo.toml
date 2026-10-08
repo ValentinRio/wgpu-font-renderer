@@ -2,12 +2,14 @@
 name = "wgpu-font-renderer"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.88"
+exclude = ["tests/fixtures"]
 description = "GPU-Centered Font Rendering crate"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
 wgpu = { version = "30", default-features = true }
-owned_ttf_parser = { version = "0.21.0", default-features = false }
+owned_ttf_parser = { version = "0.21.0", default-features = false, features = ["variable-fonts"] }
 swash = "0.1.15"
 bytemuck = { version = "1.16.0", features = ["derive"] }
 

@@ -37,18 +37,18 @@ impl Allocator {
     }
 
     /// Reserve a contiguous run of `size` texels, or return `None` if full.
-    /// A failed request also advances the cursor; callers normally move to a
-    /// fresh layer. Panics on cursor or layer-area overflow in debug builds.
+    /// Failed requests leave the allocator unchanged.
+    /// Panics on layer-area overflow in debug builds.
     pub fn allocate(&mut self, size: u32) -> Option<Region> {
         // Flatten rows so outline streams need no per-glyph rectangular padding.
         let x =self.offset as f32 % self.size as f32;
         let row_index = f32::floor(self.offset as f32 / self.size as f32);
         let total_size = (self.size * self.size) as f32;
         let size_left = total_size - self.offset as f32;
-        self.offset += size;
         if size as f32 > size_left {
             None
         } else {
+            self.offset += size;
             self.allocations += 1;
             Some(Region {
                 position: [x as u32, row_index as u32],
@@ -81,7 +81,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "bug: a failed allocation consumes capacity needed by smaller requests"]
     fn failed_allocation_preserves_remaining_capacity() {
         let mut allocator = Allocator::new(4);
         allocator.allocate(8).unwrap();
