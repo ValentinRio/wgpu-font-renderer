@@ -3,10 +3,10 @@ use std::mem;
 use bytemuck::{Pod, Zeroable};
 use owned_ttf_parser::AsFaceRef;
 use wgpu::{
-    util::{self, BufferInitDescriptor, DeviceExt, StagingBelt}, vertex_attr_array, BindGroup, BindGroupDescriptor, 
+    util::{self, BufferInitDescriptor, DeviceExt}, vertex_attr_array, BindGroup, BindGroupDescriptor,
     BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, 
     BindingType, BlendComponent, BlendFactor, BlendOperation, BlendState, Buffer, BufferBinding, 
-    BufferBindingType, BufferDescriptor, BufferSize, BufferUsages, ColorTargetState, ColorWrites, 
+    BufferBindingType, BufferSize, BufferUsages, ColorTargetState, ColorWrites,
     Device, FilterMode, FragmentState, FrontFace, MultisampleState, PipelineLayoutDescriptor, 
     PrimitiveState, PrimitiveTopology, RenderPass, RenderPipeline, RenderPipelineDescriptor, 
     SamplerBindingType, SamplerDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages, 
@@ -16,6 +16,8 @@ use wgpu::{
 
 use crate::{atlas::Atlas, ortho::orthographic_projection_matrix, typewriter::Paragraph, FontStore};
 
+/// GPU pipeline and prepared glyph instances for a fixed atlas and target format.
+/// Screen coordinates are physical pixels, origin top left, y downward.
 pub struct TextRenderer {
     pipeline: RenderPipeline,
     uniforms: Buffer,
@@ -26,12 +28,19 @@ pub struct TextRenderer {
     constants: BindGroup,
     sampler: wgpu::Sampler,
     texture: BindGroup,
+    #[allow(dead_code)]
     texture_version: usize,
+    #[allow(dead_code)]
     texture_layout: BindGroupLayout,
+    #[allow(dead_code)]
     screen_size: [u32; 2],
 }
 
 impl TextRenderer {
+    /// Create a renderer for the configured target format and pixel dimensions.
+    /// Dimensions must be nonzero; atlas and device must match. Load all fonts
+    /// first: later atlas growth does not refresh this renderer's texture binding.
+    /// Invalid GPU resources or unsupported formats produce wgpu validation errors.
     pub fn new(device: &Device, surface_config: &SurfaceConfiguration, atlas: &Atlas) -> Self {
         let screen_size = [surface_config.width, surface_config.height];
 
@@ -239,6 +248,13 @@ impl TextRenderer {
         }
     }
 
+    /// Replace prepared instances with the supplied shaped runs.
+    /// Uncached glyphs are skipped but their pixel advances are preserved.
+    /// Positions are pixels (x right, y down); currently x also anchors y.
+    ///
+    /// # Panics
+    /// Panics if a paragraph's font key is absent from `store`. The store and
+    /// renderer must share an atlas and device; mismatches can cause GPU errors.
     pub fn prepare(&mut self, device: &Device, paragraphs: &Vec<Paragraph>, store: &FontStore) {
         self.instances = Vec::new();
         let mut glyph_count = 0;
@@ -288,6 +304,9 @@ impl TextRenderer {
         }));
     }
 
+    /// Replace the pixel-to-clip transform and rebind its buffer after resizing.
+    /// `screen_size` is the nonzero viewport width/height in physical pixels;
+    /// zero dimensions produce a nonfinite transform. Use the renderer's device.
     pub fn update_uniforms(&mut self, device: &Device, screen_size: [u32; 2]) {
         self.uniforms = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("Text uniforms buffer"),
@@ -301,6 +320,7 @@ impl TextRenderer {
                 transform: orthographic_projection_matrix(0., screen_size[0] as f32, screen_size[1] as f32, 0.)
             }),
         });
+        // Bind groups retain buffers: replacing uniforms also requires rebinding.
         self.constants = device.create_bind_group(&BindGroupDescriptor {
             label: Some("Text texture bind group"),
             layout: &self.pipeline.get_bind_group_layout(0),
@@ -317,6 +337,11 @@ impl TextRenderer {
         });
     }
 
+    /// Draw prepared glyphs into the pass; an empty batch does nothing.
+    /// `screen_size` is the pixel scissor width/height from the top-left origin
+    /// and must fit the attachment. Update uniforms to the same dimensions first.
+    /// Target format and device must match construction; invalid pass resources
+    /// or scissor bounds produce wgpu validation errors.
     pub fn render<'rpass>(&'rpass mut self, render_pass: &mut RenderPass<'rpass>, screen_size: [u32; 2]) {
 
         if self.instances.is_empty() {
@@ -341,13 +366,17 @@ impl TextRenderer {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Pod, Zeroable)]
+/// Viewport dimensions in physical pixels.
 pub struct Resolution {
+    /// Horizontal pixel count.
     pub width: u32,
+    /// Vertical pixel count.
     pub height: u32,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+/// GPU uniform layout: pixel viewport dimensions and column-major clip transform.
 pub struct Params {
     screen_resolution: Resolution,
     _pad: [u32; 2],

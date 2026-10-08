@@ -1,5 +1,8 @@
+/// Linear allocation within a square atlas layer.
 pub mod allocator;
+/// Atlas region and layer metadata.
 pub mod allocation;
+/// Empty/busy layer bookkeeping.
 pub mod layer;
 
 use layer::Layer;
@@ -7,17 +10,24 @@ use wgpu::{SurfaceConfiguration, TextureFormat};
 
 use self::{allocation::Allocation, allocator::Allocator};
 
+/// R32Float texture array storing outlines as row-major float texels.
+/// Texel coordinates start at the top left, x rightward and y downward.
 pub struct Atlas {
     texture: wgpu::Texture,
     texture_view: wgpu::TextureView,
     layers: Vec<Layer>,
+    /// Storage format of the outline texture, initially R32Float.
     pub texture_format: wgpu::TextureFormat,
 }
 
+/// Width and height of each atlas layer in texels; also encoded in the shader.
 pub const SIZE: u32 = 2048;
 
 impl Atlas {
-    pub fn new(device: &wgpu::Device, surface_config: &SurfaceConfiguration) -> Self {
+    /// Create an empty atlas; the surface configuration is currently unused.
+    /// Requires device support for a 2048-square R32Float array texture.
+    /// Unsupported resources cause wgpu validation errors.
+    pub fn new(device: &wgpu::Device, _surface_config: &SurfaceConfiguration) -> Self {
         
         let extent = wgpu::Extent3d {
             width: SIZE,
@@ -51,54 +61,27 @@ impl Atlas {
         }
     }
 
+    /// Borrow the current array view; growth replaces this view.
     pub fn view(&self) -> &wgpu::TextureView {
         &self.texture_view
     }
 
+    /// Number of logical layers, including the initial empty layer.
     pub fn layer_count(&self) -> usize {
         self.layers.len()
     }
 
     fn allocate(&mut self, width: u32) -> Option<Allocation> {
-        for (i, layer) in self.layers.iter_mut().enumerate() {
-            match layer {
-                Layer::Empty => {
-                    let mut allocator = Allocator::new(SIZE);
-
-                    if let Some(region) = allocator.allocate(width) {
-                        *layer = Layer::Busy(allocator);
-
-                        return Some(Allocation {
-                            region,
-                            layer: i,
-                        });
-                    }
-                }
-                Layer::Busy(allocator) => {
-                    if let Some(region) = allocator.allocate(width) {
-                        return Some(Allocation {
-                            region,
-                            layer: i,
-                        })
-                    }
-                }
-            }
-        }
-
-        let mut allocator = Allocator::new(SIZE);
-
-        if let Some(region) = allocator.allocate(width) {
-            self.layers.push(Layer::Busy(allocator));
-
-            return Some(Allocation {
-                region,
-                layer: self.layers.len() - 1,
-            });
-        }
-
-        None
+        allocate_layer(&mut self.layers, width)
     }
 
+    /// Reserve `size` float texels and upload their native-endian bytes.
+    /// Returns `None` if a single layer cannot hold the allocation. Growth copies
+    /// existing layers through `encoder`, which the caller must submit.
+    /// Device and queue must match the atlas; layer limits cause GPU errors.
+    ///
+    /// # Panics
+    /// Panics if `data` contains fewer than `size * 4` bytes.
     pub fn upload(
         &mut self,
         size: u32,
@@ -107,8 +90,6 @@ impl Atlas {
         encoder: &mut wgpu::CommandEncoder,
         queue: &wgpu::Queue,
     ) -> Option<Allocation> {
-        // use wgpu::util::DeviceExt;
-
         let current_size = self.layers.len();
         let allocation = self.allocate(size)?;
 
@@ -133,6 +114,8 @@ impl Atlas {
 
         let mut blocks: Vec<[u32; 5]> = Vec::new();
 
+        // Split a linear allocation at row boundaries to keep write_texture
+        // rectangles contiguous without changing the shader's linear addressing.
         let first_line = SIZE - x;
 
         if size < first_line {
@@ -253,5 +236,79 @@ impl Atlas {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
         });
+    }
+}
+// Keep layer selection independent of GPU resources; texture growth follows allocation.
+fn allocate_layer(layers: &mut Vec<Layer>, width: u32) -> Option<Allocation> {
+    for (i, layer) in layers.iter_mut().enumerate() {
+        match layer {
+            Layer::Empty => {
+                let mut allocator = Allocator::new(SIZE);
+
+                if let Some(region) = allocator.allocate(width) {
+                    *layer = Layer::Busy(allocator);
+
+                    return Some(Allocation {
+                        region,
+                        layer: i,
+                    });
+                }
+            }
+            Layer::Busy(allocator) => {
+                if let Some(region) = allocator.allocate(width) {
+                    return Some(Allocation {
+                        region,
+                        layer: i,
+                    })
+                }
+            }
+        }
+    }
+
+    let mut allocator = Allocator::new(SIZE);
+
+    if let Some(region) = allocator.allocate(width) {
+        layers.push(Layer::Busy(allocator));
+
+        return Some(Allocation {
+            region,
+            layer: layers.len() - 1,
+        });
+    }
+
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allocation_fills_layer_then_starts_next() {
+        let mut layers = vec![Layer::Empty];
+        let first = allocate_layer(&mut layers, SIZE * SIZE - 8).unwrap();
+        let tail = allocate_layer(&mut layers, 8).unwrap();
+        let next = allocate_layer(&mut layers, 8).unwrap();
+        assert_eq!(
+            [
+                (first.layer(), first.position(), first.size()),
+                (tail.layer(), tail.position(), tail.size()),
+                (next.layer(), next.position(), next.size())
+            ],
+            [
+                (0, [0, 0], SIZE * SIZE - 8),
+                (0, [SIZE - 8, SIZE - 1], 8),
+                (1, [0, 0], 8)
+            ]
+        );
+        assert_eq!(layers.len(), 2);
+        assert!(layers.iter().all(|layer| !layer.is_empty()));
+    }
+
+    #[test]
+    fn oversized_allocation_leaves_empty_layer() {
+        let mut layers = vec![Layer::Empty];
+        assert!(allocate_layer(&mut layers, SIZE * SIZE + 1).is_none());
+        assert!(layers.len() == 1 && layers[0].is_empty());
     }
 }
