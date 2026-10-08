@@ -37,6 +37,7 @@
       </ul>
     </li>
     <li><a href="#usage">Usage</a></li>
+    <li><a href="#running-the-examples">Running the examples</a></li>
     <li><a href="#roadmap">Roadmap</a></li>
     <li><a href="#contributing">Contributing</a></li>
     <li><a href="#license">License</a></li>
@@ -61,7 +62,7 @@ Render glyphs by extracting their outlines from TTF files and draw them directly
 
 * Swash for text shaping - https://github.com/dfrg/swash
 * TTF Parser to read TTF files - https://github.com/RazrFalcon/ttf-parser
-* WGPU as graphic API - https://wgpu.rs/
+* WGPU 30.0.1 as graphic API - https://wgpu.rs/
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -134,6 +135,43 @@ _To see concrete example, please check [here](https://github.com/ValentinRio/wgp
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 
+
+## Running the examples
+
+Run the native example:
+
+```sh
+cargo run --example simple
+```
+
+To run the same example in a browser:
+
+1. Install the target and the CLI version matching `wasm-bindgen` in `Cargo.lock`:
+
+   ```sh
+   rustup target add wasm32-unknown-unknown
+   cargo install wasm-bindgen-cli --version 0.2.129
+   ```
+
+2. Build the example:
+
+   ```sh
+   cargo build --release --example simple --target wasm32-unknown-unknown
+   ```
+
+3. Generate the browser bindings:
+
+   ```sh
+   wasm-bindgen --target web --out-dir examples/web/pkg target/wasm32-unknown-unknown/release/examples/simple.wasm
+   ```
+
+4. Serve `examples/web` with any static server, for example:
+
+   ```sh
+   python3 -m http.server -d examples/web 8000
+   ```
+
+   Open `http://localhost:8000` in a WebGPU-capable browser. WebGPU requires a secure context, such as localhost or HTTPS.
 
 <!-- ROADMAP -->
 ## Roadmap

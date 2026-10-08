@@ -26,13 +26,25 @@ impl FontStore {
         cache_preset: &str
     ) -> Result<CacheKey, LoadingError>{
 
+        let data = std::fs::read(font_file_path).or(Err(LoadingError::FileNotFound))?;
+        self.load_from_bytes(device, queue, &data, cache_preset)
+    }
+
+    /// Load a TTF font from memory and cache the glyphs in `cache_preset`.
+    pub fn load_from_bytes(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        data: &[u8],
+        cache_preset: &str
+    ) -> Result<CacheKey, LoadingError> {
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
 
-        let font = Font::from_file(device, &mut encoder, queue, font_file_path, 0, cache_preset, &mut self.atlas)?;
+        let font = Font::from_bytes(device, &mut encoder, queue, data.to_vec(), 0, cache_preset, &mut self.atlas)?;
 
         queue.submit(Some(encoder.finish()));
 
-        let cache_key = font.key.clone();
+        let cache_key = font.key;
 
         self.cache.insert(cache_key, font);
 
