@@ -1,17 +1,24 @@
 #![warn(missing_docs)]
-//! Render scalable TrueType outlines with wgpu on native platforms and WebGPU.
+//! Render scalable font outlines with wgpu on native platforms and WebGPU.
 //!
 //! [`FontStore`] loads a font and writes the selected glyph outlines into a float
 //! atlas. [`TypeWriter`] shapes Latin text into paragraphs containing glyph IDs
 //! and pixel advances. [`TextRenderer`] prepares glyph instances and draws them
 //! with shader-computed coverage, without rasterizing glyphs on the CPU.
-//! Only TrueType (quadratic) outlines are supported correctly; CFF fonts load but render incorrectly.
+//! Cubic outlines are approximated by quadratics within 0.25 font units, with a
+//! depth cap of 10 for pathological inputs that may exceed this tolerance.
+//! CFF2 outlines can be loaded and converted. Variable fonts use their default
+//! variation instance; the loading API does not select variation axis values.
+//! Contours are explicitly closed. Glyphs with negative total signed area in
+//! y-down coordinates have all contours reversed to match the shader's winding.
+//! CFF1 (.otf with a CFF table) uses the same path but has no fixture and is
+//! untested. Overlapping contours (common in variable fonts) and self-intersections
+//! may render as holes because the shader requires an exact winding count.
 //!
 //! Screen coordinates are physical pixels, with the origin at the top left,
 //! x increasing rightward and y downward. Font sizes are pixels per em. Outline
-//! coordinates remain in font units until drawing. Currently the renderer uses
-//! the paragraph's x coordinate for its vertical anchor; equal x/y positions
-//! avoid this limitation. Shaping retains only the first glyph of each cluster,
+//! coordinates remain in font units until drawing. Paragraph positions anchor
+//! both x and y. Shaping retains only the first glyph of each cluster,
 //! and glyphs absent from the cache preset are skipped during drawing.
 //!
 //! Load all required outlines before constructing the renderer: its atlas bind
@@ -62,3 +69,4 @@ pub use renderer::TextRenderer;
 pub use store::FontStore;
 pub use loader::LoadingError;
 pub use typewriter::TypeWriter;
+pub use typewriter::Paragraph;

@@ -53,7 +53,7 @@
 
 [![Product Name Screen Shot][product-screenshot]](https://example.com)
 
-Render glyphs by extracting their outlines from TTF files and draw them directly from GPU. No signed distance field cache of any sort. This is based on Eric Lengyel's Slug algorithm.
+Render glyphs by extracting their outlines from TrueType or OpenType (CFF/CFF2) files and draw them directly from GPU. No signed distance field cache of any sort. This is based on Eric Lengyel's Slug algorithm.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -62,7 +62,7 @@ Render glyphs by extracting their outlines from TTF files and draw them directly
 ### Built With
 
 * Swash for text shaping - https://github.com/dfrg/swash
-* TTF Parser to read TTF files - https://github.com/RazrFalcon/ttf-parser
+* TTF Parser to read TrueType and OpenType files - https://github.com/RazrFalcon/ttf-parser
 * WGPU 30.0.1 as graphic API - https://wgpu.rs/
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
@@ -185,7 +185,7 @@ REQUIRE_GPU=1 cargo test --offline
 ```
 
 A software adapter such as Mesa lavapipe is sufficient. GPU tests are disabled on
-wasm32; tests marked `#[ignore = "bug: ..."]` remain ignored in either mode.
+wasm32. No tests are marked ignored.
 
 <!-- ROADMAP -->
 ## Roadmap

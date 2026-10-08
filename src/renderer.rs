@@ -250,7 +250,7 @@ impl TextRenderer {
 
     /// Replace prepared instances with the supplied shaped runs.
     /// Uncached glyphs are skipped but their pixel advances are preserved.
-    /// Positions are pixels (x right, y down); currently x also anchors y.
+    /// Positions are pixels (x right, y down), anchored at paragraph.position.
     ///
     /// # Panics
     /// Panics if a paragraph's font key is absent from `store`. The store and
@@ -269,7 +269,7 @@ impl TextRenderer {
 
             paragraph.glyphs.iter().for_each(|(glyph_id, left)| {
                 if let Some(glyph) = font.glyph_cache.get(glyph_id) {
-                    let glyph_y = paragraph.position[0] + (glyph.y_offset as f32 / units_per_em * paragraph.size as f32) + (f32::abs(glyph.descent as f32) / units_per_em * paragraph.size as f32);
+                    let glyph_y = paragraph.position[1] + (glyph.y_offset as f32 / units_per_em * paragraph.size as f32) + (f32::abs(glyph.descent as f32) / units_per_em * paragraph.size as f32);
 
                     let size = [
                         (glyph.bbox.width() as f32 * paragraph.size as f32 / units_per_em),
