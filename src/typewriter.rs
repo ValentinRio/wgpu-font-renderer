@@ -10,7 +10,6 @@ pub struct Paragraph {
     /// Glyph IDs paired with horizontal advances in pixels, in shaping order.
     pub glyphs: Vec<(GlyphId, f32)>,
     /// Top-left text anchor in pixels, x rightward and y downward.
-    /// The current renderer incorrectly uses x for the vertical anchor as well.
     pub position: [f32; 2],
     /// Sum of horizontal advances in pixels, including glyphs without outlines.
     pub width: f32,
