@@ -27,6 +27,12 @@ struct State {
 
 impl State {
     async fn new(window: Arc<Window>) -> Self {
+        #[cfg(target_arch = "wasm32")]
+        assert!(
+            web_sys::window().unwrap().is_secure_context(),
+            "WebGPU needs a secure context; open the page via http://localhost or HTTPS. A plain-HTTP LAN IP will not expose navigator.gpu."
+        );
+
         let instance = Instance::new(InstanceDescriptor {
             #[cfg(target_arch = "wasm32")]
             backends: wgpu::Backends::BROWSER_WEBGPU,
@@ -37,6 +43,7 @@ impl State {
             .expect("Create surface");
         let adapter = instance
             .request_adapter(&RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 ..Default::default()
             })

@@ -171,7 +171,7 @@ To run the same example in a browser:
    python3 -m http.server -d examples/web 8000
    ```
 
-   Open `http://localhost:8000` in a WebGPU-capable browser. WebGPU requires a secure context, such as localhost or HTTPS.
+   Open `http://localhost:8000` in a WebGPU-capable browser. WebGPU requires a secure context, such as localhost or HTTPS. A LAN IP over plain HTTP will not expose WebGPU.
 
 <!-- ROADMAP -->
 ## Roadmap
