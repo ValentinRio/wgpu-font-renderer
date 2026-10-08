@@ -38,6 +38,7 @@
     </li>
     <li><a href="#usage">Usage</a></li>
     <li><a href="#running-the-examples">Running the examples</a></li>
+    <li><a href="#testing">Testing</a></li>
     <li><a href="#roadmap">Roadmap</a></li>
     <li><a href="#contributing">Contributing</a></li>
     <li><a href="#license">License</a></li>
@@ -172,6 +173,19 @@ To run the same example in a browser:
    ```
 
    Open `http://localhost:8000` in a WebGPU-capable browser. WebGPU requires a secure context, such as localhost or HTTPS. A LAN IP over plain HTTP will not expose WebGPU.
+
+## Testing
+
+Run `cargo test --offline`. Native GPU tests skip with a diagnostic when no adapter
+is available. Set `REQUIRE_GPU=1` to fail instead, so CI cannot silently skip GPU
+coverage:
+
+```sh
+REQUIRE_GPU=1 cargo test --offline
+```
+
+A software adapter such as Mesa lavapipe is sufficient. GPU tests are disabled on
+wasm32; tests marked `#[ignore = "bug: ..."]` remain ignored in either mode.
 
 <!-- ROADMAP -->
 ## Roadmap

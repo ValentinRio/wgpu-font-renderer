@@ -192,6 +192,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             let bx = textureSampleLevel(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 4.) / 2048., y_offset / 2048.), i32(0), 0.).x;
             let by = textureSampleLevel(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 5.) / 2048., y_offset / 2048.), i32(0), 0.).x;
 
+            // Only endpoint y-bands contribute crossing signs to the winding test.
+            // Three x samples are computed, but output coverage is grayscale from R.
+            // Central G drives nearest-curve selection and winding; B is unused.
             if ((uv.y > ay && uv.y < by) || (uv.y > by && uv.y < ay)) {
                 let snR = sign_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv - vec2(1./3., 0.));
                 let snG = sign_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv);
@@ -223,11 +226,14 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let horz_scale = .5;
     let vert_scale = .6;
 
+    // Smooth the nearest-curve distances over a size-dependent band.
     var triplet_alpha = sdf_triplet_alpha(vec3(distR, distG, distB), horz_scale, vert_scale, vgrad, 26. - 0.16 * font_size);
 
+    // Conditionally flip R for the interior winding classification.
     if sideG == -2. {
         triplet_alpha.r = 1. - triplet_alpha.r;
     }
 
+    // Always convert the resulting R value to grayscale alpha with 1 - R.
     return vec4(input.color.rgb, 1 - triplet_alpha.r);
 }

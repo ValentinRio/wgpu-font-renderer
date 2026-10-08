@@ -5,28 +5,49 @@ use swash::{CacheKey, FontRef};
 use crate::atlas::{allocation::Allocation, Atlas};
 
 #[derive(Debug)]
+/// Cached outline and placement metrics for one glyph, in font units.
 pub struct Glyph {
+    /// Eight floats per segment: three x/y pairs, then two zeros.
+    /// Lines and quadratics store start, control, end; lines use control=end.
+    /// Cubics incorrectly store control1, control2, end and drop the start, so
+    /// cubic outlines (including CFF fonts) are not supported correctly yet.
+    /// Coordinates use x rightward and y downward, flipped around `bbox.y_max`.
     pub curves: Vec<f32>,
+    /// Atlas location and float-texel count for the encoded segments.
     pub allocation: Allocation,
+    /// Original font-unit bounding box, with y increasing upward.
     pub bbox: Rect,
+    /// Nonpositive bottom extent below the baseline, in font units.
     pub descent: i16,
+    /// `ascender - max(bbox.y_min, 0) - bbox.height()`, in font units.
+    /// When `y_min < 0`, this is `ascender - y_max + y_min`; the renderer adds
+    /// `abs(descent)` back before scaling to pixels.
     pub y_offset: i16,
+    /// Bounding-box left edge in font units, used by the shader.
     pub left_side_bearing: i16,
 }
 
+/// Owned font bytes, parsed face, and selected cached outlines.
 pub struct Font {
     data: Vec<u8>,
+    /// Parsed face; metrics and outlines use font units, y upward.
     pub face: OwnedFace,
+    /// Byte offset of this face within the font data.
     pub offset: u32,
+    /// Unique swash cache key identifying this loaded face.
     pub key: CacheKey,
+    /// Outlines successfully cached for the requested characters, by glyph ID.
     pub glyph_cache: HashMap<GlyphId, Glyph>,
 }
 
 type Result<T> = std::result::Result<T, LoadingError>;
 
 #[derive(Debug)]
+/// Failure to read or parse a font. GPU errors are handled by wgpu instead.
 pub enum LoadingError {
+    /// The file could not be read, including permission and other I/O failures.
     FileNotFound,
+    /// Invalid font bytes or a face index absent from the font collection.
     InvalidFile,
 }
 
@@ -42,6 +63,10 @@ impl fmt::Display for LoadingError {
 }
 
 impl Font {
+    /// Read a font file, select a zero-based face index, and upload preset outlines.
+    /// Returns `FileNotFound` for I/O errors and `InvalidFile` for parsing failures.
+    /// Submit the encoder after loading; device, queue, and atlas must match.
+    /// GPU failures follow wgpu validation. Filesystem access is unavailable on wasm.
     pub fn from_file(
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
@@ -56,6 +81,11 @@ impl Font {
         Self::from_bytes(device, encoder, queue, data, index, cache_preset, atlas)
     }
 
+    /// Parse owned font bytes at a zero-based face index and upload preset outlines.
+    /// Returns `InvalidFile` for invalid data or an absent face. Unsupported
+    /// characters and outlines without bounding boxes are skipped. A glyph is
+    /// also silently skipped if `atlas.upload` returns `None`. Submit the encoder
+    /// afterward; device, queue, and atlas must match. GPU failures follow wgpu validation.
     pub fn from_bytes(
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
@@ -65,14 +95,7 @@ impl Font {
         cache_preset: &str,
         atlas: &mut Atlas
     ) -> Result<Font> {
-        // Create a temporary font reference for the font available in the file at `index`.
-        // This will do some basic validation, compute the necessary offset
-        // and generate a fresh cache key for us.
-        let font = FontRef::from_index(&data, index).ok_or(LoadingError::InvalidFile)?;
-        let (offset, key) = (font.offset, font.key);
-
-        // Generate struct that hold TTF face tables
-        let face = OwnedFace::from_vec(data.clone(), index as u32).or(Err(LoadingError::InvalidFile))?;
+        let (face, offset, key) = parse_font(&data, index)?;
 
         // Generate glyph cache for each glyph present in the font file
         let glyph_cache = create_glyph_cache(device, encoder, queue, &face, cache_preset, atlas);
@@ -80,14 +103,24 @@ impl Font {
         Ok(Self { data, face, offset, key, glyph_cache })
     }
 
-    // Create the transient font reference to access swash features
-    pub fn as_ref(&self) -> FontRef {
+    /// Borrow the original bytes as a swash font reference with the same cache key.
+    pub fn as_ref(&self) -> FontRef<'_> {
         FontRef {
             data: &self.data,
             offset: self.offset,
             key: self.key,
         }
     }
+}
+
+
+// Both parsers must accept the same face; keep its offset/key from swash.
+fn parse_font(data: &[u8], index: usize) -> Result<(OwnedFace, u32, CacheKey)> {
+    let font = FontRef::from_index(data, index).ok_or(LoadingError::InvalidFile)?;
+    let (offset, key) = (font.offset, font.key);
+    let face = OwnedFace::from_vec(data.to_vec(), index as u32)
+        .or(Err(LoadingError::InvalidFile))?;
+    Ok((face, offset, key))
 }
 
 
@@ -124,6 +157,8 @@ fn create_glyph_cache(
     
                 face.outline_glyph(glyph_id, &mut builder);
 
+                // Each segment occupies eight R32Float texels; padding keeps every
+                // segment aligned across atlas rows for the shader's eight-texel stride.
                 let curves_count = builder.curves.len() as u32;
     
                 let bytes = unsafe {
@@ -149,6 +184,10 @@ fn create_glyph_cache(
     glyph_cache
 }
 
+// Flip font y-up coordinates once during encoding so shader UVs can be y-down.
+// Lines are degenerate quadratics with control=end. Cubics are not supported
+// correctly yet: curve_to stores c1, c2, end, dropping the start point, and the
+// shader misinterprets those points as a quadratic. CFF fonts render incorrectly.
 struct BezierBuilder {
     last_position: [f32; 2],
     pub curves: Vec<f32>,
@@ -189,5 +228,70 @@ impl OutlineBuilder for BezierBuilder {
 
     fn close(&mut self) {
         
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roboto_bytes_produce_padded_y_down_outline() {
+        let (face, _, _) = parse_font(include_bytes!("../examples/Roboto-Regular.ttf"), 0)
+            .expect("bundled font parses");
+        let face = face.as_face_ref();
+        let id = face.glyph_index('g').unwrap();
+        let bbox = face.glyph_bounding_box(id).unwrap();
+        let height = bbox.y_max as f32;
+        let mut builder = BezierBuilder::new(height);
+        assert_eq!(face.outline_glyph(id, &mut builder), Some(bbox));
+        assert!(!builder.curves.is_empty());
+        assert_eq!(builder.curves.len() % 8, 0);
+        // All three points must be in the flipped font bounding box; padding is zero.
+        assert!(builder.curves.as_chunks::<8>().0.iter().all(|segment| {
+            segment[6..] == [0., 0.]
+                && segment[..6].as_chunks::<2>().0.iter().all(|p| {
+                    p[0] >= bbox.x_min as f32
+                        && p[0] <= bbox.x_max as f32
+                        && p[1] >= 0.
+                        && p[1] <= height - bbox.y_min as f32
+                })
+        }));
+        assert!(builder
+            .curves
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .any(|s| s[2..4] != s[4..6]));
+    }
+
+    #[test]
+    fn invalid_bytes_and_missing_face_return_loading_error() {
+        for bytes in [
+            &[][..],
+            &b"not a font"[..],
+            &include_bytes!("../examples/Roboto-Regular.ttf")[..32],
+        ] {
+            assert!(matches!(
+                parse_font(bytes, 0),
+                Err(LoadingError::InvalidFile)
+            ));
+        }
+        assert!(matches!(
+            parse_font(include_bytes!("../examples/Roboto-Regular.ttf"), 1),
+            Err(LoadingError::InvalidFile)
+        ));
+    }
+
+    #[test]
+    fn line_and_quadratic_encoding_preserves_endpoints() {
+        let mut builder = BezierBuilder::new(20.);
+        builder.move_to(1., 2.);
+        builder.line_to(3., 4.);
+        builder.quad_to(5., 6., 7., 8.);
+        assert_eq!(
+            builder.curves,
+            [1., 18., 3., 16., 3., 16., 0., 0., 3., 16., 5., 14., 7., 12., 0., 0.]
+        );
     }
 }

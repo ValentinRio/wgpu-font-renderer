@@ -2,24 +2,14 @@
 
 use wgpu_font_renderer::{FontStore, TextRenderer};
 
+mod common;
+
 #[test]
 fn shader_pipeline_validates() {
+    let Some((device, _queue, _config)) = common::gpu() else {
+        return;
+    };
     pollster::block_on(async {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let Ok(adapter) = instance
-            .request_adapter(&wgpu::RequestAdapterOptions::default())
-            .await
-        else {
-            eprintln!("Skipping pipeline validation: no GPU adapter available");
-            return;
-        };
-        let (device, _queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                required_limits: wgpu::Limits::downlevel_defaults(),
-                ..Default::default()
-            })
-            .await
-            .expect("Request device");
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         for format in [
             wgpu::TextureFormat::Bgra8UnormSrgb,
