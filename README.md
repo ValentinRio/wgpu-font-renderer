@@ -190,10 +190,13 @@ wasm32. No tests are marked ignored.
 <!-- ROADMAP -->
 ## Roadmap
 
-- [ ] Separate glyph outlines into bands
-- [ ] Sort curves inside each band
-- [ ] Optimize data-layout
-- [ ] Add Anti-aliasing
+- [ ] Separate glyph outlines into bands, so each pixel only tests the curves that can cross it
+- [ ] Sort curves inside each band, so the shader can stop early (depends on bands)
+- [ ] Optimize the curve data layout: fetch each curve in one or two texel loads (RGBA32F or a storage buffer) instead of six sampled R32F reads, and drop the hardcoded 2048 atlas width
+- [ ] Subpixel (LCD) anti-aliasing: the R, G and B coverage samples are computed, but only R reaches the output (grayscale anti-aliasing already works)
+- [ ] Handle overlapping contours, which currently render as holes because the winding test expects exactly one crossing pair
+- [ ] Add a CFF1 (`.otf`) test font; only CFF2 is covered today
+- [ ] Let callers select variable font axes; only the default instance renders
 
 See the [open issues](https://github.com/ValentinRio/wgpu-font-renderer/issues) for a full list of proposed features (and known issues).
 
