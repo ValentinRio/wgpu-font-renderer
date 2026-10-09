@@ -200,8 +200,8 @@ fn create_glyph_cache(
 }
 
 // Eight-float headers/descriptors keep duplicated segments aligned at atlas rows.
-// Header: min y, height, count. Descriptors: distance offset/length, hazard
-// offset/length, winding offset/length. Distance padding: original index, x key.
+// Header: min y, height, count. Descriptors: distance offset/length, two unused
+// slots, winding offset/length. Distance padding: original index, x key.
 const BAND_MARGIN: f32 = 64.;
 const MAX_BANDS: usize = 16;
 // At |coordinates| <= 4096, even an 8192-unit subtraction has f32 ULP
@@ -244,31 +244,13 @@ fn build_bands(curves: &[f32]) -> Vec<f32> {
             }
             let mut record = *s;
             record[6] = index as f32;
-            let cross = (s[4] - s[0]) * (s[3] - s[1]) - (s[2] - s[0]) * (s[5] - s[1]);
-            // Safety-only collinear keys bypass x-based exits at a speed cost.
-            record[7] = if cross.abs() < 0.001 {
-                -1e20
-            } else {
-                s[0].min(s[2]).min(s[4])
-            };
+            record[7] = s[0].min(s[2]).min(s[4]);
             Some(record)
         }).collect();
         distance.sort_by(|a, b| a[7].total_cmp(&b[7]).then(a[6].total_cmp(&b[6])));
         data.extend(distance.into_iter().flatten());
         data[8 + band * 8] = start as f32;
         data[9 + band * 8] = (data.len() - start) as f32;
-        // Safety-only hazard records store A/control for extension checks, costing speed.
-        let hazard_start = data.len();
-        for s in segments {
-            let low_y = s[1].min(s[3]).min(s[5]);
-            let high_y = s[1].max(s[3]).max(s[5]);
-            let cross = (s[4] - s[0]) * (s[3] - s[1]) - (s[2] - s[0]) * (s[5] - s[1]);
-            if (low_y > high || high_y < low) && cross.abs() < 0.001 {
-                data.extend_from_slice(&[s[0], s[1], s[2], s[3], 0., 0., 0., 0.]);
-            }
-        }
-        data[10 + band * 8] = hazard_start as f32;
-        data[11 + band * 8] = (data.len() - hazard_start) as f32;
         let winding_start = data.len();
         for s in segments {
             let low_y = s[1].min(s[3]).min(s[5]);
@@ -477,6 +459,7 @@ mod tests {
             assert_eq!(&data[winding_start..winding_start + winding_len], expected);
             assert_eq!(winding_start % 8, 0);
             assert_eq!(start % 8, 0);
+            assert_eq!(&data[10 + band * 8..12 + band * 8], &[0., 0.]);
             assert!(len < curves.len(), "bands must cull curves, including lines");
         }
         let empty = build_bands(&[]);
@@ -491,7 +474,7 @@ mod tests {
         let start = single[8] as usize;
         assert_eq!(&single[start..start + 6], &curves[..6]);
         assert_eq!(single[start + 6], 0.);
-        assert_eq!(single[start + 7], -1e20);
+        assert_eq!(single[start + 7], 1.);
         let winding_start = single[12] as usize;
         assert_eq!(&single[winding_start..winding_start + 8], &curves[..8]);
     }
@@ -511,17 +494,91 @@ mod tests {
         let len = data[9] as usize;
         assert_eq!(len, curves.len());
         let records = data[start..start + len].as_chunks::<8>().0;
-        for (record, id) in records.iter().zip([2, 1, 3, 0]) {
+        for (record, id) in records.iter().zip([1, 3, 0, 2]) {
             assert_eq!(record[..6], segments[id][..6]);
             assert_eq!(record[6], id as f32);
         }
         assert_eq!(
             records.iter().map(|s| s[7]).collect::<Vec<_>>(),
-            [-1e20, -5., -5., 30.]
+            [-5., -5., 30., 100.]
         );
         let winding_start = data[12] as usize;
         assert_eq!(data[13] as usize, curves.len());
         assert_eq!(&data[winding_start..winding_start + curves.len()], curves);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn straight_edge_and_extensions_use_bands_and_match_full_list() {
+        use crate::atlas_tests::{common, probe::probe_pixels};
+        let Some((device, queue, config)) = common::gpu() else {
+            return;
+        };
+        let mut atlas = Atlas::new(&device, &config);
+        let mut curves = Vec::<f32>::new();
+        let contour = [[0., 0.], [128., 128.], [128., 512.], [0., 384.], [0., 0.]];
+        for edge in contour.windows(2) {
+            curves.extend_from_slice(&[
+                edge[0][0], edge[0][1],
+                (edge[0][0] + edge[1][0]) / 2., (edge[0][1] + edge[1][1]) / 2.,
+                edge[1][0], edge[1][1], 0., 0.,
+            ]);
+        }
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let allocation = atlas.upload(
+            curves.len() as u32, bytemuck::cast_slice(&curves), &device, &mut encoder, &queue,
+        ).unwrap();
+        let data = build_bands(&curves);
+        let bands = atlas.upload_bands(
+            data.len() as u32, bytemuck::cast_slice(&data), &device, &mut encoder, &queue,
+        ).unwrap();
+        queue.submit(Some(encoder.finish()));
+        let [x, y] = allocation.position();
+        let [bx, by] = bands.position();
+        let shader = include_str!("shader.wgsl")
+            .replace("@fragment\nfn fs_main", "fn coverage")
+            .replace("fn coverage(input: VertexOutput) -> @location(0) vec4<f32>",
+                "fn coverage(input: VertexOutput) -> vec4<f32>");
+        // The first sample is exactly on the diagonal edge. The other two
+        // are on its extension; the last lies beyond its band's margin.
+        for [px, py] in [[64., 64.], [160., 160.], [256., 256.]] {
+            let source = format!(r#"{shader}
+@vertex
+fn probe_vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {{
+    let p = array(vec2(-1., -1.), vec2(3., -1.), vec2(-1., 3.));
+    return vec4(p[index], 0., 1.);
+}}
+@fragment
+fn probe_fragment() -> @location(0) vec4<f32> {{
+    var input: VertexOutput;
+    input.font_size = 400.;
+    input.uv = vec2({px:?}, {py:?});
+    input.size = vec2(400., 400.);
+    input.units_per_em = 1.;
+    input.atlas_pos = vec2({x}., {y}.);
+    input.atlas_size = {count};
+    input.layer = {layer}.;
+    input.color = vec4(0., 0., 0., 1.);
+    input.bands = vec3({bx}., {by}., {band_layer}.);
+    return coverage(input);
+}}
+"#, count = allocation.size(), layer = allocation.layer(), band_layer = bands.layer());
+            let debug = source
+                .replace("    var nearest =", "    var probe_used_band = false;\n    var nearest =")
+                .replace("nearest = band_curves(uv, start, curve_count, winding_start, winding_count, layer, window);",
+                    "nearest = band_curves(uv, start, curve_count, winding_start, winding_count, layer, window);\n            probe_used_band = nearest.w != FULL_LIST_REQUIRED;")
+                .replace("return vec4(input.color.rgb, 1 - triplet_alpha.r);",
+                    "return vec4(select(0., 1., probe_used_band), 0., 0., 1.);");
+            let pixels = probe_pixels(&device, &queue, atlas.view(), &debug);
+            assert!(pixels.as_chunks::<4>().0.iter().all(|p| p[0] == 255),
+                "straight edge/extension at [{px}, {py}] must use bands");
+            let full = source.replace("if window <= BAND_MARGIN", "if false && window <= BAND_MARGIN");
+            assert_eq!(
+                probe_pixels(&device, &queue, atlas.view(), &source),
+                probe_pixels(&device, &queue, atlas.view(), &full),
+                "straight edge/extension at [{px}, {py}] must match the full list",
+            );
+        }
     }
 
     #[test]
