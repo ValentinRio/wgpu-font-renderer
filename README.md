@@ -58,6 +58,8 @@ Render glyphs by extracting their outlines from TrueType or OpenType (CFF/CFF2) 
 
 Glyphs use up to 16 horizontal bands with a 64-font-unit margin on each side. Each band stores curves whose endpoint/control-point y-extent overlaps it, including straight edges. Pixels use their band when the AA window fits the margin (integer font sizes 0–557), otherwise the unchanged flat loop. Legacy row-crossing/later-layer lists and exact zero-distance or collinear-extension hits also use the full loop to keep pixels unchanged.
 
+Each band has an original-order winding list overlapping its core and a distance list overlapping the margin. Distance curves sort by minimum hull x, with collinear curves first to preserve extension hits. The shader rejects distant triangle hulls and stops when the remaining x keys are beyond the AA window or current nearest distance; original indices preserve exact distance ties.
+
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 
@@ -311,7 +313,7 @@ other on that setup. Real GPU performance conclusions require a real GPU.
 ## Roadmap
 
 - [x] Separate glyph outlines into bands, so each pixel only tests the curves that can cross it
-- [ ] Sort curves inside each band, so the shader can stop early (depends on bands)
+- [x] Sort curves inside each band, so the shader can stop early (depends on bands)
 - [ ] Optimize the curve data layout: fetch each curve in one or two texel loads (RGBA32F or a storage buffer) instead of six sampled R32F reads, and drop the hardcoded 2048 atlas width
 - [ ] Subpixel (LCD) anti-aliasing: the R, G and B coverage samples are computed, but only R reaches the output (grayscale anti-aliasing already works)
 - [ ] Handle overlapping contours, which currently render as holes because the winding test expects exactly one crossing pair

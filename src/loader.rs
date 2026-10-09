@@ -200,7 +200,8 @@ fn create_glyph_cache(
 }
 
 // Eight-float headers/descriptors keep duplicated segments aligned at atlas rows.
-// Header: min y, height, count. Descriptors: curve offset/length, extension offset/length.
+// Header: min y, height, count. Descriptors: distance offset/length, hazard
+// offset/length, winding offset/length. Distance padding: original index, x key.
 const BAND_MARGIN: f32 = 64.;
 const MAX_BANDS: usize = 16;
 
@@ -222,16 +223,31 @@ fn build_bands(curves: &[f32]) -> Vec<f32> {
     let mut data = vec![0.; 8 + count * 8];
     data[..3].copy_from_slice(&[min_y, height, count as f32]);
     for band in 0..count {
-        let low = min_y + band as f32 * height - BAND_MARGIN;
-        let high = min_y + (band + 1) as f32 * height + BAND_MARGIN;
+        let core_low = min_y + band as f32 * height;
+        let core_high = min_y + (band + 1) as f32 * height;
+        let low = core_low - BAND_MARGIN;
+        let high = core_high + BAND_MARGIN;
         let start = data.len();
-        for s in segments {
+        let mut distance: Vec<_> = segments.iter().enumerate().filter_map(|(index, s)| {
             let low_y = s[1].min(s[3]).min(s[5]);
             let high_y = s[1].max(s[3]).max(s[5]);
-            if low_y <= high && high_y >= low {
-                data.extend_from_slice(s);
+            if low_y > high || high_y < low {
+                return None;
             }
-        }
+            let mut record = *s;
+            record[6] = index as f32;
+            let cross = (s[4] - s[0]) * (s[3] - s[1]) - (s[2] - s[0]) * (s[5] - s[1]);
+            // Collinear signed distances can vanish on infinite extensions.
+            // Visit them before any x-based exit so those hits still fall back.
+            record[7] = if cross.abs() < 0.001 {
+                -1e20
+            } else {
+                s[0].min(s[2]).min(s[4])
+            };
+            Some(record)
+        }).collect();
+        distance.sort_by(|a, b| a[7].total_cmp(&b[7]).then(a[6].total_cmp(&b[6])));
+        data.extend(distance.into_iter().flatten());
         data[8 + band * 8] = start as f32;
         data[9 + band * 8] = (data.len() - start) as f32;
         // Omitted collinear curves can return a zero signed distance on their
@@ -248,6 +264,16 @@ fn build_bands(curves: &[f32]) -> Vec<f32> {
         }
         data[10 + band * 8] = hazard_start as f32;
         data[11 + band * 8] = (data.len() - hazard_start) as f32;
+        let winding_start = data.len();
+        for s in segments {
+            let low_y = s[1].min(s[3]).min(s[5]);
+            let high_y = s[1].max(s[3]).max(s[5]);
+            if low_y <= core_high && high_y >= core_low {
+                data.extend_from_slice(s);
+            }
+        }
+        data[12 + band * 8] = winding_start as f32;
+        data[13 + band * 8] = (data.len() - winding_start) as f32;
     }
     data
 }
@@ -426,20 +452,71 @@ mod tests {
         let expected: [&[usize]; 8] = [
             &[0, 1], &[0, 1], &[1], &[1], &[], &[], &[2], &[2],
         ];
+        let winding_expected: [&[usize]; 8] = [
+            &[0, 1], &[1], &[1], &[], &[], &[], &[], &[2],
+        ];
         for (band, ids) in expected.iter().enumerate() {
             let start = data[8 + band * 8] as usize;
             let len = data[9 + band * 8] as usize;
-            let expected: Vec<_> = ids.iter().flat_map(|&id| segments[id]).collect();
-            assert_eq!(&data[start..start + len], expected);
+            let records = data[start..start + len].as_chunks::<8>().0;
+            assert_eq!(records.len(), ids.len());
+            for (record, &id) in records.iter().zip(*ids) {
+                assert_eq!(&record[..6], &segments[id][..6]);
+                assert_eq!(record[6], id as f32);
+            }
+            assert!(records.windows(2).all(|pair| pair[0][7] <= pair[1][7]));
+            let winding_start = data[12 + band * 8] as usize;
+            let winding_len = data[13 + band * 8] as usize;
+            let expected: Vec<_> = winding_expected[band].iter()
+                .flat_map(|&id| segments[id]).collect();
+            assert_eq!(&data[winding_start..winding_start + winding_len], expected);
+            assert_eq!(winding_start % 8, 0);
             assert_eq!(start % 8, 0);
             assert!(len < curves.len(), "bands must cull curves, including lines");
         }
         let empty = build_bands(&[]);
         assert_eq!(&empty[..3], &[0., 1., 1.]);
         assert_eq!(empty[9], 0.);
+        assert_eq!(empty[11], 0.);
+        assert_eq!(empty[13], 0.);
         let single = build_bands(&curves[..8]);
         assert_eq!(single[2], 1.);
         assert_eq!(single[9], 8.);
+        assert_eq!(single[13], 8.);
+        let start = single[8] as usize;
+        assert_eq!(&single[start..start + 6], &curves[..6]);
+        assert_eq!(single[start + 6], 0.);
+        assert_eq!(single[start + 7], -1e20);
+        let winding_start = single[12] as usize;
+        assert_eq!(&single[winding_start..winding_start + 8], &curves[..8]);
+    }
+
+    #[test]
+    fn distance_bands_sort_hull_x_and_preserve_original_indices() {
+        let segments = [
+            [30., 0., 40., 24., 50., 64., 0., 0.],
+            [10., 0., -5., 32., 20., 64., 0., 0.],
+            [100., 0., 100., 64., 100., 64., 0., 0.],
+            [10., 0., -5., 32., 20., 64., 0., 0.],
+        ];
+        let curves: Vec<_> = segments.into_iter().flatten().collect();
+        let data = build_bands(&curves);
+        assert_eq!(data[2], 1.);
+        let start = data[8] as usize;
+        let len = data[9] as usize;
+        assert_eq!(len, curves.len());
+        let records = data[start..start + len].as_chunks::<8>().0;
+        for (record, id) in records.iter().zip([2, 1, 3, 0]) {
+            assert_eq!(record[..6], segments[id][..6]);
+            assert_eq!(record[6], id as f32);
+        }
+        assert_eq!(
+            records.iter().map(|s| s[7]).collect::<Vec<_>>(),
+            [-1e20, -5., -5., 30.]
+        );
+        let winding_start = data[12] as usize;
+        assert_eq!(data[13] as usize, curves.len());
+        assert_eq!(&data[winding_start..winding_start + curves.len()], curves);
     }
 
     #[test]
