@@ -209,20 +209,30 @@ pub(crate) mod native {
     }
 
     fn check_compatible(baseline: &Value, current: &Value) -> Result<()> {
+        let legacy_timestamp_source = if baseline["clock"] == "gpu_timestamp" {
+            json!("pass")
+        } else {
+            Value::Null
+        };
         for key in [
             "schema",
             "adapter",
             "clock",
+            "timestamp_source",
             "target",
             "statistic",
             "lp_num_threads",
             "cpu_cores",
             "wgpu_version",
         ] {
-            if baseline.get(key).is_none() || baseline[key] != current[key] {
+            let old = baseline
+                .get(key)
+                .or_else(|| (key == "timestamp_source").then_some(&legacy_timestamp_source));
+            if old.is_none_or(|value| *value != current[key]) {
                 return Err(format!(
                     "refusing comparison: {key} differs (baseline {}, current {})",
-                    baseline[key], current[key]
+                    old.unwrap_or(&Value::Null),
+                    current[key]
                 )
                 .into());
             }
@@ -395,7 +405,18 @@ pub(crate) mod native {
         let adapter =
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
         let info = adapter.get_info();
-        let features = adapter.features() & wgpu::Features::TIMESTAMP_QUERY;
+        let mut features = adapter.features() & wgpu::Features::TIMESTAMP_QUERY;
+        if !features.is_empty() {
+            features |= adapter.features() & wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+        }
+        let encoder_timestamps = features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
+        let timestamp_source = if features.is_empty() {
+            None
+        } else if encoder_timestamps {
+            Some("encoder")
+        } else {
+            Some("pass")
+        };
         let clock = if features.is_empty() {
             "cpu_submit_wait"
         } else {
@@ -463,13 +484,14 @@ pub(crate) mod native {
                 .ok_or("wgpu missing from Cargo.lock")?,
             "adapter": { "name": info.name, "backend": format!("{:?}", info.backend),
                 "driver": info.driver, "driver_info": info.driver_info, "vendor": info.vendor, "device": info.device },
-            "clock": clock, "target": [WIDTH, HEIGHT, "Rgba8UnormSrgb"],
+            "clock": clock, "timestamp_source": timestamp_source,
+            "target": [WIDTH, HEIGHT, "Rgba8UnormSrgb"],
             "git_rev": std::process::Command::new("git").args(["rev-parse", "HEAD"])
                 .current_dir(env!("CARGO_MANIFEST_DIR")).output().ok()
                 .filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()),
             "frames_per_round": frames, "warmup_frames": warmup, "rounds": rounds, "scenes": []
         });
-        // Fail before rendering if a baseline uses another adapter or clock.
+        // Fail before rendering if a baseline uses another adapter, clock or timestamp source.
         if let Some(old) = &baseline {
             check_compatible(old, &report)?;
         }
@@ -477,8 +499,8 @@ pub(crate) mod native {
             check_compatible(old, &report)?;
         }
         let mut images = HashMap::new();
-        println!("Adapter: {} ({:?}), driver: {} {}\nClock: {clock}; {WIDTH}x{HEIGHT} sRGB; warmup={warmup}, frames/round={frames}, rounds={rounds}; statistic=median of round p25; LP_NUM_THREADS={:?}, CPU cores={}\nMinor output limits: ≤{pixel_limit} differing pixels, max channel Δ ≤{channel_limit}",
-            info.name, info.backend, info.driver, info.driver_info, report["lp_num_threads"], report["cpu_cores"]);
+        println!("Adapter: {} ({:?}), driver: {} {}\nClock: {clock}; timestamp_source={}; {WIDTH}x{HEIGHT} sRGB; warmup={warmup}, frames/round={frames}, rounds={rounds}; statistic=median of round p25; LP_NUM_THREADS={:?}, CPU cores={}\nMinor output limits: ≤{pixel_limit} differing pixels, max channel Δ ≤{channel_limit}",
+            info.name, info.backend, info.driver, info.driver_info, timestamp_source.unwrap_or("none"), report["lp_num_threads"], report["cpu_cores"]);
         let selected: Vec<_> = SCENES
             .into_iter()
             .filter(|name| filter.as_ref().is_none_or(|f| f == name))
@@ -547,6 +569,9 @@ pub(crate) mod native {
                 let mut samples = Vec::with_capacity(frames);
                 for frame in 0..warmup.checked_add(frames).ok_or("frame count overflow")? {
                     let mut encoder = device.create_command_encoder(&Default::default());
+                    if let Some(queries) = timestamps.as_ref().filter(|_| encoder_timestamps) {
+                        encoder.write_timestamp(queries, 0);
+                    }
                     {
                         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -558,18 +583,22 @@ pub(crate) mod native {
                                     store: wgpu::StoreOp::Store,
                                 },
                             })],
-                            timestamp_writes: timestamps.as_ref().map(|query_set| {
-                                wgpu::RenderPassTimestampWrites {
+                            timestamp_writes: timestamps
+                                .as_ref()
+                                .filter(|_| !encoder_timestamps)
+                                .map(|query_set| wgpu::RenderPassTimestampWrites {
                                     query_set,
                                     beginning_of_pass_write_index: Some(0),
                                     end_of_pass_write_index: Some(1),
-                                }
-                            }),
+                                }),
                             ..Default::default()
                         });
                         renderer.render(&mut pass, [WIDTH, HEIGHT]);
                     }
                     if let Some(queries) = &timestamps {
+                        if encoder_timestamps {
+                            encoder.write_timestamp(queries, 1);
+                        }
                         encoder.resolve_query_set(queries, 0..2, &resolve, 0);
                         encoder.copy_buffer_to_buffer(&resolve, 0, &timing_readback, 0, 16);
                     }
@@ -584,8 +613,13 @@ pub(crate) mod native {
                         let end = u64::from_ne_bytes(data[8..16].try_into()?);
                         let period = queue.get_timestamp_period();
                         timestamp_ms(begin, end, period).map_err(|error| {
+                            let hint = if begin == 0 && end == 0 {
+                                "; driver returned no timestamps; try WGPU_BACKEND=dx12"
+                            } else {
+                                ""
+                            };
                             format!(
-                                "{error}; scene={name}, frame={frame} (zero-based), warmup={}, begin={begin}, end={end}, timestamp_period={period} ns/tick, wall_elapsed={elapsed} ms",
+                                "{error}; scene={name}, frame={frame} (zero-based), warmup={}, begin={begin}, end={end}, timestamp_period={period} ns/tick, wall_elapsed={elapsed} ms{hint}",
                                 frame < warmup
                             )
                         })?
@@ -748,6 +782,7 @@ pub(crate) mod native {
                 "rounds": (0..5).map(|_| serde_json::json!({"p25_ms": 100., "samples_ms": [100.]})).collect::<Vec<_>>()})
             };
             let metadata = serde_json::json!({"schema": 2, "adapter": {}, "clock": "gpu_timestamp",
+                "timestamp_source": "encoder",
                 "target": [], "statistic": "median_of_round_p25", "lp_num_threads": "2",
                 "cpu_cores": 2, "wgpu_version": "30.0.1", "scenes": []});
             let mut full = metadata.clone();
@@ -759,7 +794,7 @@ pub(crate) mod native {
             assert_eq!(full["scenes"][0]["name"], "small_text");
             super::merge(&mut full, &filtered, true).unwrap();
             assert_eq!(full["scenes"][1]["rounds"].as_array().unwrap().len(), 10);
-            for key in ["clock", "lp_num_threads", "cpu_cores"] {
+            for key in ["clock", "timestamp_source", "lp_num_threads", "cpu_cores"] {
                 let mut incompatible = filtered.clone();
                 incompatible[key] = serde_json::json!("different");
                 assert!(super::check_compatible(&full, &incompatible)
@@ -767,8 +802,35 @@ pub(crate) mod native {
                     .to_string()
                     .contains(key));
             }
+            let mut pass_timestamps = filtered.clone();
+            pass_timestamps["timestamp_source"] = serde_json::json!("pass");
+            assert!(super::check_compatible(&full, &pass_timestamps).is_err());
+            pass_timestamps
+                .as_object_mut()
+                .unwrap()
+                .remove("timestamp_source");
+            assert!(super::check_compatible(&pass_timestamps, &full).is_err());
             filtered["scenes"][0]["checksum"] = serde_json::json!("changed");
             assert!(super::merge(&mut full, &filtered, true).is_err());
+        }
+
+        #[test]
+        fn legacy_timestamp_sources_match_pass_and_cpu_but_not_encoder() {
+            let mut baseline = serde_json::json!({"schema": 2, "adapter": {},
+                "clock": "gpu_timestamp", "target": [], "statistic": "median_of_round_p25",
+                "lp_num_threads": null, "cpu_cores": 2, "wgpu_version": "30.0.1"});
+            let mut current = baseline.clone();
+            current["timestamp_source"] = serde_json::json!("encoder");
+            assert!(super::check_compatible(&baseline, &current)
+                .unwrap_err()
+                .to_string()
+                .contains("timestamp_source"));
+            current["timestamp_source"] = serde_json::json!("pass");
+            super::check_compatible(&baseline, &current).unwrap();
+            baseline["clock"] = serde_json::json!("cpu_submit_wait");
+            current["clock"] = serde_json::json!("cpu_submit_wait");
+            current["timestamp_source"] = serde_json::Value::Null;
+            super::check_compatible(&baseline, &current).unwrap();
         }
 
         #[test]

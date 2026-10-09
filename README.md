@@ -216,7 +216,7 @@ channel below white). Curves include quadratics produced by splitting the
 Cantarell CFF2 fixture's cubic outlines.
 
 The clock is `gpu_timestamp` when the adapter supports `TIMESTAMP_QUERY`, with
-queries at render-pass boundaries. Otherwise `cpu_submit_wait` measures submission
+encoder queries when `TIMESTAMP_QUERY_INSIDE_ENCODERS` is supported, otherwise render-pass queries; the header and reports record `timestamp_source` (`encoder` or `pass`, null for CPU timing), and comparisons require it to match. Otherwise `cpu_submit_wait` measures submission
 through a blocking device poll, excluding command encoding. Loading, shaping,
 preparation and image readback are outside the measured interval. Each frame is
 submitted and completed separately. The GPU interval includes attachment clear
