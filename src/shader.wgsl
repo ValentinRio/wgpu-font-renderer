@@ -271,18 +271,10 @@ fn band_curves(uv: vec2<f32>, start: i32, count: i32, winding_start: i32, windin
         let a = vec2(atlas_float(offset, layer), atlas_float(offset + 1, layer));
         let c = vec2(atlas_float(offset + 2, layer), atlas_float(offset + 3, layer));
         let b = vec2(atlas_float(offset + 4, layer), atlas_float(offset + 5, layer));
-        // Safety-only collinear extension hits force the slower full loop.
-        if key == -1e20 && test_cross(a, c, uv) == 0. {
-            return vec4(0., 0., 0., FULL_LIST_REQUIRED);
-        }
         if hull_distance(uv, a, c, b) > reach {
             continue;
         }
         let x = abs(sd_bezier(a, c, b, uv));
-        // Safety-only zero-distance hits force the slower full loop.
-        if x == 0. {
-            return vec4(0., 0., 0., FULL_LIST_REQUIRED);
-        }
         let original_index = atlas_float(offset + 6, layer);
         if x < distG || (x == distG && original_index < best_index) {
             best_index = original_index;
@@ -312,25 +304,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let count = i32(atlas_float(header + 2, layer));
         let band = clamp(i32(floor((uv.y - min_y) / height)), 0, count - 1);
         let descriptor = header + 8 + band * 8;
-        let hazard_start = header + i32(atlas_float(descriptor + 2, layer));
-        let hazard_count = i32(atlas_float(descriptor + 3, layer));
-        // Safety-only hazard scans force the slower full loop on extension hits.
-        var extension_hit = false;
-        for (var i = 0; i < hazard_count; i += 8) {
-            let a = vec2(atlas_float(hazard_start + i, layer), atlas_float(hazard_start + i + 1, layer));
-            let b = vec2(atlas_float(hazard_start + i + 2, layer), atlas_float(hazard_start + i + 3, layer));
-            if test_cross(a, b, uv) == 0. {
-                extension_hit = true;
-                break;
-            }
-        }
-        if !extension_hit {
-            let start = header + i32(atlas_float(descriptor, layer));
-            let curve_count = i32(atlas_float(descriptor + 1, layer));
-            let winding_start = header + i32(atlas_float(descriptor + 4, layer));
-            let winding_count = i32(atlas_float(descriptor + 5, layer));
-            nearest = band_curves(uv, start, curve_count, winding_start, winding_count, layer, window);
-        }
+        let start = header + i32(atlas_float(descriptor, layer));
+        let curve_count = i32(atlas_float(descriptor + 1, layer));
+        let winding_start = header + i32(atlas_float(descriptor + 4, layer));
+        let winding_count = i32(atlas_float(descriptor + 5, layer));
+        nearest = band_curves(uv, start, curve_count, winding_start, winding_count, layer, window);
     }
     if nearest.w == FULL_LIST_REQUIRED {
         nearest = full_list(uv, input);

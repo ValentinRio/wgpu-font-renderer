@@ -56,9 +56,9 @@
 
 Render glyphs by extracting their outlines from TrueType or OpenType (CFF/CFF2) files and draw them directly from GPU. No signed distance field cache of any sort. This is based on Eric Lengyel's Slug algorithm.
 
-Glyphs use up to 16 horizontal bands with a 64-font-unit margin on each side. Each band stores curves whose endpoint/control-point y-extent overlaps it, including straight edges. Pixels use their band when the AA window fits the margin (integer font sizes 0–557), otherwise the unchanged flat loop. Legacy row-crossing/later-layer lists and exact zero-distance or collinear-extension hits also use the full loop to keep pixels unchanged.
+Glyphs use up to 16 horizontal bands with a 64-font-unit margin on each side. Each band stores curves whose endpoint/control-point y-extent overlaps it, including straight edges. Pixels use their band when the AA window fits the margin (integer font sizes 0–557), otherwise the unchanged flat loop.
 
-Each band has an original-order winding list overlapping its core and a distance list overlapping the margin. Distance curves sort by minimum hull x, with collinear curves first to preserve extension hits. The shader rejects distant triangle hulls and stops when the remaining x keys are beyond the AA window or current nearest distance; original indices preserve exact distance ties.
+Each band has an original-order winding list overlapping its core and a distance list overlapping the margin. Distance curves sort by minimum hull x. The shader rejects distant triangle hulls and stops when the remaining x keys are beyond the AA window or current nearest distance; original indices preserve exact distance ties.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
