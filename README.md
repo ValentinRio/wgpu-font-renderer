@@ -198,6 +198,8 @@ cargo bench --offline --bench shader
 BENCH_ROUNDS=7 BENCH_FRAMES=40 BENCH_WARMUP=10 cargo bench --offline --bench shader -- large_glyphs
 ```
 
+Set the `WGPU_BACKEND` environment variable to `dx12` or `vulkan` to select the backend (POSIX shells: `WGPU_BACKEND=dx12 cargo bench ...`; PowerShell: `$env:WGPU_BACKEND = "dx12"`; cmd: `set WGPU_BACKEND=dx12`). Leave it unset for wgpu's defaults. Some Vulkan drivers return zero timestamps (seen on an AMD RX 9070 XT with the proprietary driver); DX12 works there.
+
 Defaults are **5 rounds**, each with 10 discarded warm-up frames and 30 measured
 frames per scene. Override them with `BENCH_ROUNDS`, `BENCH_WARMUP` and
 `BENCH_FRAMES` (minimum 3 rounds and 10 measured frames). The scene order rotates
@@ -214,7 +216,7 @@ channel below white). Curves include quadratics produced by splitting the
 Cantarell CFF2 fixture's cubic outlines.
 
 The clock is `gpu_timestamp` when the adapter supports `TIMESTAMP_QUERY`, with
-queries at render-pass boundaries. Otherwise `cpu_submit_wait` measures submission
+encoder queries when `TIMESTAMP_QUERY_INSIDE_ENCODERS` is supported, otherwise render-pass queries; the header and reports record `timestamp_source` (`encoder` or `pass`, null for CPU timing), and comparisons require it to match. Otherwise `cpu_submit_wait` measures submission
 through a blocking device poll, excluding command encoding. Loading, shaping,
 preparation and image readback are outside the measured interval. Each frame is
 submitted and completed separately. The GPU interval includes attachment clear
