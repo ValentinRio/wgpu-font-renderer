@@ -1,3 +1,5 @@
+// Updated for exact-zero edge distances: sd_bezier returns an unsigned distance
+// with a degenerate-segment fallback, and full_list uses a first-hit flag instead of a zero sentinel.
 struct Params {
     screen_resolution: vec2<f32>,
     _pad: vec2<f32>,
@@ -125,6 +127,15 @@ fn sd_bezier(A: vec2<f32>, B: vec2<f32>, C: vec2<f32>, p: vec2<f32>) -> f32 {
     var new_B = mix(B + vec2<f32>(1e-4), B, abs(sign(B * 2. - A - C)));
     var a = new_B - A;
     var b = A - new_B * 2. + C;
+    if dot(b, b) == 0. {
+        let segment = C - A;
+        let squared_length = dot(segment, segment);
+        if squared_length == 0. {
+            return length(p - A);
+        }
+        let t = clamp(dot(p - A, segment) / squared_length, 0., 1.);
+        return length(A + segment * t - p);
+    }
     var c = a * 2.;
     var d = A - p;
     var k = vec3<f32>(3. * dot(a, b), 2. * dot(a, a) + dot(d, b), dot(d, a)) / dot(b, b);
@@ -135,7 +146,7 @@ fn sd_bezier(A: vec2<f32>, B: vec2<f32>, C: vec2<f32>, p: vec2<f32>) -> f32 {
     dis = min(dis, length(pos - p));
     pos = A + (c + b * t.z) * t.z;
     dis = min(dis, length(pos- p));
-    return dis * sign_bezier(A, B, C, p);
+    return dis;
 }
 
 fn sdf_triplet_alpha(sdf: vec3<f32>, horz_scale: f32, vert_scale: f32, vgrad: f32, doffset: f32) -> vec3<f32> {
@@ -164,6 +175,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     var distR = 0.;
     var distG = 0.;
     var distB = 0.;
+    var has_curve = false;
 
     {
         var y_offset = input.atlas_pos.y;
@@ -205,7 +217,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             }
 
             let x = abs(sd_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv));
-            if distG == 0. || x < distG {
+            if !has_curve || x < distG {
+                has_curve = true;
                 distR = abs(sd_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv - vec2(1./3., 0.)));
                 distG = x;
                 distB = abs(sd_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv + vec2(1./3., 0.)));
