@@ -454,7 +454,12 @@ pub(crate) mod native {
             "statistic": "median_of_round_p25",
             "lp_num_threads": std::env::var("LP_NUM_THREADS").ok(),
             "cpu_cores": std::thread::available_parallelism()?.get(),
-            "wgpu_version": include_str!("../Cargo.lock").split("name = \"wgpu\"\nversion = \"").nth(1).ok_or("wgpu missing from Cargo.lock")?.split('"').next(),
+            "wgpu_version": include_str!("../Cargo.lock").lines()
+                .skip_while(|line| *line != "name = \"wgpu\"").nth(1)
+                .and_then(|line| line.strip_prefix("version = \""))
+                .and_then(|version| version.split_once('"'))
+                .map(|(version, _)| version)
+                .ok_or("wgpu missing from Cargo.lock")?,
             "adapter": { "name": info.name, "backend": format!("{:?}", info.backend),
                 "driver": info.driver, "driver_info": info.driver_info, "vendor": info.vendor, "device": info.device },
             "clock": clock, "target": [WIDTH, HEIGHT, "Rgba8UnormSrgb"],
