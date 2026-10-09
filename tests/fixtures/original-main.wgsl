@@ -24,10 +24,10 @@ struct VertexOutput {
     @location(2) left_side_bearing: f32,
     @location(3) font_size: f32,
     @location(4) size: vec2<f32>,
-    @location(5) @interpolate(flat) atlas_pos: vec2<f32>,
+    @location(5) atlas_pos: vec2<f32>,
     @location(6) @interpolate(flat) atlas_size: i32,
     @location(7) units_per_em: f32,
-    @location(8) @interpolate(flat) layer: f32,
+    @location(8) layer: f32,
     @location(9) color: vec4<f32>,
 }
 
@@ -146,11 +146,6 @@ fn sdf_triplet_alpha(sdf: vec3<f32>, horz_scale: f32, vert_scale: f32, vgrad: f3
     return alpha;
 }
 
-// Linear texel addresses handle headers and curves across 2048-wide rows.
-fn atlas_float(offset: i32, layer: i32) -> f32 {
-    return textureLoad(atlas_texture, vec2<i32>(offset % 2048, offset / 2048), layer, 0).x;
-}
-
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let font_size = input.font_size;
@@ -161,6 +156,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     uv.x += input.left_side_bearing;
     uv.y = remap(uv.y, 0., 1., 0., input.size.y * input.units_per_em / font_size);
 
+    var curve_points_count = input.atlas_size;
     var sideR = 0.;
     var sideG = 0.;
     var sideB = 0.;
@@ -169,34 +165,59 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     var distG = 0.;
     var distB = 0.;
 
-    let start = i32(input.atlas_pos.y) * 2048 + i32(input.atlas_pos.x);
-    let layer = i32(input.layer);
-    for (var i = 0; i < input.atlas_size; i += 8) {
-        let offset = start + i;
-        let ax = atlas_float(offset, layer);
-        let ay = atlas_float(offset + 1, layer);
-        let az = atlas_float(offset + 2, layer);
-        let aw = atlas_float(offset + 3, layer);
-        let bx = atlas_float(offset + 4, layer);
-        let by = atlas_float(offset + 5, layer);
+    {
+        var y_offset = input.atlas_pos.y;
+        var x_offset = input.atlas_pos.x;
+        var i = 0;
+        loop {
+            if !(i < curve_points_count) {
+                break;
+            }
 
-        // Only endpoint y-bands contribute crossing signs to the winding test.
-        // Three x samples are computed, but output coverage is grayscale from R.
-        // Central G drives nearest-curve selection and winding; B is unused.
-        if ((uv.y > ay && uv.y < by) || (uv.y > by && uv.y < ay)) {
-            let snR = sign_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv - vec2(1./3., 0.));
-            let snG = sign_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv);
-            let snB = sign_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv + vec2(1./3., 0.));
-            sideR += snR;
-            sideG += snG;
-            sideB += snB;
-        }
+            var atlas_x_offset = x_offset + f32(i);
 
-        let x = abs(sd_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv));
-        if distG == 0. || x < distG {
-            distR = abs(sd_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv - vec2(1./3., 0.)));
-            distG = x;
-            distB = abs(sd_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv + vec2(1./3., 0.)));
+            var pixels_before_eol = 2048. - atlas_x_offset;
+
+            if pixels_before_eol == 0. {
+                y_offset = y_offset + 1.;
+                x_offset = 0.;
+                curve_points_count = curve_points_count - i;
+            }
+
+            // The atlas has one mip level; explicit LOD avoids derivatives in this varying loop.
+            let ax = textureSampleLevel(atlas_texture, atlas_sampler, vec2<f32>(atlas_x_offset / 2048., y_offset / 2048.), i32(0), 0.).x;
+            let ay = textureSampleLevel(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 1.) / 2048., y_offset / 2048.), i32(0), 0.).x;
+            let az = textureSampleLevel(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 2.) / 2048., y_offset / 2048.), i32(0), 0.).x;
+            let aw = textureSampleLevel(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 3.) / 2048., y_offset / 2048.), i32(0), 0.).x;
+            let bx = textureSampleLevel(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 4.) / 2048., y_offset / 2048.), i32(0), 0.).x;
+            let by = textureSampleLevel(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 5.) / 2048., y_offset / 2048.), i32(0), 0.).x;
+
+            // Only endpoint y-bands contribute crossing signs to the winding test.
+            // Three x samples are computed, but output coverage is grayscale from R.
+            // Central G drives nearest-curve selection and winding; B is unused.
+            if ((uv.y > ay && uv.y < by) || (uv.y > by && uv.y < ay)) {
+                let snR = sign_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv - vec2(1./3., 0.));
+                let snG = sign_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv);
+                let snB = sign_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv + vec2(1./3., 0.));
+                sideR += snR;
+                sideG += snG;
+                sideB += snB;
+            }
+
+            let x = abs(sd_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv));
+            if distG == 0. || x < distG {
+                distR = abs(sd_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv - vec2(1./3., 0.)));
+                distG = x;
+                distB = abs(sd_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv + vec2(1./3., 0.)));
+            }
+
+            continuing {
+                if pixels_before_eol == 0. {
+                    i = 0;
+                } else {
+                    i = i + 8;
+                }
+            }
         }
     }
 
