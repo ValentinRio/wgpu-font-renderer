@@ -7,29 +7,29 @@ use probe::{assert_ink_tiles, probe_pixels};
 
 #[test]
 fn nonzero_layer_pixels_match_layer_zero() {
-    placement_regression(2048 * 2048, 0, false);
+    placement_regression(atlas::SIZE * atlas::SIZE, 0, false);
 }
 
 #[test]
 fn row_wrapped_pixels_match_unwrapped() {
-    for prefix in [2048 - 8, 2048 - 3] {
+    for prefix in [atlas::SIZE - 8, atlas::SIZE - 4] {
         placement_regression(prefix, 0, false);
     }
 }
 
 #[test]
 fn nonzero_layer_uses_bands_at_400() {
-    placement_regression(2048 * 2048, 0, true);
+    placement_regression(atlas::SIZE * atlas::SIZE, 0, true);
 }
 
 #[test]
 fn row_wrapped_uses_bands_at_400() {
-    placement_regression(2048 - 3, 0, true);
+    placement_regression(atlas::SIZE - 4, 0, true);
 }
 
 #[test]
 fn row_wrapped_band_data_matches_unwrapped_and_uses_bands_at_400() {
-    placement_regression(0, 2048 - 3, true);
+    placement_regression(0, atlas::SIZE - 4, true);
 }
 
 fn placement_regression(prefix: u32, band_prefix: u32, check_path: bool) {
@@ -85,17 +85,17 @@ fn placement_regression(prefix: u32, band_prefix: u32, check_path: bool) {
             let glyph = &font.glyph_cache[&font.face.as_face_ref().glyph_index(c).unwrap()];
             let [x, y] = glyph.allocation.position();
             let layer = glyph.allocation.layer();
-            if padding == 2048 * 2048 {
+            if padding == atlas::SIZE * atlas::SIZE {
                 assert!(layer > 0);
             }
-            if padding > 0 && padding < 2048 {
-                assert!(x + glyph.allocation.size() > 2048);
+            if padding > 0 && padding < atlas::SIZE {
+                assert!(x + glyph.allocation.size() > atlas::SIZE);
             }
             let bands = glyph.bands.as_ref().unwrap();
             let [bx, by] = bands.position();
             if band_padding > 0 {
                 assert!(
-                    bx > 0 && bx + bands.size() > 2048,
+                    bx > 0 && bx + bands.size() > atlas::SIZE,
                     "glyph {c}: band allocation must start at a nonzero column and wrap"
                 );
             }

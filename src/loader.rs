@@ -165,8 +165,8 @@ fn create_glyph_cache(
                 // ttf-parser's CFF2 path omits close() for the final contour.
                 builder.finish();
 
-                // Each segment occupies eight R32Float texels; padding keeps every
-                // segment aligned across atlas rows for the shader's eight-texel stride.
+                // Each eight-float segment occupies two RGBA32F texels, including
+                // the original index and sort-key padding slots.
                 let curves_count = builder.curves.len() as u32;
     
                 let bytes = unsafe {
@@ -199,7 +199,7 @@ fn create_glyph_cache(
     glyph_cache
 }
 
-// Eight-float headers/descriptors keep duplicated segments aligned at atlas rows.
+// Eight-float headers/descriptors occupy two RGBA32F texels per record.
 // Header: min y, height, count. Descriptors: distance offset/length, two unused
 // slots, winding offset/length. Distance padding: original index, x key.
 const BAND_MARGIN: f32 = 64.;

@@ -1,5 +1,5 @@
 #[derive(Debug)]
-/// Append-only row-major allocator for a square texel layer.
+/// Append-only row-major allocator for a square float-slot layer.
 pub struct Allocator {
     offset: u32,
     size: u32,
@@ -7,26 +7,26 @@ pub struct Allocator {
 }
 
 #[derive(Debug)]
-/// Contiguous linear run of texels, potentially spanning several rows.
+/// Contiguous linear run of float slots, potentially spanning several rows.
 pub struct Region {
     position: [u32; 2],
     size: u32,
 }
 
 impl Region {
-    /// Start texel [x, y], origin top left, x rightward, y downward.
+    /// Start float-slot [x, y], origin top left, x rightward, y downward.
     pub fn position(&self) -> [u32; 2] {
         self.position
     }
 
-    /// Number of texels in the run.
+    /// Number of float slots in the run.
     pub fn size(&self) -> u32 {
         self.size
     }
 }
 
 impl Allocator {
-    /// Create a layer with `size` texels per side. Use a nonzero side whose
+    /// Create a layer with `size` float slots per side. Use a nonzero side whose
     /// square fits u32 and is exactly representable as f32 (as for the atlas).
     pub fn new(size: u32) -> Allocator {
         Allocator {
@@ -36,7 +36,7 @@ impl Allocator {
         }
     }
 
-    /// Reserve a contiguous run of `size` texels, or return `None` if full.
+    /// Reserve a contiguous run of `size` float slots, or return `None` if full.
     /// Failed requests leave the allocator unchanged.
     /// Panics on layer-area overflow in debug builds.
     pub fn allocate(&mut self, size: u32) -> Option<Region> {
