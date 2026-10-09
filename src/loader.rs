@@ -245,8 +245,7 @@ fn build_bands(curves: &[f32]) -> Vec<f32> {
             let mut record = *s;
             record[6] = index as f32;
             let cross = (s[4] - s[0]) * (s[3] - s[1]) - (s[2] - s[0]) * (s[5] - s[1]);
-            // Collinear signed distances can vanish on infinite extensions.
-            // Visit them before any x-based exit so those hits still fall back.
+            // Safety-only collinear keys bypass x-based exits at a speed cost.
             record[7] = if cross.abs() < 0.001 {
                 -1e20
             } else {
@@ -258,9 +257,7 @@ fn build_bands(curves: &[f32]) -> Vec<f32> {
         data.extend(distance.into_iter().flatten());
         data[8 + band * 8] = start as f32;
         data[9 + band * 8] = (data.len() - start) as f32;
-        // Omitted collinear curves can return a zero signed distance on their
-        // infinite extension. Store only A/control for a cheap sign-only check;
-        // an exact hit selects the unchanged full loop, without widening bands.
+        // Safety-only hazard records store A/control for extension checks, costing speed.
         let hazard_start = data.len();
         for s in segments {
             let low_y = s[1].min(s[3]).min(s[5]);
