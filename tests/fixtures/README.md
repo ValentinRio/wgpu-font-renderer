@@ -16,3 +16,13 @@ chaining and padded bounds. The GPU regression test renders "Hi" and requires
 ink in the expected box, a dark H stem, a white H gap, and a bounded ink count.
 Contours are closed and winding is selected from each glyph's total signed area.
 Variable fonts are loaded at their default variation instance.
+
+`full-list.wgsl` is the unchanged shader from before glyph bands. The GPU band
+regression test compares its RGBA8 output with the current shader for TrueType
+and CFF2 glyphs, including disconnected contours, row wrapping, and font sizes
+on both sides of the AA-window fallback threshold. Test-only instrumentation
+verifies the band path at size 400 and the 557/558 cutoff. A load of over 1000
+outlined characters with consecutive repeats forces band-layer growth mid-load;
+probes include glyphs near an old layer's tail and in a new layer. Every growth
+probe must pass the instrumented GPU assertion that the band path completed at
+sizes 400 and 557, so matching full-list fallbacks cannot satisfy the regression.

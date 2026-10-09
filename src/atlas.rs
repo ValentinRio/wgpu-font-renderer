@@ -16,6 +16,7 @@ pub struct Atlas {
     texture: wgpu::Texture,
     texture_view: wgpu::TextureView,
     layers: Vec<Layer>,
+    band_layers: Vec<Layer>,
     /// Storage format of the outline texture, initially R32Float.
     pub texture_format: wgpu::TextureFormat,
 }
@@ -57,6 +58,7 @@ impl Atlas {
             texture,
             texture_view,
             layers: vec![Layer::Empty],
+            band_layers: vec![Layer::Empty],
             texture_format: TextureFormat::R32Float,
         }
     }
@@ -66,18 +68,20 @@ impl Atlas {
         &self.texture_view
     }
 
-    /// Number of logical layers, including the initial empty layer.
+    /// Number of logical texture layers, including outline and band layers.
     pub fn layer_count(&self) -> usize {
-        self.layers.len()
+        (self.layers.len() * 2 - 1).max(self.band_layers.len() * 2)
     }
 
     fn allocate(&mut self, width: u32) -> Option<Allocation> {
-        allocate_layer(&mut self.layers, width)
+        let mut allocation = allocate_layer(&mut self.layers, width)?;
+        allocation.layer *= 2;
+        Some(allocation)
     }
 
     /// Reserve `size` float texels and upload their native-endian bytes.
-    /// Returns `None` if a single layer cannot hold the allocation. Growth copies
-    /// existing layers through `encoder`, which the caller must submit.
+    /// Returns `None` if a single layer cannot hold the allocation. During growth,
+    /// existing layers are copied and submitted before subsequent queue writes.
     /// Device and queue must match the atlas; layer limits cause GPU errors.
     ///
     /// # Panics
@@ -87,18 +91,31 @@ impl Atlas {
         size: u32,
         data: &[u8],
         device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
+        _encoder: &mut wgpu::CommandEncoder,
         queue: &wgpu::Queue,
     ) -> Option<Allocation> {
-        let current_size = self.layers.len();
         let allocation = self.allocate(size)?;
-
-        let new_layers = self.layers.len() - current_size;
-
-        self.grow(new_layers, device, encoder);
+        self.grow(device, queue);
 
         self.upload_allocation(&data, &allocation, queue);
 
+        Some(allocation)
+    }
+
+    /// Upload bands into odd layers, keeping flat outline positions unchanged.
+    /// Has the same byte-count and device requirements as [`Self::upload`].
+    pub fn upload_bands(
+        &mut self,
+        size: u32,
+        data: &[u8],
+        device: &wgpu::Device,
+        _encoder: &mut wgpu::CommandEncoder,
+        queue: &wgpu::Queue,
+    ) -> Option<Allocation> {
+        let mut allocation = allocate_layer(&mut self.band_layers, size)?;
+        allocation.layer = allocation.layer * 2 + 1;
+        self.grow(device, queue);
+        self.upload_allocation(data, &allocation, queue);
         Some(allocation)
     }
 
@@ -116,24 +133,18 @@ impl Atlas {
 
         // Split a linear allocation at row boundaries to keep write_texture
         // rectangles contiguous without changing the shader's linear addressing.
-        let first_line = SIZE - x;
-
-        if size < first_line {
-            blocks.push([x, y, size, size, 1]);
-        } else {
-            let nb_lines = f32::ceil((size as f32 - first_line as f32) / SIZE as f32);
-
-            let last_line = (size as f32 - first_line as f32) % SIZE as f32;
-
+        let first_line = (SIZE - x).min(size);
+        if first_line != 0 {
             blocks.push([x, y, first_line, first_line, 1]);
-
-            if nb_lines > 1. {
-                blocks.push([0, y + 1, size - first_line - last_line as u32, SIZE, nb_lines as u32]);
-            }
-
-            if last_line != 0. {
-                blocks.push([0, y + f32::max(nb_lines, 1.) as u32, last_line as u32, last_line as u32, 1]);
-            }
+        }
+        let remaining = size - first_line;
+        let full_lines = remaining / SIZE;
+        let last_line = remaining % SIZE;
+        if full_lines != 0 {
+            blocks.push([0, y + 1, full_lines * SIZE, SIZE, full_lines]);
+        }
+        if last_line != 0 {
+            blocks.push([0, y + 1 + full_lines, last_line, last_line, 1]);
         }
 
         let mut offset = 0;
@@ -168,13 +179,9 @@ impl Atlas {
         });
     }
 
-    fn grow(
-        &mut self,
-        amount: usize,
-        device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
-    ) {
-        if amount == 0 {
+    fn grow(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let old_layers = self.texture.depth_or_array_layers();
+        if self.layer_count() as u32 <= old_layers {
             return;
         }
 
@@ -183,7 +190,7 @@ impl Atlas {
             size: wgpu::Extent3d {
                 width: SIZE,
                 height: SIZE,
-                depth_or_array_layers: self.layers.len() as u32,
+                depth_or_array_layers: self.layer_count() as u32,
             },
             mip_level_count: 1,
             sample_count: 1,
@@ -195,13 +202,18 @@ impl Atlas {
             view_formats: &[TextureFormat::R32Float],
         });
 
-        let layers_to_copy = self.layers.len() - amount;
-
-        for (i, layer) in self.layers.iter_mut().take(layers_to_copy).enumerate() {
-            if layer.is_empty() {
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Atlas growth copies"),
+        });
+        for i in 0..old_layers {
+            let layer = if i % 2 == 0 {
+                self.layers.get(i as usize / 2)
+            } else {
+                self.band_layers.get(i as usize / 2)
+            };
+            if layer.is_none_or(Layer::is_empty) {
                 continue;
             }
-
             encoder.copy_texture_to_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &self.texture,
@@ -231,6 +243,9 @@ impl Atlas {
             )
         }
 
+        // Queue writes are flushed before this submission; later writes then
+        // follow the copy, so they cannot be overwritten by atlas growth.
+        queue.submit(Some(encoder.finish()));
         self.texture = new_texture;
         self.texture_view = self.texture.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2Array),

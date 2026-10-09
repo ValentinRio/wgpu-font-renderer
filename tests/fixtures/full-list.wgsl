@@ -15,7 +15,6 @@ struct VertexInput {
     @location(7) units_per_em: f32,
     @location(8) layer: i32,
     @location(9) color: vec4<f32>,
-    @location(10) bands: vec3<f32>,
 }
 
 struct VertexOutput {
@@ -30,7 +29,6 @@ struct VertexOutput {
     @location(7) units_per_em: f32,
     @location(8) layer: f32,
     @location(9) color: vec4<f32>,
-    @location(10) @interpolate(flat) bands: vec3<f32>,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -61,7 +59,6 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     output.left_side_bearing = input.left_side_bearing;
     output.units_per_em = input.units_per_em;
     output.color = input.color;
-    output.bands = input.bands;
 
     return output;
 }
@@ -84,7 +81,7 @@ fn sign_bezier(A: vec2<f32>, B: vec2<f32>, C: vec2<f32>, p: vec2<f32>) -> f32 {
     let bary = vec2<f32>(c.x * b.y - b.x * c.y, a.x * c.y - c.x * a.y) / r;
     let d = vec2<f32>(bary.y * .5, 0.) + 1. - bary.x - bary.y;
     return mix(
-        sign(d.x * d.x - d.y),
+        sign(d.x * d.x - d.y), 
         mix(
             -1.,
             1.,
@@ -149,12 +146,16 @@ fn sdf_triplet_alpha(sdf: vec3<f32>, horz_scale: f32, vert_scale: f32, vgrad: f3
     return alpha;
 }
 
-// Linear texel addresses handle headers and curves across 2048-wide rows.
-fn atlas_float(offset: i32, layer: i32) -> f32 {
-    return textureLoad(atlas_texture, vec2<i32>(offset % 2048, offset / 2048), layer, 0).x;
-}
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    let font_size = input.font_size;
 
-fn full_list(uv: vec2<f32>, input: VertexOutput) -> vec4<f32> {
+    var uv = input.uv;
+
+    uv.x = remap(uv.x, 0., 1., 0., input.size.x * input.units_per_em / font_size);
+    uv.x += input.left_side_bearing;
+    uv.y = remap(uv.y, 0., 1., 0., input.size.y * input.units_per_em / font_size);
+
     var curve_points_count = input.atlas_size;
     var sideR = 0.;
     var sideG = 0.;
@@ -220,99 +221,19 @@ fn full_list(uv: vec2<f32>, input: VertexOutput) -> vec4<f32> {
         }
     }
 
-    return vec4(distR, distG, distB, sideG);
-}
+    var vgrad = abs(dpdy(distG));
 
-const BAND_MARGIN: f32 = 64.;
-const FULL_LIST_REQUIRED: f32 = 1e20;
+    let horz_scale = .5;
+    let vert_scale = .6;
 
-// Kept separate so the full-list fallback has exactly the original curve loop.
-fn band_curves(uv: vec2<f32>, start: i32, count: i32, layer: i32) -> vec4<f32> {
-    var sideR = 0.;
-    var sideG = 0.;
-    var sideB = 0.;
-    var distR = 1e20;
-    var distG = 1e20;
-    var distB = 1e20;
-    var has_curve = false;
-    for (var i = 0; i < count; i += 8) {
-        let offset = start + i;
-        let ax = atlas_float(offset, layer);
-        let ay = atlas_float(offset + 1, layer);
-        let az = atlas_float(offset + 2, layer);
-        let aw = atlas_float(offset + 3, layer);
-        let bx = atlas_float(offset + 4, layer);
-        let by = atlas_float(offset + 5, layer);
-        // Only endpoint y-bands contribute crossing signs to the winding test.
-        // Three x samples are computed, but output coverage is grayscale from R.
-        // Central G drives nearest-curve selection and winding; B is unused.
-        if ((uv.y > ay && uv.y < by) || (uv.y > by && uv.y < ay)) {
-            let snR = sign_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv - vec2(1./3., 0.));
-            let snG = sign_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv);
-            let snB = sign_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv + vec2(1./3., 0.));
-            sideR += snR;
-            sideG += snG;
-            sideB += snB;
-        }
+    // Smooth the nearest-curve distances over a size-dependent band.
+    var triplet_alpha = sdf_triplet_alpha(vec3(distR, distG, distB), horz_scale, vert_scale, vgrad, 26. - 0.16 * font_size);
 
-        let x = abs(sd_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv));
-        if x == 0. {
-            return vec4(0., 0., 0., FULL_LIST_REQUIRED);
-        }
-        if !has_curve || x < distG {
-            has_curve = true;
-            distR = abs(sd_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv - vec2(1./3., 0.)));
-            distG = x;
-            distB = abs(sd_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv + vec2(1./3., 0.)));
-        }
-    }
-    return vec4(distR, distG, distB, sideG);
-}
-
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let font_size = input.font_size;
-    var uv = input.uv;
-    uv.x = remap(uv.x, 0., 1., 0., input.size.x * input.units_per_em / font_size);
-    uv.x += input.left_side_bearing;
-    uv.y = remap(uv.y, 0., 1., 0., input.size.y * input.units_per_em / font_size);
-
-    let window = .5 + abs(26. - 0.16 * font_size) + 1./3.;
-    // Preserve the legacy row-wrap and layer-zero sampling behavior.
-    let legacy_row = i32(input.atlas_pos.x) + input.atlas_size <= 2048;
-    var nearest = vec4(0., 0., 0., FULL_LIST_REQUIRED);
-    if window <= BAND_MARGIN && input.bands.z >= 0. && legacy_row && input.layer == 0. && input.atlas_size > 0 {
-        let header = i32(input.bands.y) * 2048 + i32(input.bands.x);
-        let layer = i32(input.bands.z);
-        let min_y = atlas_float(header, layer);
-        let height = atlas_float(header + 1, layer);
-        let count = i32(atlas_float(header + 2, layer));
-        let band = clamp(i32(floor((uv.y - min_y) / height)), 0, count - 1);
-        let descriptor = header + 8 + band * 8;
-        let hazard_start = header + i32(atlas_float(descriptor + 2, layer));
-        let hazard_count = i32(atlas_float(descriptor + 3, layer));
-        var extension_hit = false;
-        for (var i = 0; i < hazard_count; i += 8) {
-            let a = vec2(atlas_float(hazard_start + i, layer), atlas_float(hazard_start + i + 1, layer));
-            let b = vec2(atlas_float(hazard_start + i + 2, layer), atlas_float(hazard_start + i + 3, layer));
-            if test_cross(a, b, uv) == 0. {
-                extension_hit = true;
-                break;
-            }
-        }
-        if !extension_hit {
-            let start = header + i32(atlas_float(descriptor, layer));
-            let curve_count = i32(atlas_float(descriptor + 1, layer));
-            nearest = band_curves(uv, start, curve_count, layer);
-        }
-    }
-    if nearest.w == FULL_LIST_REQUIRED {
-        nearest = full_list(uv, input);
-    }
-    let vgrad = abs(dpdy(nearest.y));
-    var triplet_alpha = sdf_triplet_alpha(nearest.xyz, .5, .6, vgrad, 26. - 0.16 * font_size);
-    if nearest.w == -2. {
+    // Conditionally flip R for the interior winding classification.
+    if sideG == -2. {
         triplet_alpha.r = 1. - triplet_alpha.r;
     }
+
+    // Always convert the resulting R value to grayscale alpha with 1 - R.
     return vec4(input.color.rgb, 1 - triplet_alpha.r);
 }
