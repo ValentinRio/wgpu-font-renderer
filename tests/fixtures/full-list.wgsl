@@ -164,6 +164,14 @@ fn atlas_float(offset: i32, layer: i32) -> f32 {
     return textureLoad(atlas_texture, vec2<i32>(texel % width, texel / width), layer, 0)[offset % 4];
 }
 
+// Legacy width 26 − 0.16·s peaks in pixels at 81.25 px (13 font units). Past the peak,
+// floor it at 0.25 px, capped at the peak width so the width stays continuous for any UPEM.
+fn edge_width(font_size: f32, units_per_em: f32) -> f32 {
+    let legacy = 26. - 0.16 * font_size;
+    if font_size <= 81.25 { return legacy; }
+    return max(legacy, min(0.25 * units_per_em, 1056.) / font_size);
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let font_size = input.font_size;
@@ -221,7 +229,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let vert_scale = .6;
 
     // Smooth the nearest-curve distances over a size-dependent band.
-    var triplet_alpha = sdf_triplet_alpha(vec3(distR, distG, distB), horz_scale, vert_scale, vgrad, 26. - 0.16 * font_size);
+    var triplet_alpha = sdf_triplet_alpha(vec3(distR, distG, distB), horz_scale, vert_scale, vgrad, edge_width(font_size, input.units_per_em));
 
     // Conditionally flip R for the interior winding classification.
     if sideG == -2. {
