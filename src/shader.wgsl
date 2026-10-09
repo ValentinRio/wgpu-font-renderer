@@ -124,6 +124,7 @@ fn solve_cubic(a: f32, b: f32, c: f32) -> vec3<f32> {
     return vec3<f32>(m + m, -n - m, n - m) * sqrt(-p / 3.) + offset;
 }
 
+// Unsigned distance (>= 0) from p to evaluated points on the curve.
 fn sd_bezier(A: vec2<f32>, B: vec2<f32>, C: vec2<f32>, p: vec2<f32>) -> f32 {
     var new_B = mix(B + vec2<f32>(1e-4), B, abs(sign(B * 2. - A - C)));
     var a = new_B - A;
@@ -211,17 +212,28 @@ fn full_list(uv: vec2<f32>, input: VertexOutput) -> vec4<f32> {
 const BAND_MARGIN: f32 = 64.;
 const FULL_LIST_REQUIRED: f32 = 1e20;
 
-// Bands preserve full-list curve ordering and nearest-curve tie behavior.
-fn band_curves(uv: vec2<f32>, start: i32, count: i32, layer: i32) -> vec4<f32> {
+// Distance to the triangle hull, including degenerate line/point hulls.
+fn segment_distance(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let edge = b - a;
+    let t = clamp(dot(p - a, edge) / max(dot(edge, edge), 1e-20), 0., 1.);
+    return length(p - (a + t * edge));
+}
+
+fn hull_distance(p: vec2<f32>, a: vec2<f32>, c: vec2<f32>, b: vec2<f32>) -> f32 {
+    let signs = vec3(test_cross(a, c, p), test_cross(c, b, p), test_cross(b, a, p));
+    // A nondegenerate hull contains p when its edge signs agree.
+    if test_cross(a, c, b) != 0. && (all(signs >= vec3(0.)) || all(signs <= vec3(0.))) {
+        return 0.;
+    }
+    return min(segment_distance(p, a, c), min(segment_distance(p, c, b), segment_distance(p, b, a)));
+}
+
+fn band_curves(uv: vec2<f32>, start: i32, count: i32, winding_start: i32, winding_count: i32, layer: i32, window: f32) -> vec4<f32> {
     var sideR = 0.;
     var sideG = 0.;
     var sideB = 0.;
-    var distR = 1e20;
-    var distG = 1e20;
-    var distB = 1e20;
-    var has_curve = false;
-    for (var i = 0; i < count; i += 8) {
-        let offset = start + i;
+    for (var i = 0; i < winding_count; i += 8) {
+        let offset = winding_start + i;
         let ax = atlas_float(offset, layer);
         let ay = atlas_float(offset + 1, layer);
         let az = atlas_float(offset + 2, layer);
@@ -240,15 +252,43 @@ fn band_curves(uv: vec2<f32>, start: i32, count: i32, layer: i32) -> vec4<f32> {
             sideB += snB;
         }
 
-        let x = abs(sd_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv));
+    }
+    var distR = 1e20;
+    var distG = 1e20;
+    var distB = 1e20;
+    var best_index = 1e20;
+    // At a few thousand font units, 0.05 covers many f32 ULPs in hull
+    // projection and sd_bezier's clamped polynomial evaluation (including
+    // its 1e-4 control perturbation), so rounding cannot cull a winner.
+    const EPS: f32 = 0.05;
+    for (var i = 0; i < count; i += 8) {
+        let offset = start + i;
+        let key = atlas_float(offset + 7, layer);
+        let reach = min(distG, window) + EPS;
+        if key - uv.x > reach {
+            break;
+        }
+        let a = vec2(atlas_float(offset, layer), atlas_float(offset + 1, layer));
+        let c = vec2(atlas_float(offset + 2, layer), atlas_float(offset + 3, layer));
+        let b = vec2(atlas_float(offset + 4, layer), atlas_float(offset + 5, layer));
+        // Safety-only collinear extension hits force the slower full loop.
+        if key == -1e20 && test_cross(a, c, uv) == 0. {
+            return vec4(0., 0., 0., FULL_LIST_REQUIRED);
+        }
+        if hull_distance(uv, a, c, b) > reach {
+            continue;
+        }
+        let x = abs(sd_bezier(a, c, b, uv));
+        // Safety-only zero-distance hits force the slower full loop.
         if x == 0. {
             return vec4(0., 0., 0., FULL_LIST_REQUIRED);
         }
-        if !has_curve || x < distG {
-            has_curve = true;
-            distR = abs(sd_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv - vec2(1./3., 0.)));
+        let original_index = atlas_float(offset + 6, layer);
+        if x < distG || (x == distG && original_index < best_index) {
+            best_index = original_index;
+            distR = abs(sd_bezier(a, c, b, uv - vec2(1./3., 0.)));
             distG = x;
-            distB = abs(sd_bezier(vec2<f32>(ax, ay), vec2<f32>(az, aw), vec2<f32>(bx, by), uv + vec2(1./3., 0.)));
+            distB = abs(sd_bezier(a, c, b, uv + vec2(1./3., 0.)));
         }
     }
     return vec4(distR, distG, distB, sideG);
@@ -274,6 +314,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let descriptor = header + 8 + band * 8;
         let hazard_start = header + i32(atlas_float(descriptor + 2, layer));
         let hazard_count = i32(atlas_float(descriptor + 3, layer));
+        // Safety-only hazard scans force the slower full loop on extension hits.
         var extension_hit = false;
         for (var i = 0; i < hazard_count; i += 8) {
             let a = vec2(atlas_float(hazard_start + i, layer), atlas_float(hazard_start + i + 1, layer));
@@ -286,7 +327,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         if !extension_hit {
             let start = header + i32(atlas_float(descriptor, layer));
             let curve_count = i32(atlas_float(descriptor + 1, layer));
-            nearest = band_curves(uv, start, curve_count, layer);
+            let winding_start = header + i32(atlas_float(descriptor + 4, layer));
+            let winding_count = i32(atlas_float(descriptor + 5, layer));
+            nearest = band_curves(uv, start, curve_count, winding_start, winding_count, layer, window);
         }
     }
     if nearest.w == FULL_LIST_REQUIRED {
