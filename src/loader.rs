@@ -18,6 +18,8 @@ pub struct Glyph {
     pub curves: Vec<f32>,
     /// Atlas location and float-texel count for the encoded segments.
     pub allocation: Allocation,
+    /// Atlas band header, descriptors and duplicated curves; absent if it did not fit.
+    pub bands: Option<Allocation>,
     /// Original font-unit bounding box, with y increasing upward.
     pub bbox: Rect,
     /// Nonpositive bottom extent below the baseline, in font units.
@@ -172,9 +174,16 @@ fn create_glyph_cache(
                 };
 
                 if let Some(allocation) = atlas.upload(curves_count, bytes, device, encoder, queue) {
+                    let band_data = build_bands(&builder.curves);
+                    let bands = atlas.upload_bands(
+                        band_data.len() as u32,
+                        bytemuck::cast_slice(&band_data),
+                        device, encoder, queue,
+                    );
                     let glyph = Glyph {
                         curves: builder.curves,
                         allocation,
+                        bands,
                         bbox,
                         descent: descent,
                         y_offset: y_offset,
@@ -188,6 +197,59 @@ fn create_glyph_cache(
     }
 
     glyph_cache
+}
+
+// Eight-float headers/descriptors keep duplicated segments aligned at atlas rows.
+// Header: min y, height, count. Descriptors: curve offset/length, extension offset/length.
+const BAND_MARGIN: f32 = 64.;
+const MAX_BANDS: usize = 16;
+
+fn build_bands(curves: &[f32]) -> Vec<f32> {
+    let segments = curves.as_chunks::<8>().0;
+    let mut min_y = f32::INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for s in segments {
+        min_y = min_y.min(s[1]).min(s[3]).min(s[5]);
+        max_y = max_y.max(s[1]).max(s[3]).max(s[5]);
+    }
+    if segments.is_empty() {
+        min_y = 0.;
+        max_y = 0.;
+    }
+    let count = ((max_y - min_y) / BAND_MARGIN).floor().max(1.) as usize;
+    let count = count.min(MAX_BANDS);
+    let height = ((max_y - min_y) / count as f32).max(1.);
+    let mut data = vec![0.; 8 + count * 8];
+    data[..3].copy_from_slice(&[min_y, height, count as f32]);
+    for band in 0..count {
+        let low = min_y + band as f32 * height - BAND_MARGIN;
+        let high = min_y + (band + 1) as f32 * height + BAND_MARGIN;
+        let start = data.len();
+        for s in segments {
+            let low_y = s[1].min(s[3]).min(s[5]);
+            let high_y = s[1].max(s[3]).max(s[5]);
+            if low_y <= high && high_y >= low {
+                data.extend_from_slice(s);
+            }
+        }
+        data[8 + band * 8] = start as f32;
+        data[9 + band * 8] = (data.len() - start) as f32;
+        // Omitted collinear curves can return a zero signed distance on their
+        // infinite extension. Store only A/control for a cheap sign-only check;
+        // an exact hit selects the unchanged full loop, without widening bands.
+        let hazard_start = data.len();
+        for s in segments {
+            let low_y = s[1].min(s[3]).min(s[5]);
+            let high_y = s[1].max(s[3]).max(s[5]);
+            let cross = (s[4] - s[0]) * (s[3] - s[1]) - (s[2] - s[0]) * (s[5] - s[1]);
+            if (low_y > high || high_y < low) && cross.abs() < 0.001 {
+                data.extend_from_slice(&[s[0], s[1], s[2], s[3], 0., 0., 0., 0.]);
+            }
+        }
+        data[10 + band * 8] = hazard_start as f32;
+        data[11 + band * 8] = (data.len() - hazard_start) as f32;
+    }
+    data
 }
 
 // Flip font y-up coordinates once during encoding so shader UVs can be y-down.
@@ -350,6 +412,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bands_cull_lines_and_include_control_extrema_and_touching_boundaries() {
+        // Eight 64-unit bands over [0, 512]. Membership is written out rather
+        // than computed with the production overlap predicate.
+        let segments = [
+            [1., 0., 2., 0., 2., 0., 0., 0.], // straight line, control=end
+            [3., 128., 4., 64., 5., 128., 0., 0.],
+            [6., 512., 7., 512., 8., 512., 0., 0.],
+        ];
+        let curves: Vec<_> = segments.into_iter().flatten().collect();
+        let data = build_bands(&curves);
+        assert_eq!(&data[..3], &[0., 64., 8.]);
+        let expected: [&[usize]; 8] = [
+            &[0, 1], &[0, 1], &[1], &[1], &[], &[], &[2], &[2],
+        ];
+        for (band, ids) in expected.iter().enumerate() {
+            let start = data[8 + band * 8] as usize;
+            let len = data[9 + band * 8] as usize;
+            let expected: Vec<_> = ids.iter().flat_map(|&id| segments[id]).collect();
+            assert_eq!(&data[start..start + len], expected);
+            assert_eq!(start % 8, 0);
+            assert!(len < curves.len(), "bands must cull curves, including lines");
+        }
+        let empty = build_bands(&[]);
+        assert_eq!(&empty[..3], &[0., 1., 1.]);
+        assert_eq!(empty[9], 0.);
+        let single = build_bands(&curves[..8]);
+        assert_eq!(single[2], 1.);
+        assert_eq!(single[9], 8.);
+    }
+
+    #[test]
     fn cubic_conversion_chains_and_stays_within_tolerance() {
         // An S curve exercises subdivision even though its midpoint lies on the chord.
         let p = [[10., 20.], [40., 200.], [160., -120.], [210., 30.]];
@@ -471,6 +564,10 @@ mod tests {
         assert_eq!(face.outline_glyph(id, &mut builder), Some(bbox));
         assert!(!builder.curves.is_empty());
         assert_eq!(builder.curves.len() % 8, 0);
+        let bands = build_bands(&builder.curves);
+        assert!((0..bands[2] as usize).any(|band|
+            (bands[9 + band * 8] as usize) < builder.curves.len()),
+            "a typical glyph's band must contain fewer curves than its full list");
         // All three points must be in the flipped font bounding box; padding is zero.
         assert!(builder.curves.as_chunks::<8>().0.iter().all(|segment| {
             segment[6..] == [0., 0.]
