@@ -204,6 +204,14 @@ fn create_glyph_cache(
 // offset/length, winding offset/length. Distance padding: original index, x key.
 const BAND_MARGIN: f32 = 64.;
 const MAX_BANDS: usize = 16;
+// At |coordinates| <= 4096, even an 8192-unit subtraction has f32 ULP
+// <= 1/1024. Subtraction/division in the band index and multiplication/addition
+// in the core bounds accumulate < 0.004 units of error; 0.05 is a safe margin.
+const WINDING_MARGIN: f32 = 0.05;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "../tests/unit/band_boundary.rs"]
+mod band_boundary_tests;
 
 fn build_bands(curves: &[f32]) -> Vec<f32> {
     let segments = curves.as_chunks::<8>().0;
@@ -268,7 +276,7 @@ fn build_bands(curves: &[f32]) -> Vec<f32> {
         for s in segments {
             let low_y = s[1].min(s[3]).min(s[5]);
             let high_y = s[1].max(s[3]).max(s[5]);
-            if low_y <= core_high && high_y >= core_low {
+            if low_y <= core_high + WINDING_MARGIN && high_y >= core_low - WINDING_MARGIN {
                 data.extend_from_slice(s);
             }
         }

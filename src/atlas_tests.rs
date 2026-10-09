@@ -1,8 +1,8 @@
 use crate::{atlas, loader};
 #[path = "../tests/common/mod.rs"]
-mod common;
+pub(crate) mod common;
 #[path = "../tests/common/probe.rs"]
-mod probe;
+pub(crate) mod probe;
 use probe::{assert_ink_tiles, probe_pixels};
 
 #[test]
