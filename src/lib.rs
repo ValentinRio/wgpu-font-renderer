@@ -70,3 +70,6 @@ pub use store::FontStore;
 pub use loader::LoadingError;
 pub use typewriter::TypeWriter;
 pub use typewriter::Paragraph;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod atlas_tests;
