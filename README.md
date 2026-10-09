@@ -198,6 +198,8 @@ cargo bench --offline --bench shader
 BENCH_ROUNDS=7 BENCH_FRAMES=40 BENCH_WARMUP=10 cargo bench --offline --bench shader -- large_glyphs
 ```
 
+Set `WGPU_BACKEND=dx12` or `WGPU_BACKEND=vulkan` to select the backend; unset it to use wgpu's defaults.
+
 Defaults are **5 rounds**, each with 10 discarded warm-up frames and 30 measured
 frames per scene. Override them with `BENCH_ROUNDS`, `BENCH_WARMUP` and
 `BENCH_FRAMES` (minimum 3 rounds and 10 measured frames). The scene order rotates

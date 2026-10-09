@@ -390,7 +390,8 @@ pub(crate) mod native {
             .filter(|p| p.exists())
             .map(|path| -> Result<Value> { Ok(serde_json::from_slice(&std::fs::read(path)?)?) })
             .transpose()?;
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let adapter =
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
         let info = adapter.get_info();
@@ -581,7 +582,13 @@ pub(crate) mod native {
                         let data = read_buffer(&device, &timing_readback)?;
                         let begin = u64::from_ne_bytes(data[..8].try_into()?);
                         let end = u64::from_ne_bytes(data[8..16].try_into()?);
-                        timestamp_ms(begin, end, queue.get_timestamp_period())?
+                        let period = queue.get_timestamp_period();
+                        timestamp_ms(begin, end, period).map_err(|error| {
+                            format!(
+                                "{error}; scene={name}, frame={frame} (zero-based), warmup={}, begin={begin}, end={end}, timestamp_period={period} ns/tick, wall_elapsed={elapsed} ms",
+                                frame < warmup
+                            )
+                        })?
                     } else {
                         elapsed
                     };
