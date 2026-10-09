@@ -226,8 +226,8 @@ fn probe_fragment(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {{
                 // varying is compiled into the release shader.
                 let debug = source(candidate, &format!("input.bands = vec3({bx}., {by}., {}.);", bands.layer()))
                     .replace("    var nearest =", "    var probe_used_band = false;\n    var nearest =")
-                    .replace("nearest = band_curves(uv, start, curve_count, layer);",
-                        "nearest = band_curves(uv, start, curve_count, layer);\n            probe_used_band = nearest.w != FULL_LIST_REQUIRED;")
+                    .replace("nearest = band_curves(uv, start, curve_count, winding_start, winding_count, layer, window);",
+                        "nearest = band_curves(uv, start, curve_count, winding_start, winding_count, layer, window);\n            probe_used_band = nearest.w != FULL_LIST_REQUIRED;")
                     .replace("return vec4(input.color.rgb, 1 - triplet_alpha.r);",
                         "return vec4(select(0., 1., probe_used_band), 0., 0., 1.);");
                 let path_pixels = probe_pixels(&device, &queue, store.atlas().view(), &debug);
