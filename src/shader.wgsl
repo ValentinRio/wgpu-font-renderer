@@ -298,6 +298,14 @@ fn band_curves(uv: vec2<f32>, start: i32, count: i32, winding_start: i32, windin
     return vec4(distR, distG, distB, sideG);
 }
 
+// Legacy width 26 − 0.16·s peaks in pixels at 81.25 px (13 font units). Past the peak,
+// floor it at 0.25 px, capped at the peak width so the width stays continuous for any UPEM.
+fn edge_width(font_size: f32, units_per_em: f32) -> f32 {
+    let legacy = 26. - 0.16 * font_size;
+    if font_size <= 81.25 { return legacy; }
+    return max(legacy, min(0.25 * units_per_em, 1056.) / font_size);
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let font_size = input.font_size;
@@ -306,7 +314,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     uv.x += input.left_side_bearing;
     uv.y = remap(uv.y, 0., 1., 0., input.size.y * input.units_per_em / font_size);
 
-    let window = .5 + abs(26. - 0.16 * font_size) + 1./3.;
+    let window = .5 + edge_width(font_size, input.units_per_em) + 1./3.;
     var nearest = vec4(0., 0., 0., FULL_LIST_REQUIRED);
     if window <= BAND_MARGIN && input.bands.z >= 0. && input.atlas_size > 0 {
         let header = i32(input.bands.y) * atlas_width() + i32(input.bands.x);
@@ -329,7 +337,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         nearest = full_list(uv, input);
     }
     let vgrad = abs(dpdy(nearest.y));
-    var triplet_alpha = sdf_triplet_alpha(nearest.xyz, .5, .6, vgrad, 26. - 0.16 * font_size);
+    var triplet_alpha = sdf_triplet_alpha(nearest.xyz, .5, .6, vgrad, edge_width(font_size, input.units_per_em));
     if nearest.w == -2. {
         triplet_alpha.r = 1. - triplet_alpha.r;
     }

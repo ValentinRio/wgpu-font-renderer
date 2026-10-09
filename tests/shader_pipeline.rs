@@ -150,7 +150,7 @@ fn probe_vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f3
 }}
 @fragment
 fn probe_fragment(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {{
-    let sizes = array(1., 12., 32., 72., 100., 162., 163., 200., 400., 557., 558., 1024.);
+    let sizes = array(1., 12., 32., 72., 100., 130., 163., 200., 400., 557., 558., 1024.);
     var input: VertexOutput;
     input.font_size = sizes[u32(p.y) / 64u];
     input.uv = vec2(p.x / 256., (p.y % 64.) / 64.);
@@ -242,8 +242,12 @@ fn probe_fragment(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {{
                     "glyph {c:?}, grow={grow}: size 557 must actually use bands"
                 );
                 assert!(
-                    tile(10).as_chunks::<4>().0.iter().all(|p| p[0] == 0),
-                    "size 558 must take the full-list fallback"
+                    tile(10).as_chunks::<4>().0.iter().any(|p| p[0] == 255),
+                    "size 558 must actually use bands"
+                );
+                assert!(
+                    tile(11).as_chunks::<4>().0.iter().any(|p| p[0] == 255),
+                    "size 1024 must actually use bands"
                 );
             }
             let differing = actual
@@ -279,5 +283,57 @@ fn probe_fragment(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {{
                 "must compare several correctly placed glyphs"
             );
         }
+    }
+}
+
+#[test]
+fn edge_width_inside_opaque() {
+    use owned_ttf_parser::AsFaceRef;
+    let Some((device, queue, config)) = common::gpu() else {
+        return;
+    };
+    let mut store = FontStore::new(&device, &config);
+    let key = store
+        .load_from_bytes(&device, &queue, include_bytes!("../examples/Roboto-Regular.ttf"), "B")
+        .unwrap();
+    let font = store.get(key).unwrap();
+    let glyph = &font.glyph_cache[&font.face.as_face_ref().glyph_index('B').unwrap()];
+    let [x, y] = glyph.allocation.position();
+    let bands = glyph.bands.as_ref().unwrap();
+    let [bx, by] = bands.position();
+    let shader = include_str!("../src/shader.wgsl")
+        .replace("@fragment\nfn fs_main", "fn coverage")
+        .replace("fn coverage(input: VertexOutput) -> @location(0) vec4<f32>",
+            "fn coverage(input: VertexOutput) -> vec4<f32>");
+    let source = format!(r#"{shader}
+@vertex
+fn probe_vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {{
+    let p = array(vec2(-1., -1.), vec2(3., -1.), vec2(-1., 3.));
+    return vec4(p[index], 0., 1.);
+}}
+@fragment
+fn probe_fragment(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {{
+    let sizes = array(163., 200., 400., 1024.);
+    var input: VertexOutput;
+    input.font_size = sizes[min(u32(p.y) / 64u, 3u)];
+    // The middle of B's left stem is deep inside its filled outline.
+    input.uv = vec2(.08, .5);
+    input.size = vec2({width}., {height}.) * input.font_size / 2048.;
+    input.units_per_em = 2048.;
+    input.left_side_bearing = {bearing}.;
+    input.atlas_pos = vec2({x}., {y}.);
+    input.atlas_size = {count};
+    input.layer = {layer}.;
+    input.color = vec4(0., 0., 0., 1.);
+    input.bands = vec3({bx}., {by}., {band_layer}.);
+    return coverage(input);
+}}
+"#, width = glyph.bbox.width(), height = glyph.bbox.height(),
+        bearing = glyph.left_side_bearing, count = glyph.allocation.size(),
+        layer = glyph.allocation.layer(), band_layer = bands.layer());
+    let pixels = probe_pixels(&device, &queue, store.atlas().view(), &source);
+    for (index, size) in [163, 200, 400, 1024].into_iter().enumerate() {
+        assert_eq!(pixels[index * 256 * 64 * 4 + 3], 255,
+            "Roboto B interior must be fully opaque at {size} px");
     }
 }
