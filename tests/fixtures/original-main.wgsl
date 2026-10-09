@@ -37,6 +37,14 @@ struct VertexOutput {
 @group(0) @binding(1) var atlas_sampler: sampler;
 @group(1) @binding(0) var atlas_texture: texture_2d_array<f32>;
 
+// Read the original float coordinates from the packed RGBA atlas.
+fn atlas_float(x: f32, y: f32) -> f32 {
+    let offset = i32(y) * 2048 + i32(x);
+    let texel = offset / 4;
+    let width = i32(textureDimensions(atlas_texture).x);
+    return textureLoad(atlas_texture, vec2<i32>(texel % width, texel / width), 0, 0)[offset % 4];
+}
+
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
@@ -197,12 +205,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             }
 
             // The atlas has one mip level; explicit LOD avoids derivatives in this varying loop.
-            let ax = textureSampleLevel(atlas_texture, atlas_sampler, vec2<f32>(atlas_x_offset / 2048., y_offset / 2048.), i32(0), 0.).x;
-            let ay = textureSampleLevel(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 1.) / 2048., y_offset / 2048.), i32(0), 0.).x;
-            let az = textureSampleLevel(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 2.) / 2048., y_offset / 2048.), i32(0), 0.).x;
-            let aw = textureSampleLevel(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 3.) / 2048., y_offset / 2048.), i32(0), 0.).x;
-            let bx = textureSampleLevel(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 4.) / 2048., y_offset / 2048.), i32(0), 0.).x;
-            let by = textureSampleLevel(atlas_texture, atlas_sampler, vec2<f32>((atlas_x_offset + 5.) / 2048., y_offset / 2048.), i32(0), 0.).x;
+            let ax = atlas_float(atlas_x_offset, y_offset);
+            let ay = atlas_float(atlas_x_offset + 1., y_offset);
+            let az = atlas_float(atlas_x_offset + 2., y_offset);
+            let aw = atlas_float(atlas_x_offset + 3., y_offset);
+            let bx = atlas_float(atlas_x_offset + 4., y_offset);
+            let by = atlas_float(atlas_x_offset + 5., y_offset);
 
             // Only endpoint y-bands contribute crossing signs to the winding test.
             // Three x samples are computed, but output coverage is grayscale from R.

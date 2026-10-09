@@ -10,28 +10,29 @@ use wgpu::{SurfaceConfiguration, TextureFormat};
 
 use self::{allocation::Allocation, allocator::Allocator};
 
-/// R32Float texture array storing outlines as row-major float texels.
+/// Rgba32Float texture array storing four row-major floats per texel.
 /// Texel coordinates start at the top left, x rightward and y downward.
 pub struct Atlas {
     texture: wgpu::Texture,
     texture_view: wgpu::TextureView,
     layers: Vec<Layer>,
     band_layers: Vec<Layer>,
-    /// Storage format of the outline texture, initially R32Float.
+    /// Storage format of the outline texture, initially Rgba32Float.
     pub texture_format: wgpu::TextureFormat,
 }
 
-/// Width and height of each atlas layer in texels; also encoded in the shader.
+/// Float slots per row and rows per layer. The texture is SIZE/4 by SIZE
+/// RGBA32F texels, preserving the original SIZE*SIZE float capacity.
 pub const SIZE: u32 = 2048;
 
 impl Atlas {
     /// Create an empty atlas; the surface configuration is currently unused.
-    /// Requires device support for a 2048-square R32Float array texture.
+    /// Requires device support for a 512-by-2048 Rgba32Float array texture.
     /// Unsupported resources cause wgpu validation errors.
     pub fn new(device: &wgpu::Device, _surface_config: &SurfaceConfiguration) -> Self {
         
         let extent = wgpu::Extent3d {
-            width: SIZE,
+            width: SIZE / 4,
             height: SIZE,
             depth_or_array_layers: 2,
         };
@@ -42,11 +43,11 @@ impl Atlas {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: TextureFormat::R32Float,
+            format: TextureFormat::Rgba32Float,
             usage: wgpu::TextureUsages::COPY_DST
                  | wgpu::TextureUsages::COPY_SRC
                  | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[TextureFormat::R32Float],
+            view_formats: &[TextureFormat::Rgba32Float],
         });
 
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor {
@@ -59,7 +60,7 @@ impl Atlas {
             texture_view,
             layers: vec![Layer::Empty],
             band_layers: vec![Layer::Empty],
-            texture_format: TextureFormat::R32Float,
+            texture_format: TextureFormat::Rgba32Float,
         }
     }
 
@@ -79,13 +80,14 @@ impl Atlas {
         Some(allocation)
     }
 
-    /// Reserve `size` float texels and upload their native-endian bytes.
+    /// Reserve `size` floats (a multiple of four) and upload their native-endian bytes.
     /// Returns `None` if a single layer cannot hold the allocation. During growth,
     /// existing layers are copied and submitted before subsequent queue writes.
     /// Device and queue must match the atlas; layer limits cause GPU errors.
     ///
     /// # Panics
-    /// Panics if `data` contains fewer than `size * 4` bytes.
+    /// Panics if `size` is not a multiple of four or `data` contains fewer
+    /// than `size * 4` bytes.
     pub fn upload(
         &mut self,
         size: u32,
@@ -94,6 +96,7 @@ impl Atlas {
         _encoder: &mut wgpu::CommandEncoder,
         queue: &wgpu::Queue,
     ) -> Option<Allocation> {
+        assert_eq!(size % 4, 0, "atlas uploads must contain whole RGBA texels");
         let allocation = self.allocate(size)?;
         self.grow(device, queue);
 
@@ -112,6 +115,7 @@ impl Atlas {
         _encoder: &mut wgpu::CommandEncoder,
         queue: &wgpu::Queue,
     ) -> Option<Allocation> {
+        assert_eq!(size % 4, 0, "atlas uploads must contain whole RGBA texels");
         let mut allocation = allocate_layer(&mut self.band_layers, size)?;
         allocation.layer = allocation.layer * 2 + 1;
         self.grow(device, queue);
@@ -151,7 +155,7 @@ impl Atlas {
 
         blocks.iter().for_each(|[x, y, size, width, height]| {
             let extent = wgpu::Extent3d {
-                width: *width,
+                width: *width / 4,
                 height: *height,
                 depth_or_array_layers: 1,
             };
@@ -164,7 +168,7 @@ impl Atlas {
                 texture: &self.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d {
-                    x: *x,
+                    x: *x / 4,
                     y: *y,
                     z: layer as u32,
                 },
@@ -188,18 +192,18 @@ impl Atlas {
         let new_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Atlas Texture"),
             size: wgpu::Extent3d {
-                width: SIZE,
+                width: SIZE / 4,
                 height: SIZE,
                 depth_or_array_layers: self.layer_count() as u32,
             },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: TextureFormat::R32Float,
+            format: TextureFormat::Rgba32Float,
             usage: wgpu::TextureUsages::COPY_DST
                  | wgpu::TextureUsages::COPY_SRC
                  | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[TextureFormat::R32Float],
+            view_formats: &[TextureFormat::Rgba32Float],
         });
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -236,7 +240,7 @@ impl Atlas {
                     aspect: wgpu::TextureAspect::default()
                 },
                 wgpu::Extent3d {
-                    width: SIZE,
+                    width: SIZE / 4,
                     height: SIZE,
                     depth_or_array_layers: 1,
                 }

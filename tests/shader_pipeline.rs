@@ -192,7 +192,7 @@ fn probe_fragment(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {{
             let source = |shader: &str, band_input: &str| {
                 let shader = shader
                     // Only update the frozen oracle's varying interface; its
-                    // original sampler reads and curve loop remain unchanged.
+                    // curve loop and coverage math remain unchanged.
                     .replace("@location(5) atlas_pos: vec2<f32>,\n    @location(6) @interpolate(flat)",
                         "@location(5) @interpolate(flat) atlas_pos: vec2<f32>,\n    @location(6) @interpolate(flat)")
                     .replace("@location(8) layer: f32,", "@location(8) @interpolate(flat) layer: f32,")
@@ -203,7 +203,7 @@ fn probe_fragment(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {{
                         "fn coverage(input: VertexOutput) -> @location(0) vec4<f32>",
                         "fn coverage(input: VertexOutput) -> vec4<f32>",
                     );
-                format!("{shader}\nfn probe_float(offset: i32, layer: i32) -> f32 {{ return textureLoad(atlas_texture, vec2<i32>(offset % 2048, offset / 2048), layer, 0).x; }}\n{}", probe.replace("BAND_INPUT", band_input))
+                format!("{shader}\nfn probe_float(offset: i32, layer: i32) -> f32 {{ let texel = offset / 4; let width = i32(textureDimensions(atlas_texture).x); return textureLoad(atlas_texture, vec2<i32>(texel % width, texel / width), layer, 0)[offset % 4]; }}\n{}", probe.replace("BAND_INPUT", band_input))
             };
             let expected = probe_pixels(
                 &device,

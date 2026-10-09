@@ -159,9 +159,15 @@ fn sdf_triplet_alpha(sdf: vec3<f32>, horz_scale: f32, vert_scale: f32, vgrad: f3
     return alpha;
 }
 
-// Linear texel addresses handle headers and curves across 2048-wide rows.
-fn atlas_float(offset: i32, layer: i32) -> f32 {
-    return textureLoad(atlas_texture, vec2<i32>(offset % 2048, offset / 2048), layer, 0).x;
+// Allocation offsets are floats; each RGBA texel holds four consecutive floats.
+fn atlas_width() -> i32 {
+    return i32(textureDimensions(atlas_texture).x) * 4;
+}
+
+fn atlas_texel(offset: i32, layer: i32) -> vec4<f32> {
+    let texel = offset / 4;
+    let width = i32(textureDimensions(atlas_texture).x);
+    return textureLoad(atlas_texture, vec2<i32>(texel % width, texel / width), layer, 0);
 }
 
 fn full_list(uv: vec2<f32>, input: VertexOutput) -> vec4<f32> {
@@ -174,16 +180,18 @@ fn full_list(uv: vec2<f32>, input: VertexOutput) -> vec4<f32> {
     var distB = 0.;
     var has_curve = false;
 
-    let start = i32(input.atlas_pos.y) * 2048 + i32(input.atlas_pos.x);
+    let start = i32(input.atlas_pos.y) * atlas_width() + i32(input.atlas_pos.x);
     let layer = i32(input.layer);
     for (var i = 0; i < input.atlas_size; i += 8) {
         let offset = start + i;
-        let ax = atlas_float(offset, layer);
-        let ay = atlas_float(offset + 1, layer);
-        let az = atlas_float(offset + 2, layer);
-        let aw = atlas_float(offset + 3, layer);
-        let bx = atlas_float(offset + 4, layer);
-        let by = atlas_float(offset + 5, layer);
+        let ac = atlas_texel(offset, layer);
+        let bi = atlas_texel(offset + 4, layer);
+        let ax = ac.x;
+        let ay = ac.y;
+        let az = ac.z;
+        let aw = ac.w;
+        let bx = bi.x;
+        let by = bi.y;
 
         // Only endpoint y-bands contribute crossing signs to the winding test.
         // Three x samples are computed, but output coverage is grayscale from R.
@@ -234,12 +242,14 @@ fn band_curves(uv: vec2<f32>, start: i32, count: i32, winding_start: i32, windin
     var sideB = 0.;
     for (var i = 0; i < winding_count; i += 8) {
         let offset = winding_start + i;
-        let ax = atlas_float(offset, layer);
-        let ay = atlas_float(offset + 1, layer);
-        let az = atlas_float(offset + 2, layer);
-        let aw = atlas_float(offset + 3, layer);
-        let bx = atlas_float(offset + 4, layer);
-        let by = atlas_float(offset + 5, layer);
+        let ac = atlas_texel(offset, layer);
+        let bi = atlas_texel(offset + 4, layer);
+        let ax = ac.x;
+        let ay = ac.y;
+        let az = ac.z;
+        let aw = ac.w;
+        let bx = bi.x;
+        let by = bi.y;
         // Only endpoint y-bands contribute crossing signs to the winding test.
         // Three x samples are computed, but output coverage is grayscale from R.
         // Central G drives nearest-curve selection and winding; B is unused.
@@ -263,19 +273,21 @@ fn band_curves(uv: vec2<f32>, start: i32, count: i32, winding_start: i32, windin
     const EPS: f32 = 0.05;
     for (var i = 0; i < count; i += 8) {
         let offset = start + i;
-        let key = atlas_float(offset + 7, layer);
+        let bi = atlas_texel(offset + 4, layer);
+        let key = bi.w;
         let reach = min(distG, window) + EPS;
         if key - uv.x > reach {
             break;
         }
-        let a = vec2(atlas_float(offset, layer), atlas_float(offset + 1, layer));
-        let c = vec2(atlas_float(offset + 2, layer), atlas_float(offset + 3, layer));
-        let b = vec2(atlas_float(offset + 4, layer), atlas_float(offset + 5, layer));
+        let ac = atlas_texel(offset, layer);
+        let a = ac.xy;
+        let c = ac.zw;
+        let b = bi.xy;
         if hull_distance(uv, a, c, b) > reach {
             continue;
         }
         let x = abs(sd_bezier(a, c, b, uv));
-        let original_index = atlas_float(offset + 6, layer);
+        let original_index = bi.z;
         if x < distG || (x == distG && original_index < best_index) {
             best_index = original_index;
             distR = abs(sd_bezier(a, c, b, uv - vec2(1./3., 0.)));
@@ -297,17 +309,20 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let window = .5 + abs(26. - 0.16 * font_size) + 1./3.;
     var nearest = vec4(0., 0., 0., FULL_LIST_REQUIRED);
     if window <= BAND_MARGIN && input.bands.z >= 0. && input.atlas_size > 0 {
-        let header = i32(input.bands.y) * 2048 + i32(input.bands.x);
+        let header = i32(input.bands.y) * atlas_width() + i32(input.bands.x);
         let layer = i32(input.bands.z);
-        let min_y = atlas_float(header, layer);
-        let height = atlas_float(header + 1, layer);
-        let count = i32(atlas_float(header + 2, layer));
+        let header_data = atlas_texel(header, layer);
+        let min_y = header_data.x;
+        let height = header_data.y;
+        let count = i32(header_data.z);
         let band = clamp(i32(floor((uv.y - min_y) / height)), 0, count - 1);
         let descriptor = header + 8 + band * 8;
-        let start = header + i32(atlas_float(descriptor, layer));
-        let curve_count = i32(atlas_float(descriptor + 1, layer));
-        let winding_start = header + i32(atlas_float(descriptor + 4, layer));
-        let winding_count = i32(atlas_float(descriptor + 5, layer));
+        let distance_data = atlas_texel(descriptor, layer);
+        let winding_data = atlas_texel(descriptor + 4, layer);
+        let start = header + i32(distance_data.x);
+        let curve_count = i32(distance_data.y);
+        let winding_start = header + i32(winding_data.x);
+        let winding_count = i32(winding_data.y);
         nearest = band_curves(uv, start, curve_count, winding_start, winding_count, layer, window);
     }
     if nearest.w == FULL_LIST_REQUIRED {

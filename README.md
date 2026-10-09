@@ -314,7 +314,7 @@ other on that setup. Real GPU performance conclusions require a real GPU.
 
 - [x] Separate glyph outlines into bands, so each pixel only tests the curves that can cross it
 - [x] Sort curves inside each band, so the shader can stop early (depends on bands)
-- [ ] Optimize the curve data layout: fetch each curve in one or two texel loads (RGBA32F or a storage buffer) instead of six sampled R32F reads, and drop the hardcoded 2048 atlas width
+- [x] Optimize the curve data layout: pack each eight-float record into two RGBA32F texels, fetch the sort key before curve geometry, and derive atlas width from texture dimensions
 - [ ] Subpixel (LCD) anti-aliasing: the R, G and B coverage samples are computed, but only R reaches the output (grayscale anti-aliasing already works)
 - [ ] Handle overlapping contours, which currently render as holes because the winding test expects exactly one crossing pair
 - [ ] Add a CFF1 (`.otf`) test font; only CFF2 is covered today

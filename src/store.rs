@@ -14,7 +14,7 @@ pub struct FontStore {
 
 impl FontStore {
     /// Create an empty store on `device`; the surface configuration is reserved
-    /// for compatibility and currently does not affect the R32Float atlas.
+    /// for compatibility and currently does not affect the Rgba32Float atlas.
     /// wgpu validation errors occur if the device cannot support the atlas.
     pub fn new(device: &wgpu::Device, surface_config: &SurfaceConfiguration) -> Self {
         Self {

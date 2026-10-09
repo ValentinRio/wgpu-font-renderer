@@ -159,7 +159,9 @@ fn sdf_triplet_alpha(sdf: vec3<f32>, horz_scale: f32, vert_scale: f32, vgrad: f3
 
 // Linear texel addresses handle headers and curves across 2048-wide rows.
 fn atlas_float(offset: i32, layer: i32) -> f32 {
-    return textureLoad(atlas_texture, vec2<i32>(offset % 2048, offset / 2048), layer, 0).x;
+    let texel = offset / 4;
+    let width = i32(textureDimensions(atlas_texture).x);
+    return textureLoad(atlas_texture, vec2<i32>(texel % width, texel / width), layer, 0)[offset % 4];
 }
 
 @fragment
