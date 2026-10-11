@@ -16,9 +16,22 @@ use wgpu::{
 
 use crate::{atlas::Atlas, ortho::orthographic_projection_matrix, typewriter::Paragraph, FontStore};
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// Horizontal physical subpixel order. LCD requires dual-source blending.
+pub enum SubpixelOrder {
+    /// Grayscale antialiasing (the default).
+    #[default]
+    None,
+    /// Red, green, blue from left to right.
+    Rgb,
+    /// Blue, green, red from left to right.
+    Bgr,
+}
+
 /// GPU pipeline and prepared glyph instances for a fixed atlas and target format.
 /// Screen coordinates are physical pixels, origin top left, y downward.
 pub struct TextRenderer {
+    subpixel_order: SubpixelOrder,
     pipeline: RenderPipeline,
     uniforms: Buffer,
     vertices: Buffer,
@@ -42,6 +55,24 @@ impl TextRenderer {
     /// first: later atlas growth does not refresh this renderer's texture binding.
     /// Invalid GPU resources or unsupported formats produce wgpu validation errors.
     pub fn new(device: &Device, surface_config: &SurfaceConfiguration, atlas: &Atlas) -> Self {
+        Self::new_with_subpixel_order(device, surface_config, atlas, SubpixelOrder::None)
+    }
+
+    /// Create a renderer with horizontal LCD antialiasing when the device has
+    /// `DUAL_SOURCE_BLENDING` enabled; otherwise fall back to grayscale.
+    /// Use opaque backgrounds and an unscaled, unrotated pixel transform.
+    pub fn new_with_subpixel_order(
+        device: &Device,
+        surface_config: &SurfaceConfiguration,
+        atlas: &Atlas,
+        order: SubpixelOrder,
+    ) -> Self {
+        let subpixel_order = if device.features().contains(wgpu::Features::DUAL_SOURCE_BLENDING) {
+            order
+        } else {
+            SubpixelOrder::None
+        };
+        let lcd = subpixel_order != SubpixelOrder::None;
         let screen_size = [surface_config.width, surface_config.height];
 
         let sampler = device.create_sampler(&SamplerDescriptor {
@@ -138,9 +169,15 @@ impl TextRenderer {
 
         let shader = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("Text shader"),
-            source: ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("shader.wgsl"))),
+            source: ShaderSource::Wgsl(if lcd {
+                std::borrow::Cow::Owned(format!("enable dual_source_blending;\n{}\n{}",
+                    include_str!("shader.wgsl"), include_str!("lcd.wgsl")))
+            } else {
+                std::borrow::Cow::Borrowed(include_str!("shader.wgsl"))
+            }),
         });
 
+        let lcd_constants = [("LCD_BGR", if subpixel_order == SubpixelOrder::Bgr { 1. } else { 0. })];
         let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
             label: Some("Text pipeline"),
             layout: Some(&layout),
@@ -185,14 +222,17 @@ impl TextRenderer {
             multisample: MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
             fragment: Some(FragmentState {
                 module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
+                entry_point: Some(if lcd { "fs_lcd" } else { "fs_main" }),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: if lcd { &lcd_constants } else { &[] },
+                    ..Default::default()
+                },
                 targets: &[Some(ColorTargetState {
                     format: surface_config.format,
                     blend: Some(BlendState {
                         color: BlendComponent {
-                            src_factor: BlendFactor::SrcAlpha,
-                            dst_factor: BlendFactor::OneMinusSrcAlpha,
+                            src_factor: if lcd { BlendFactor::Src1 } else { BlendFactor::SrcAlpha },
+                            dst_factor: if lcd { BlendFactor::OneMinusSrc1 } else { BlendFactor::OneMinusSrcAlpha },
                             operation: BlendOperation::Add,
                         },
                         alpha: BlendComponent {
@@ -234,6 +274,7 @@ impl TextRenderer {
         });
 
         Self {
+            subpixel_order,
             pipeline,
             uniforms,
             vertices,
@@ -247,6 +288,11 @@ impl TextRenderer {
             texture_layout,
             screen_size,
         }
+    }
+
+    /// Whether this renderer actually uses LCD antialiasing.
+    pub fn lcd_active(&self) -> bool {
+        self.subpixel_order != SubpixelOrder::None
     }
 
     /// Replace prepared instances with the supplied shaped runs.

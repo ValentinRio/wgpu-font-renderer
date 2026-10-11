@@ -65,7 +65,7 @@ mod atlas;
 mod renderer;
 mod typewriter;
 mod ortho;
-pub use renderer::TextRenderer;
+pub use renderer::{SubpixelOrder, TextRenderer};
 pub use store::FontStore;
 pub use loader::LoadingError;
 pub use typewriter::TypeWriter;

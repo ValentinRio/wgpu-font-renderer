@@ -4,6 +4,17 @@ pub fn probe_pixels(
     atlas: &wgpu::TextureView,
     source: &str,
 ) -> Vec<u8> {
+    probe_pixels_with_blend(device, queue, atlas, source, None, wgpu::Color::WHITE)
+}
+
+pub fn probe_pixels_with_blend(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    atlas: &wgpu::TextureView,
+    source: &str,
+    blend: Option<wgpu::BlendState>,
+    background: wgpu::Color,
+) -> Vec<u8> {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Band equivalence probe"),
         source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -53,7 +64,7 @@ pub fn probe_pixels(
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format: wgpu::TextureFormat::Rgba8Unorm,
-                blend: None,
+                blend,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
@@ -106,7 +117,7 @@ pub fn probe_pixels(
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                    load: wgpu::LoadOp::Clear(background),
                     store: wgpu::StoreOp::Store,
                 },
             })],

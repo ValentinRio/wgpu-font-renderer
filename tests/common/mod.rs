@@ -1,6 +1,10 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 pub fn gpu() -> Option<(wgpu::Device, wgpu::Queue, wgpu::SurfaceConfiguration)> {
+    gpu_with_lcd(true)
+}
+
+pub fn gpu_with_lcd(enable_lcd: bool) -> Option<(wgpu::Device, wgpu::Queue, wgpu::SurfaceConfiguration)> {
     pollster::block_on(async {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let Ok(adapter) = instance
@@ -18,6 +22,11 @@ pub fn gpu() -> Option<(wgpu::Device, wgpu::Queue, wgpu::SurfaceConfiguration)> 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 required_limits: wgpu::Limits::downlevel_defaults(),
+                required_features: if enable_lcd {
+                    adapter.features() & wgpu::Features::DUAL_SOURCE_BLENDING
+                } else {
+                    wgpu::Features::empty()
+                },
                 ..Default::default()
             })
             .await
