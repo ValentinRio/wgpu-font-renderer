@@ -124,6 +124,10 @@ Then you can initialize the predefined font rendering middleware:
 let mut text_renderer = TextRenderer::new(&device, &config, font_store.atlas());
 ```
 
+For subpixel (LCD) anti-aliasing, create the renderer with `TextRenderer::new_with_subpixel_order(&device, &config, font_store.atlas(), SubpixelOrder::Rgb)` (or `SubpixelOrder::Bgr`), and request `wgpu::Features::DUAL_SOURCE_BLENDING` when creating the device. Without that feature the renderer stays grayscale and `lcd_active()` returns `false`. `TextRenderer::new` is always grayscale.
+
+LCD output assumes a horizontal RGB or BGR panel, text drawn over an opaque background, and no rotation or scaling after rendering. It scales each channel's coverage by `color.a`; grayscale ignores `color.a`. There is no LCD filter yet, so small sizes show some colour fringing.
+
 Call prepare to pass the paragraphs you want to render to the middleware:
 
 ```rust
@@ -315,7 +319,7 @@ other on that setup. Real GPU performance conclusions require a real GPU.
 - [x] Separate glyph outlines into bands, so each pixel only tests the curves that can cross it
 - [x] Sort curves inside each band, so the shader can stop early (depends on bands)
 - [x] Optimize the curve data layout: pack each eight-float record into two RGBA32F texels, fetch the sort key before curve geometry, and derive atlas width from texture dimensions
-- [ ] Subpixel (LCD) anti-aliasing: the R, G and B coverage samples are computed, but only R reaches the output (grayscale anti-aliasing already works)
+- [x] Subpixel (LCD) anti-aliasing
 - [ ] Handle overlapping contours, which currently render as holes because the winding test expects exactly one crossing pair
 - [ ] Add a CFF1 (`.otf`) test font; only CFF2 is covered today
 - [ ] Let callers select variable font axes; only the default instance renders

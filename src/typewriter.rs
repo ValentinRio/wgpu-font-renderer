@@ -17,7 +17,8 @@ pub struct Paragraph {
     pub size: u16,
     /// Key of the font used to shape this run.
     pub font_key: CacheKey,
-    /// RGBA color components, normally in 0..=1; the shader currently ignores alpha.
+    /// RGBA color components, normally in 0..=1. LCD scales coverage by alpha;
+    /// grayscale (including the feature fallback) ignores alpha.
     pub color: [f32; 4],
 }
 
@@ -63,8 +64,9 @@ impl TypeWriter {
     ///
     /// Returns `None` for an unknown font key. Keeps only the first glyph of each
     /// shaping cluster, ignores cluster offsets, and does not implement line wrapping.
-    /// Color is RGBA (the renderer ignores alpha). Missing cached outlines still
-    /// advance the pen. Panics if the shaper emits an empty glyph cluster.
+    /// Color is RGBA; LCD scales coverage by alpha, while grayscale ignores it.
+    /// Missing cached outlines still advance the pen. Panics if the shaper emits
+    /// an empty glyph cluster.
     pub fn shape_text(&mut self, font_store: &FontStore, font_key: CacheKey, position: [f32; 2], size: u16, color: [f32; 4], text: &str) -> Option<Paragraph> {
         if let Some(font) = font_store.get(font_key) {
             let mut shaper = self.context.builder(font.as_ref())
