@@ -12,8 +12,8 @@
 //! Contours are explicitly closed. Glyphs with negative total signed area in
 //! y-down coordinates have all contours reversed to match the shader's winding.
 //! CFF1 (.otf with a CFF table) uses the same path but has no fixture and is
-//! untested. Overlapping contours (common in variable fonts) and self-intersections
-//! may render as holes because the shader requires an exact winding count.
+//! untested. Coverage uses the nonzero winding rule, including overlapping
+//! contours and opposite-direction holes.
 //!
 //! Screen coordinates are physical pixels, with the origin at the top left,
 //! x increasing rightward and y downward. Font sizes are pixels per em. Outline

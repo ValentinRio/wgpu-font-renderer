@@ -47,41 +47,48 @@ pub fn reference_coverage(
             }
         }
     }
-    let mut coverage = Vec::with_capacity(width as usize * height as usize);
+    // Reuse each scanline's bisection results for every x sample. This is the
+    // same 16x16 sample grid and nonzero test, without solving per sample.
+    let mut coverage = vec![0.; width as usize * height as usize];
     for j in 0..height {
-        for i in 0..width {
-            let mut inside = 0;
-            for sy in 0..16 {
-                let y =
-                    f64::from(y0) + (f64::from(j) + (f64::from(sy) + 0.5) / 16.) / f64::from(scale);
+        for sy in 0..16 {
+            let y = f64::from(y0) + (f64::from(j) + (f64::from(sy) + 0.5) / 16.) / f64::from(scale);
+            let mut hits = Vec::new();
+            for c in &crossings {
+                if y < c.y_start.min(c.y_end) || y >= c.y_start.max(c.y_end) {
+                    continue;
+                }
+                let increasing = c.y_end > c.y_start;
+                let (mut lo, mut hi) = (c.start, c.end);
+                for _ in 0..48 {
+                    let mid = (lo + hi) * 0.5;
+                    if (coordinate(&c.points, 1, mid) < y) == increasing {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                hits.push((
+                    coordinate(&c.points, 0, (lo + hi) * 0.5),
+                    if increasing { 1 } else { -1 },
+                ));
+            }
+            hits.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let mut winding: i32 = hits.iter().map(|h| h.1).sum();
+            let mut next = 0;
+            for i in 0..width {
                 for sx in 0..16 {
                     let x = f64::from(x0)
                         + (f64::from(i) + (f64::from(sx) + 0.5) / 16.) / f64::from(scale);
-                    let mut winding = 0;
-                    for c in &crossings {
-                        // Lower y inclusive, upper y exclusive, including at extrema.
-                        if y < c.y_start.min(c.y_end) || y >= c.y_start.max(c.y_end) {
-                            continue;
-                        }
-                        let increasing = c.y_end > c.y_start;
-                        let (mut lo, mut hi) = (c.start, c.end);
-                        // Monotone bisection avoids cancellation in quadratic roots.
-                        for _ in 0..48 {
-                            let mid = (lo + hi) * 0.5;
-                            if (coordinate(&c.points, 1, mid) < y) == increasing {
-                                lo = mid;
-                            } else {
-                                hi = mid;
-                            }
-                        }
-                        if coordinate(&c.points, 0, (lo + hi) * 0.5) > x {
-                            winding += if increasing { 1 } else { -1 };
-                        }
+                    while next < hits.len() && hits[next].0 <= x {
+                        winding -= hits[next].1;
+                        next += 1;
                     }
-                    inside += u32::from(winding != 0);
+                    if winding != 0 {
+                        coverage[(j * width + i) as usize] += 1. / 256.;
+                    }
                 }
             }
-            coverage.push(inside as f32 / 256.);
         }
     }
     coverage
