@@ -17,22 +17,29 @@ ink in the expected box, a dark H stem, a white H gap, and a bounded ink count.
 Contours are closed and winding is selected from each glyph's total signed area.
 Variable fonts are loaded at their default variation instance.
 
-`full-list.wgsl` is the pre-band reference shader with corrected linear atlas reads on
-the glyph’s actual layer. Its legacy row restart and sampler reads were removed.
-The GPU band regression test compares its RGBA8 output with the current shader for TrueType
-and CFF2 glyphs, including disconnected contours, row wrapping, and font sizes
-on both sides of the AA-window fallback threshold. Test-only instrumentation
-verifies the band path at size 400 and the 557/558 cutoff. A load of over 1000
-outlined characters with consecutive repeats forces band-layer growth mid-load;
-probes include glyphs near an old layer's tail and in a new layer. Every growth
-probe must pass the instrumented GPU assertion that the band path completed at
-sizes 400 and 557, so matching full-list fallbacks cannot satisfy the regression.
+The shader has two CPU oracles in `tests/common`, and no frozen shader files.
+`reference.rs` computes box-filtered nonzero coverage by supersampling.
+`centre.rs` is a separate CPU model of the shader's own method: two centre rays
+over the glyph's full, unbanded curve list.
 
-`original-main.wgsl` is copied byte-for-byte from
-`a1bef57:tests/fixtures/full-list.wgsl`. It retains the original sampler reads and
-curve loop as an independent oracle. Tests compare several unwrapped layer-0
-TrueType and CFF2 glyphs at twelve sizes; test source adapts only its varying
-interface and the common coverage probe.
+`tests/analytic_coverage.rs` renders every cached glyph of Roboto (TrueType) and
+this fixture (CFF2) at 12, 16, 24, 48 and 200 px. Each pixel must equal the
+centre-ray model within readback precision, which also catches band and
+early-exit mistakes. Against the box-filter reference, the mean and maximum
+error must stay under the constants in `tests/common/coverage_limits.rs`. Those
+bounds describe how far two centre rays sit from a box filter. They were set
+from the first green measurement and are not slack to be widened.
+
+`tests/unit/analytic_regressions.rs` covers overlapping and nested contours,
+rays through curve endpoints and tangent to extrema, and thin features. Pixels
+away from any outline vertex must match the box-filter reference tightly, so an
+error that runs along a row or column fails.
+
+The band regression test builds an all-curves variant from the shipped shader
+source and compares its RGBA8 output with the banded path for TrueType and CFF2
+glyphs, with test-only instrumentation asserting the band path was taken. A
+load of over 1000 outlined characters forces band-layer growth mid-load; probes
+include glyphs near an old layer's tail and in a new layer.
 
 Placement regressions upload Roboto `g` and `B` and Cantarell CFF2 `@` at layer 0,
 layer 2, and row starts 2040 and 2045 (including segments split across rows).
