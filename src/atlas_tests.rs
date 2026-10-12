@@ -126,6 +126,8 @@ fn probe_fragment(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {{
     input.layer = {layer}.;
     input.color = vec4(0., 0., 0., 1.);
     input.bands = vec3({bx}., {by}., {band_layer}.);
+    input.pixel_scale = input.font_size / input.units_per_em;
+    input.uv = input.uv * input.size / input.pixel_scale + vec2(input.left_side_bearing, 0.);
     return coverage(input);
 }}
 "#,
@@ -137,25 +139,23 @@ fn probe_fragment(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {{
             );
             let source = format!("{shader}\n{probe}");
             if check_path {
-                let debug = source
-                .replace("    var nearest =", "    var probe_used_band = false;\n    var nearest =")
-                .replace("nearest = band_curves(uv, start, curve_count, winding_start, winding_count, layer, window);",
-                    "nearest = band_curves(uv, start, curve_count, winding_start, winding_count, layer, window);\n            probe_used_band = nearest.w != FULL_LIST_REQUIRED;")
-                .replace("return vec4(input.color.rgb, 1 - triplet_alpha.r);",
-                    "return vec4(select(0., 1., probe_used_band), 0., 0., 1.);");
+                let debug = source.replace(
+                    "if input.bands.z >= 0. && input.atlas_size > 0 {",
+                    "if input.bands.z >= 0. && input.atlas_size > 0 { return vec3(1., 1., 1.);",
+                );
                 let pixels = probe_pixels(&device, &queue, atlas.view(), &debug);
                 assert!(
                     pixels[8 * 256 * 64 * 4..9 * 256 * 64 * 4]
                         .as_chunks::<4>()
                         .0
                         .iter()
-                        .any(|p| p[0] == 255),
+                        .all(|p| p[3] == 255),
                     "glyph {c} at [{x}, {y}], layer {layer} must use bands at size 400"
                 );
             }
             let full = source.replace(
-                "if window <= BAND_MARGIN",
-                "if false && window <= BAND_MARGIN",
+                "if input.bands.z >= 0. && input.atlas_size > 0 {",
+                "if false {",
             );
             let reference = probe_pixels(&device, &queue, atlas.view(), &full);
             assert_ink_tiles(&reference);
@@ -186,195 +186,4 @@ fn probe_fragment(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {{
             assert_eq!(differences(&banded, &full), 0, "bands must match full list");
         }
     }
-}
-
-const SD_UNSIGNED_VERTEX: &str = r#"
-@vertex
-fn probe_vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
-    let p = array(vec2(-1., -1.), vec2(3., -1.), vec2(-1., 3.));
-    return vec4(p[index], 0., 1.);
-}
-"#;
-
-fn sd_unsigned_distance_probe(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    atlas: &wgpu::TextureView,
-    points: [[f32; 2]; 4],
-) -> f32 {
-    let [a, b, c, p] = points;
-    let source = format!(
-        r#"{}
-{SD_UNSIGNED_VERTEX}
-@fragment
-fn probe_fragment() -> @location(0) vec4<f32> {{
-    let distance = sd_bezier(vec2({:?}, {:?}), vec2({:?}, {:?}), vec2({:?}, {:?}), vec2({:?}, {:?}));
-    let bits = bitcast<u32>(distance);
-    return vec4<f32>(f32(bits & 255u), f32((bits >> 8u) & 255u),
-        f32((bits >> 16u) & 255u), f32(bits >> 24u)) / 255.;
-}}
-"#,
-        include_str!("shader.wgsl"),
-        a[0], a[1], b[0], b[1], c[0], c[1], p[0], p[1],
-    );
-    let pixels = probe_pixels(device, queue, atlas, &source);
-    f32::from_le_bytes(pixels[..4].try_into().unwrap())
-}
-
-fn sd_unsigned_segment_distance(a: [f64; 2], c: [f64; 2], p: [f64; 2]) -> f64 {
-    let segment = [c[0] - a[0], c[1] - a[1]];
-    let squared_length = segment[0] * segment[0] + segment[1] * segment[1];
-    let t = if squared_length == 0.0 {
-        0.0
-    } else {
-        (((p[0] - a[0]) * segment[0] + (p[1] - a[1]) * segment[1]) / squared_length)
-            .clamp(0.0, 1.0)
-    };
-    (a[0] + t * segment[0] - p[0]).hypot(a[1] + t * segment[1] - p[1])
-}
-
-#[test]
-fn sd_unsigned_straight_extension_distance() {
-    let Some((device, queue, config)) = common::gpu() else {
-        return;
-    };
-    let atlas = atlas::Atlas::new(&device, &config);
-    let got = sd_unsigned_distance_probe(
-        &device, &queue, atlas.view(),
-        [[0., 100.], [0., 101.], [0., 101.], [0., 10.]],
-    );
-    let expected = sd_unsigned_segment_distance([0., 100.], [0., 101.], [0., 10.]);
-    assert!((f64::from(got) - expected).abs() <= 1e-3,
-        "straight extension distance: got {got:?}, expected {expected}");
-}
-
-#[test]
-fn sd_unsigned_midpoint_and_zero_length_distance() {
-    let Some((device, queue, config)) = common::gpu() else {
-        return;
-    };
-    let atlas = atlas::Atlas::new(&device, &config);
-    for end in [[3002., 3002.], [3000., 3000.]] {
-        let start = [3000., 3000.];
-        let control = [(start[0] + end[0]) / 2., (start[1] + end[1]) / 2.];
-        let p = [3000., 3010.];
-        let got = sd_unsigned_distance_probe(&device, &queue, atlas.view(), [start, control, end, p]);
-        let expected = sd_unsigned_segment_distance(
-            start.map(f64::from), end.map(f64::from), p.map(f64::from),
-        );
-        assert!(got.is_finite(), "midpoint distance must be finite: got {got:?}, end {end:?}");
-        assert!((f64::from(got) - expected).abs() <= 1e-3,
-            "midpoint distance: got {got:?}, expected {expected}, end {end:?}");
-    }
-}
-
-#[test]
-fn sd_unsigned_straight_contour_pixel() {
-    let Some((device, queue, config)) = common::gpu() else {
-        return;
-    };
-    let mut atlas = atlas::Atlas::new(&device, &config);
-    let mut curves = Vec::<f32>::new();
-    for contour in [
-        [[0., 101.], [0., 100.], [1., 101.], [0., 101.]],
-        [[1000., 0.], [1001., 0.], [1000., 1.], [1000., 0.]],
-    ] {
-        for edge in contour.windows(2) {
-            curves.extend_from_slice(&[
-                edge[0][0], edge[0][1], edge[1][0], edge[1][1],
-                edge[1][0], edge[1][1], 0., 0.,
-            ]);
-        }
-    }
-    let mut encoder = device.create_command_encoder(&Default::default());
-    let allocation = atlas.upload(
-        curves.len() as u32, bytemuck::cast_slice(&curves), &device, &mut encoder, &queue,
-    ).unwrap();
-    queue.submit(Some(encoder.finish()));
-    let [x, y] = allocation.position();
-    let shader = include_str!("shader.wgsl")
-        .replace("@fragment\nfn fs_main", "fn coverage")
-        .replace("fn coverage(input: VertexOutput) -> @location(0) vec4<f32>",
-            "fn coverage(input: VertexOutput) -> vec4<f32>");
-    let band_input = if shader.contains("bands: vec3<f32>") {
-        "input.bands = vec3(0., 0., -1.);"
-    } else {
-        ""
-    };
-    let source = format!(r#"{shader}
-{SD_UNSIGNED_VERTEX}
-@fragment
-fn probe_fragment() -> @location(0) vec4<f32> {{
-    var input: VertexOutput;
-    input.font_size = 100.;
-    input.uv = vec2(1./3., 10.);
-    input.size = vec2(100., 100.);
-    input.units_per_em = 1.;
-    input.left_side_bearing = 0.;
-    input.atlas_pos = vec2({x}., {y}.);
-    input.atlas_size = {count};
-    input.layer = {layer}.;
-    input.color = vec4(0., 0., 0., 1.);
-    {band_input}
-    return coverage(input);
-}}
-"#, count = allocation.size(), layer = allocation.layer());
-    let pixels = probe_pixels(&device, &queue, atlas.view(), &source);
-    let alpha = f32::from(pixels[3]) / 255.;
-    assert!(alpha <= 1. / 255., "straight contour pixel alpha: got {alpha}");
-}
-
-#[test]
-fn sd_unsigned_exact_zero_edge_coverage() {
-    let Some((device, queue, config)) = common::gpu() else {
-        return;
-    };
-    let mut atlas = atlas::Atlas::new(&device, &config);
-    assert_eq!(sd_unsigned_distance_probe(
-        &device, &queue, atlas.view(),
-        [[3000., 3000.], [3100., 3000.], [3200., 3000.], [3100., 3000.]],
-    ), 0.0);
-    let contour = [
-        [3000., 3000.], [3200., 3000.], [3200., 3200.],
-        [3000., 3200.], [3000., 3000.],
-    ];
-    let mut curves = Vec::<f32>::new();
-    for edge in contour.windows(2) {
-        curves.extend_from_slice(&[
-            edge[0][0], edge[0][1],
-            (edge[0][0] + edge[1][0]) / 2., (edge[0][1] + edge[1][1]) / 2.,
-            edge[1][0], edge[1][1], 0., 0.,
-        ]);
-    }
-    let mut encoder = device.create_command_encoder(&Default::default());
-    let allocation = atlas.upload(
-        curves.len() as u32, bytemuck::cast_slice(&curves), &device, &mut encoder, &queue,
-    ).unwrap();
-    queue.submit(Some(encoder.finish()));
-    let [x, y] = allocation.position();
-    let shader = include_str!("shader.wgsl")
-        .replace("@fragment\nfn fs_main", "fn coverage")
-        .replace("fn coverage(input: VertexOutput) -> @location(0) vec4<f32>",
-            "fn coverage(input: VertexOutput) -> vec4<f32>");
-    let source = format!(r#"{shader}
-{SD_UNSIGNED_VERTEX}
-@fragment
-fn probe_fragment(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {{
-    var input: VertexOutput;
-    input.font_size = 100.;
-    input.uv = vec2(.5, 3000. + p.y - .5);
-    input.size = vec2(200., 1.);
-    input.units_per_em = 100.;
-    input.left_side_bearing = 3000.;
-    input.atlas_pos = vec2({x}., {y}.);
-    input.atlas_size = {count};
-    input.layer = {layer}.;
-    input.color = vec4(0., 0., 0., 1.);
-    input.bands = vec3(0., 0., -1.);
-    return coverage(input);
-}}
-"#, count = allocation.size(), layer = allocation.layer());
-    let pixels = probe_pixels(&device, &queue, atlas.view(), &source);
-    let alpha = f32::from(pixels[3]) / 255.;
-    assert!(alpha > 0.25 && alpha < 0.75, "exact-zero edge pixel alpha: got {alpha}");
 }

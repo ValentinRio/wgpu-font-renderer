@@ -54,11 +54,15 @@
 
 [![Product Name Screen Shot][product-screenshot]](https://example.com)
 
-Render glyphs by extracting their outlines from TrueType or OpenType (CFF/CFF2) files and draw them directly from GPU. No signed distance field cache of any sort. This is based on Eric Lengyel's Slug algorithm.
+Render glyphs by extracting their outlines from TrueType or OpenType (CFF/CFF2) files and draw them directly from GPU. No signed distance field cache of any sort.
 
-Glyphs use up to 16 horizontal bands with a 64-font-unit margin on each side. Each band stores curves whose endpoint/control-point y-extent overlaps it, including straight edges. Pixels use their band when the AA window fits the margin (integer font sizes 0–557), otherwise the unchanged flat loop.
+Coverage is computed analytically, following Eric Lengyel's paper [GPU-Centered Font Rendering Directly from Glyph Outlines](https://jcgt.org/published/0006/02/02/) (JCGT, 2017), the method behind Slug. The shader was written from the paper, not from the reference implementation. The patent on the method (US 10,373,352) was dedicated to the public domain in March 2026.
 
-Each band has an original-order winding list overlapping its core and a distance list overlapping the margin. Distance curves sort by minimum hull x. The shader rejects distant triangle hulls and stops when the remaining x keys are beyond the AA window or current nearest distance; original indices preserve exact distance ties.
+For each pixel the fragment shader casts two rays through the pixel centre, one horizontal and one vertical, and finds where they cross the glyph's quadratic curves. Which of a quadratic's two roots counts is decided from the signs of its three control points relative to the ray, so a ray through a shared endpoint counts once and a tangent ray cancels. Each crossing adds `clamp(0.5 + distance in pixels, 0, 1)` with the crossing's winding sign. The absolute sum, clamped to one, is that ray's coverage (the nonzero rule, so overlapping contours fill), and the two rays are blended with more weight on the one whose nearest crossing is closer. There is no cubic solve and no trigonometry.
+
+Two centre rays approximate a box filter. They are exact on axis-aligned edges away from corners and can be off by a fraction of a pixel's coverage where an outline vertex or a very tight feature sits inside the pixel.
+
+Each glyph has up to 16 horizontal bands and up to 16 vertical bands. A band lists every curve whose extent overlaps it. The horizontal ray reads the pixel's horizontal band, sorted by maximum x descending, and stops at the first curve that lies more than half a pixel to the left of the leftmost sample (the pixel centre in grayscale, a third of a pixel further left with LCD); the vertical ray does the same in the vertical band, sorted by maximum y. Glyph quads are drawn half a pixel larger on each side so edge anti-aliasing is not clipped at the bounding box.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -126,7 +130,7 @@ let mut text_renderer = TextRenderer::new(&device, &config, font_store.atlas());
 
 For subpixel (LCD) anti-aliasing, create the renderer with `TextRenderer::new_with_subpixel_order(&device, &config, font_store.atlas(), SubpixelOrder::Rgb)` (or `SubpixelOrder::Bgr`), and request `wgpu::Features::DUAL_SOURCE_BLENDING` when creating the device. Without that feature the renderer stays grayscale and `lcd_active()` returns `false`. `TextRenderer::new` is always grayscale.
 
-LCD output assumes a horizontal RGB or BGR panel, text drawn over an opaque background, and no rotation or scaling after rendering. It scales each channel's coverage by `color.a`; grayscale ignores `color.a`. There is no LCD filter yet, so small sizes show some colour fringing.
+In LCD mode the horizontal ray is evaluated once and its coverage is taken at three positions a third of a pixel apart, one per channel; the vertical ray is shared. LCD output assumes a horizontal RGB or BGR panel, text drawn over an opaque background, and no rotation or scaling after rendering. It scales each channel's coverage by `color.a`; grayscale ignores `color.a`. There is no LCD filter yet, so small sizes show some colour fringing.
 
 Call prepare to pass the paragraphs you want to render to the middleware:
 
@@ -320,7 +324,7 @@ other on that setup. Real GPU performance conclusions require a real GPU.
 - [x] Sort curves inside each band, so the shader can stop early (depends on bands)
 - [x] Optimize the curve data layout: pack each eight-float record into two RGBA32F texels, fetch the sort key before curve geometry, and derive atlas width from texture dimensions
 - [x] Subpixel (LCD) anti-aliasing
-- [ ] Handle overlapping contours, which currently render as holes because the winding test expects exactly one crossing pair
+- [x] Handle overlapping contours: coverage uses the nonzero winding rule, so overlaps fill instead of rendering as holes
 - [ ] Add a CFF1 (`.otf`) test font; only CFF2 is covered today
 - [ ] Let callers select variable font axes; only the default instance renders
 

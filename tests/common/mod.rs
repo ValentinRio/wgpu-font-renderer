@@ -1,5 +1,12 @@
 #![cfg(not(target_arch = "wasm32"))]
 
+#[allow(dead_code)]
+pub mod reference;
+#[allow(dead_code)]
+pub mod centre;
+#[allow(dead_code)]
+pub mod coverage_limits;
+
 pub fn gpu() -> Option<(wgpu::Device, wgpu::Queue, wgpu::SurfaceConfiguration)> {
     gpu_with_lcd(true)
 }

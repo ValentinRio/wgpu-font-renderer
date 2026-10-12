@@ -122,13 +122,10 @@ fn synthetic_input(x: &str) -> String {
     input.atlas_size = 32;
     input.bands = vec3(0., 0., -1.);
     input.color = vec4(1.);
+    input.pixel_scale = input.font_size / input.units_per_em;
+    input.uv = input.uv * 2048.;
     "#
     )
-}
-
-fn smoothstep(x: f32, width: f32) -> f32 {
-    let t = ((x - (0.5 - width)) / (2. * width)).clamp(0., 1.);
-    t * t * (3. - 2. * t)
 }
 
 #[test]
@@ -137,40 +134,28 @@ fn c2_lcd_offsets_are_one_third_pixel() {
         return;
     };
     let atlas = rectangle(&device, &queue, 2000.);
-    // G sits two font units inside the edge, avoiding the winding tie at x=1000.
     let shader = source(
         &(synthetic_input("1002.") + "return vec4(lcd_coverage(input), 1.);"),
         "@location(0) vec4<f32>",
         false,
     );
     let pixels = probe::probe_pixels(&device, &queue, &atlas, &shader);
-    for (tile, size) in [12_f32, 16., 24., 81.].into_iter().enumerate() {
+    for (tile, size) in [12_f32, 16., 24., 81., 400., 1024.].into_iter().enumerate() {
         let rgb = &pixels[tile * 64 * 256 * 4..][..3];
-        let offset = 2048. / (3. * size);
-        let width = if size <= 81.25 {
-            26. - 0.16 * size
-        } else {
-            (26. - 0.16 * size).max(512. / size)
-        };
-        let expected = [
-            1. - smoothstep(offset - 2., width),
-            smoothstep(2., width),
-            smoothstep(offset + 2., width),
-        ];
+        let expected =
+            [-1. / 3., 0., 1. / 3.].map(|offset| (0.5 + 2. * size / 2048. + offset).clamp(0., 1.));
         for c in 0..3 {
             assert!(
-                (rgb[c] as f32 / 255. - expected[c]).abs() <= 2. / 255.,
+                (rgb[c] as f32 / 255. - expected[c]).abs() <= 1. / 255.,
                 "size {size}, {rgb:?}, {expected:?}"
             );
         }
-        assert!(
-            rgb[0] < rgb[1] && rgb[1] < rgb[2],
-            "strict channel ordering at {size}: {rgb:?}"
-        );
-        assert!(
-            rgb[1] - rgb[0] > 60 && rgb[2] - rgb[1] > 60,
-            "offset must be visible at {size}"
-        );
+        if size <= 81. {
+            assert!(
+                rgb[0] < rgb[1] && rgb[1] < rgb[2],
+                "strict channel ordering: {rgb:?}"
+            );
+        }
     }
 }
 
@@ -196,11 +181,10 @@ fn c3_lcd_channels_use_their_own_winding_side() {
 }
 
 #[test]
-fn lcd_each_channel_minimizes_distance_over_all_curves() {
+fn lcd_each_channel_integrates_both_edges_of_a_thin_stem() {
     let Some((device, queue, _)) = lcd_gpu() else {
         return;
     };
-    // G is nearer the left edge, but B must select the right edge.
     let atlas = rectangle(&device, &queue, 1060.);
     let shader = source(
         &(synthetic_input("1020.") + "return vec4(lcd_coverage(input), 1.);"),
@@ -208,17 +192,12 @@ fn lcd_each_channel_minimizes_distance_over_all_curves() {
         false,
     );
     let pixels = probe::probe_pixels(&device, &queue, &atlas, &shader);
-    let offset = 2048. / 36.;
-    let expected = 1. - smoothstep(1020. + offset - 1060., 26. - 0.16 * 12.);
-    assert!(
-        (pixels[2] as f32 / 255. - expected).abs() <= 2. / 255.,
-        "B must use its own closest curve: actual {}, expected {expected}",
-        pixels[2]
-    );
-    assert!(
-        pixels[2] > 10,
-        "using G's curve would incorrectly give zero"
-    );
+    let scale = 12_f32 / 2048.;
+    let center = 1020. + 1. / (3. * scale);
+    let expected = ((1060. - center) * scale + 0.5).clamp(0., 1.)
+        - ((1000. - center) * scale + 0.5).clamp(0., 1.);
+    assert!((pixels[2] as f32 / 255. - expected).abs() <= 1. / 255.);
+    assert!(pixels[2] > 10);
 }
 
 #[test]
@@ -415,6 +394,8 @@ fn c6_lcd_bands_match_full_list_and_are_taken() {
                 input.atlas_size = {count};
                 input.layer = {layer}.;
                 input.bands = vec3({bx}., {by}., {band_layer}.);
+                input.pixel_scale = input.font_size / input.units_per_em;
+                input.uv = input.uv * input.size / input.pixel_scale + vec2(input.left_side_bearing, 0.);
                 return vec4(lcd_coverage(input), 1.);
             "#,
                 width = glyph.bbox.width(),
@@ -425,13 +406,10 @@ fn c6_lcd_bands_match_full_list_and_are_taken() {
                 band_layer = bands.layer()
             );
             let shader = source(&body, "@location(0) vec4<f32>", false);
-            let full = shader.replace(
-                "var nearest: LcdNearest;\n    if window <= BAND_MARGIN && input.bands.z >= 0. && input.atlas_size > 0 {",
-                "var nearest: LcdNearest;\n    if false {",
-            );
-            assert_ne!(
-                full, shader,
-                "full-list replacement must disable the band gate"
+            let full = replace_shader(
+                &shader,
+                "if input.bands.z >= 0. && input.atlas_size > 0 {",
+                "if false {",
             );
             let actual = probe::probe_pixels(&device, &queue, store.atlas().view(), &shader);
             let expected = probe::probe_pixels(&device, &queue, store.atlas().view(), &full);
@@ -439,13 +417,24 @@ fn c6_lcd_bands_match_full_list_and_are_taken() {
                 expected.as_chunks::<4>().0.iter().any(|p| p[0] > 128),
                 "reference must contain ink"
             );
-            assert_eq!(actual, expected, "LCD band/full-list mismatch for {c}");
-            let debug = replace_shader(&shader,
-                "var nearest: LcdNearest;\n    if window <= BAND_MARGIN && input.bands.z >= 0. && input.atlas_size > 0 {",
-                "var nearest: LcdNearest;\n    if window <= BAND_MARGIN && input.bands.z >= 0. && input.atlas_size > 0 { return vec3(1., 0., 0.);");
-            let debug = replace_shader(&debug,
-                "let start = i32(input.atlas_pos.y) * atlas_width() + i32(input.atlas_pos.x);\n        nearest = lcd_curves",
-                "return vec3(0., 0., 1.);\n        let start = i32(input.atlas_pos.y) * atlas_width() + i32(input.atlas_pos.x);\n        nearest = lcd_curves");
+            let differences: Vec<_> = actual
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(expected.as_chunks::<4>().0)
+                .enumerate()
+                .filter(|(_, (a, e))| a != e)
+                .take(8)
+                .collect();
+            assert!(
+                differences.is_empty(),
+                "LCD band/full-list mismatch for {c}: {differences:?}"
+            );
+            let debug = replace_shader(
+                &shader,
+                "if input.bands.z >= 0. && input.atlas_size > 0 {",
+                "if input.bands.z >= 0. && input.atlas_size > 0 { return vec3(1., 0., 0.);",
+            );
             let paths = probe::probe_pixels(&device, &queue, store.atlas().view(), &debug);
             // Includes the 12 px and 16 px tiles (indices 9 and 10).
             for tile in 0..12 {
