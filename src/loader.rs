@@ -606,3 +606,7 @@ mod cff_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "../tests/unit/analytic_regressions.rs"]
 mod analytic_regressions;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "../tests/unit/ray_review.rs"]
+mod ray_review;

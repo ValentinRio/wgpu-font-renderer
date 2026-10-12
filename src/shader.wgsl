@@ -61,16 +61,21 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 }
 
 // Atlas offsets count floats. Width is a power of two, including in probes.
-fn atlas_width() -> i32 {
-    return i32(textureDimensions(atlas_texture).x) << 2u;
+struct AtlasAddress {
+    float_width: i32,
+    mask: u32,
+    shift: u32,
 }
 
-fn atlas_texel(offset: i32, layer: i32) -> vec4<f32> {
-    let texel = u32(offset) >> 2u;
+fn atlas_address() -> AtlasAddress {
     let width = textureDimensions(atlas_texture).x;
-    let shift = firstLeadingBit(width);
+    return AtlasAddress(i32(width) << 2u, width - 1u, firstLeadingBit(width));
+}
+
+fn atlas_texel(offset: i32, layer: i32, address: AtlasAddress) -> vec4<f32> {
+    let texel = u32(offset) >> 2u;
     return textureLoad(atlas_texture,
-        vec2<i32>(i32(texel & (width - 1u)), i32(texel >> shift)), layer, 0);
+        vec2<i32>(i32(texel & address.mask), i32(texel >> address.shift)), layer, 0);
 }
 
 struct Roots {
@@ -100,7 +105,7 @@ fn ray_roots(q: vec3<f32>, line: bool) -> Roots {
         }
         return result;
     }
-    let discriminant = b * b - a * q.x;
+    let discriminant = q.y * q.y - q.x * q.z;
     if discriminant < 0. {
         // No real intersection: cancelling imaginary roots must not influence
         // the nearest-root weight of this ray.
@@ -123,7 +128,7 @@ struct RayCoverage {
 }
 
 fn ray_coverage(p: vec2<f32>, scale: f32, axis: u32, offsets: vec3<f32>,
-    start: i32, count: i32, layer: i32, sorted: bool) -> RayCoverage {
+    start: i32, count: i32, layer: i32, sorted: bool, address: AtlasAddress) -> RayCoverage {
     var result: RayCoverage;
     result.nearest = vec3(1e20);
     let other = 1u - axis;
@@ -133,67 +138,63 @@ fn ray_coverage(p: vec2<f32>, scale: f32, axis: u32, offsets: vec3<f32>,
     var winding = vec3<i32>(0);
     var fraction = vec3<i32>(0);
     for (var i = 0; i < count; i += 8) {
-        let end = atlas_texel(start + i + 4, layer);
+        let end = atlas_texel(start + i + 4, layer, address);
         if sorted && (end.w - p[axis]) * scale < -.5 + min(min(offsets.x, offsets.y), offsets.z) {
             break;
         }
-        let ac = atlas_texel(start + i, layer);
+        let ac = atlas_texel(start + i, layer, address);
         let line = all(ac.zw == end.xy);
         let roots = ray_roots(vec3(ac[other], ac[other + 2u], end[other]) - p[other], line);
-        // A double root contributes zero net coverage. It must not weight an
-        // empty ray against the transverse ray at an interior extremum.
-        let tangent = all(roots.winding != vec2(0.)) && roots.t.x == roots.t.y;
+        let u = vec2(1.) - roots.t;
+        var positions = u * u * ac[axis] + 2. * u * roots.t * ac[axis + 2u] + roots.t * roots.t * end[axis];
+        if line { positions = mix(vec2(ac[axis]), vec2(end[axis]), roots.t); }
+        // Only same-curve pairs fade as their crossings merge. Edges belonging
+        // to different curves keep their full weight, including thin stems.
+        let sep = abs(positions.y - positions.x) * scale;
+        let pair_floor = select(0., max(0., .5 * (1. - sep)), all(roots.winding != vec2(0.)));
         for (var root = 0u; root < 2u; root += 1u) {
             if roots.winding[root] == 0. { continue; }
-            let t = roots.t[root];
-            let u = 1. - t;
-            var position = u * u * ac[axis] + 2. * u * t * ac[axis + 2u] + t * t * end[axis];
-            if line { position = mix(ac[axis], end[axis], t); }
-            let distance = vec3((position - p[axis]) * scale) - offsets;
+            let distance = vec3((positions[root] - p[axis]) * scale) - offsets;
             fraction += vec3<i32>(round(clamp(vec3(.5) + distance, vec3(0.), vec3(1.)) * 65536.)) * i32(roots.winding[root]);
             winding += fraction >> vec3<u32>(16u);
             fraction &= vec3<i32>(65535);
-            if !tangent { result.nearest = min(result.nearest, abs(distance)); }
+            result.nearest = min(result.nearest, max(abs(distance), vec3(pair_floor)));
         }
     }
     result.sum = vec3<f32>(winding) + vec3<f32>(fraction) / 65536.;
     return result;
 }
 
-const WEIGHTED_COVERAGE: bool = true;
-
 fn combine_rays(h: RayCoverage, v: RayCoverage) -> vec3<f32> {
     let x = clamp(abs(h.sum), vec3(0.), vec3(1.));
     let y = clamp(abs(v.sum), vec3(0.), vec3(1.));
-    if WEIGHTED_COVERAGE {
-        let wx = clamp(vec3(1.) - 2. * h.nearest, vec3(0.), vec3(1.));
-        let wy = clamp(vec3(1.) - 2. * v.nearest, vec3(0.), vec3(1.));
-        let denominator = wx + wy;
-        return select((x + y) * .5, (x * wx + y * wy) / max(denominator, vec3(1e-20)), denominator > vec3(0.));
-    }
-    return (x + y) * .5;
+    let wx = clamp(vec3(1.) - 2. * h.nearest, vec3(0.), vec3(1.));
+    let wy = clamp(vec3(1.) - 2. * v.nearest, vec3(0.), vec3(1.));
+    let denominator = wx + wy;
+    return select((x + y) * .5, (x * wx + y * wy) / max(denominator, vec3(1e-20)), denominator > vec3(0.));
 }
 
 fn analytic_coverage(input: VertexOutput, offsets: vec3<f32>) -> vec3<f32> {
+    let address = atlas_address();
     let p = input.uv;
     let scale = input.pixel_scale;
     var h: RayCoverage;
     var v: RayCoverage;
     if input.bands.z >= 0. && input.atlas_size > 0 {
-        let header = i32(input.bands.y) * atlas_width() + i32(input.bands.x);
+        let header = i32(input.bands.y) * address.float_width + i32(input.bands.x);
         let layer = i32(input.bands.z);
-        let bounds = atlas_texel(header, layer);
-        let counts = atlas_texel(header + 4, layer);
+        let bounds = atlas_texel(header, layer, address);
+        let counts = atlas_texel(header + 4, layer, address);
         let bands = clamp(vec2<i32>(floor((p - bounds.xy) / bounds.zw)), vec2(0), vec2<i32>(counts.yx) - vec2(1));
-        let hd = atlas_texel(header + 8 + bands.y * 8, layer);
-        let vd = atlas_texel(header + 8 + (i32(counts.x) + bands.x) * 8, layer);
-        h = ray_coverage(p, scale, 0u, offsets, header + i32(hd.x), i32(hd.y), layer, true);
-        v = ray_coverage(p, scale, 1u, vec3(0.), header + i32(vd.x), i32(vd.y), layer, true);
+        let hd = atlas_texel(header + 8 + bands.y * 8, layer, address);
+        let vd = atlas_texel(header + 8 + (i32(counts.x) + bands.x) * 8, layer, address);
+        h = ray_coverage(p, scale, 0u, offsets, header + i32(hd.x), i32(hd.y), layer, true, address);
+        v = ray_coverage(p, scale, 1u, vec3(0.), header + i32(vd.x), i32(vd.y), layer, true, address);
     } else {
-        let start = i32(input.atlas_pos.y) * atlas_width() + i32(input.atlas_pos.x);
+        let start = i32(input.atlas_pos.y) * address.float_width + i32(input.atlas_pos.x);
         let layer = i32(input.layer);
-        h = ray_coverage(p, scale, 0u, offsets, start, input.atlas_size, layer, false);
-        v = ray_coverage(p, scale, 1u, vec3(0.), start, input.atlas_size, layer, false);
+        h = ray_coverage(p, scale, 0u, offsets, start, input.atlas_size, layer, false, address);
+        v = ray_coverage(p, scale, 1u, vec3(0.), start, input.atlas_size, layer, false, address);
     }
     return combine_rays(h, v);
 }

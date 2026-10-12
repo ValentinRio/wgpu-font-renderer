@@ -41,7 +41,7 @@ impl CentreModel {
         Self { curves }
     }
 
-    fn intersections(&self, axis: usize, origin: f32) -> Vec<(f64, f64, bool)> {
+    fn intersections(&self, axis: usize, origin: f32) -> Vec<(f64, f64, f64)> {
         let other = 1 - axis;
         let origin = f64::from(origin);
         let mut hits = Vec::new();
@@ -49,11 +49,12 @@ impl CentreModel {
             let split = curve.split[other];
             if split < 1. && origin == curve.at(other, split) {
                 // An interior extremum touches the ray twice. The signs cancel,
-                // and this zero-width intersection has no weight.
+                // and their separation is zero.
                 let position = curve.at(axis, split);
-                hits.extend([(position, -1., false), (position, 1., false)]);
+                hits.extend([(position, -1., 0.), (position, 1., 0.)]);
                 continue;
             }
+            let pair_start = hits.len();
             for (start, end) in [(0., split), (split, 1.)] {
                 let q0 = curve.at(other, start);
                 let q1 = curve.at(other, end);
@@ -79,21 +80,29 @@ impl CentreModel {
                     }
                     (lo + hi) * 0.5
                 };
-                hits.push((curve.at(axis, t), if increasing { 1. } else { -1. }, true));
+                hits.push((
+                    curve.at(axis, t),
+                    if increasing { 1. } else { -1. },
+                    f64::INFINITY,
+                ));
+            }
+            if hits.len() - pair_start == 2 {
+                let separation = (hits[pair_start].0 - hits[pair_start + 1].0).abs();
+                hits[pair_start].2 = separation;
+                hits[pair_start + 1].2 = separation;
             }
         }
         hits
     }
 
-    fn ray(hits: &[(f64, f64, bool)], origin: f32, scale: f32) -> (f64, f64) {
+    fn ray(hits: &[(f64, f64, f64)], origin: f32, scale: f32) -> (f64, f64) {
         let mut sum = 0_f64;
         let mut nearest = f64::INFINITY;
-        for &(position, winding, transverse) in hits {
+        for &(position, winding, separation) in hits {
             let distance = (position - f64::from(origin)) * f64::from(scale);
             sum += (0.5 + distance).clamp(0., 1.) * winding;
-            if transverse {
-                nearest = nearest.min(distance.abs());
-            }
+            let pair_floor = (0.5 * (1. - separation * f64::from(scale))).max(0.);
+            nearest = nearest.min(distance.abs().max(pair_floor));
         }
         (sum.abs().clamp(0., 1.), (1. - 2. * nearest).clamp(0., 1.))
     }

@@ -62,7 +62,7 @@ For each pixel the fragment shader casts two rays through the pixel centre, one 
 
 Two centre rays approximate a box filter. They are exact on axis-aligned edges away from corners and can be off by a fraction of a pixel's coverage where an outline vertex or a very tight feature sits inside the pixel.
 
-Each glyph has up to 16 horizontal bands and up to 16 vertical bands. A band lists every curve whose extent overlaps it. The horizontal ray reads the pixel's horizontal band, sorted by maximum x descending, and stops at the first curve that lies more than half a pixel to the left; the vertical ray does the same in the vertical band, sorted by maximum y. Glyph quads are drawn half a pixel larger on each side so edge anti-aliasing is not clipped at the bounding box.
+Each glyph has up to 16 horizontal bands and up to 16 vertical bands. A band lists every curve whose extent overlaps it. The horizontal ray reads the pixel's horizontal band, sorted by maximum x descending, and stops at the first curve that lies more than half a pixel to the left of the leftmost sample (the pixel centre in grayscale, a third of a pixel further left with LCD); the vertical ray does the same in the vertical band, sorted by maximum y. Glyph quads are drawn half a pixel larger on each side so edge anti-aliasing is not clipped at the bounding box.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 

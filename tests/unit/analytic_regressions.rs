@@ -16,7 +16,7 @@ fn square(lo: [f32; 2], hi: [f32; 2], reverse: bool) -> Vec<f32> {
         .collect()
 }
 
-fn pixels(
+pub(super) fn pixels(
     curves: &[f32],
     origin: [f32; 2],
     scale: f32,
@@ -47,10 +47,12 @@ fn pixels(
     queue.submit(Some(encoder.finish()));
     let [x, y] = a.position();
     let [bx, by] = b.position();
-    let shader = include_str!("../../src/shader.wgsl").replace(
-        "const WEIGHTED_COVERAGE: bool = true;",
-        &format!("const WEIGHTED_COVERAGE: bool = {weighted};"),
-    );
+    let mut shader = include_str!("../../src/shader.wgsl").to_owned();
+    if !weighted {
+        let weighted_return = "return select((x + y) * .5, (x * wx + y * wy) / max(denominator, vec3(1e-20)), denominator > vec3(0.));";
+        assert!(shader.contains(weighted_return));
+        shader = shader.replace(weighted_return, "return (x + y) * .5;");
+    }
     let source = format!(
         r#"{shader}
 @vertex fn probe_vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {{
