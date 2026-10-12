@@ -265,6 +265,73 @@ fn build_bands(curves: &[f32]) -> Vec<f32> {
     data
 }
 
+const SLUG_BAND_EPSILON: f32 = 0.05;
+
+// Header: min x/y, band width/height, horizontal/vertical counts.
+// Descriptors: float offset/length. Curve padding: original index, maximum key.
+#[allow(dead_code)]
+fn build_slug_bands(curves: &[f32]) -> Vec<f32> {
+    let segments = curves.as_chunks::<8>().0;
+    let mut min = [f32::INFINITY; 2];
+    let mut max = [f32::NEG_INFINITY; 2];
+    for s in segments {
+        for axis in 0..2 {
+            min[axis] = min[axis].min(s[axis]).min(s[axis + 2]).min(s[axis + 4]);
+            max[axis] = max[axis].max(s[axis]).max(s[axis + 2]).max(s[axis + 4]);
+        }
+    }
+    if segments.is_empty() {
+        min = [0.; 2];
+        max = [0.; 2];
+    }
+    let counts: [usize; 2] =
+        std::array::from_fn(|axis| ((max[axis] - min[axis]) / 64.).floor().clamp(1., 16.) as usize);
+    let sizes: [f32; 2] =
+        std::array::from_fn(|axis| ((max[axis] - min[axis]) / counts[axis] as f32).max(1.));
+    let mut data = vec![0.; 8 * (1 + counts[0] + counts[1])];
+    data[..6].copy_from_slice(&[
+        min[0],
+        min[1],
+        sizes[0],
+        sizes[1],
+        counts[1] as f32,
+        counts[0] as f32,
+    ]);
+    let mut descriptor = 8;
+    for axis in [1, 0] {
+        for band in 0..counts[axis] {
+            let low = min[axis] + band as f32 * sizes[axis] - SLUG_BAND_EPSILON;
+            let high = min[axis] + (band + 1) as f32 * sizes[axis] + SLUG_BAND_EPSILON;
+            let mut list: Vec<_> = segments
+                .iter()
+                .enumerate()
+                .filter_map(|(index, s)| {
+                    let lo = s[axis].min(s[axis + 2]).min(s[axis + 4]);
+                    let hi = s[axis].max(s[axis + 2]).max(s[axis + 4]);
+                    if lo > high || hi < low {
+                        return None;
+                    }
+                    let other = 1 - axis;
+                    let mut record = *s;
+                    record[6] = index as f32;
+                    record[7] = s[other].max(s[other + 2]).max(s[other + 4]);
+                    Some(record)
+                })
+                .collect();
+            list.sort_by(|a, b| b[7].total_cmp(&a[7]).then(a[6].total_cmp(&b[6])));
+            data[descriptor] = data.len() as f32;
+            data[descriptor + 1] = (list.len() * 8) as f32;
+            data.extend(list.into_iter().flatten());
+            descriptor += 8;
+        }
+    }
+    data
+}
+
+#[cfg(test)]
+#[path = "../tests/unit/slug_bands.rs"]
+mod slug_band_tests;
+
 // Flip font y-up coordinates once during encoding so shader UVs can be y-down.
 // Lines use control=end; cubics are subdivided into quadratic records.
 // Contours are closed; glyph winding is normalized from geometry for the shader.
