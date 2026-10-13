@@ -19,7 +19,7 @@
 //! x increasing rightward and y downward. Font sizes are pixels per em. Outline
 //! coordinates remain in font units until drawing. Paragraph positions anchor
 //! both x and y. Shaping retains only the first glyph of each cluster,
-//! and glyphs absent from the cache preset are skipped during drawing.
+//! and glyphs absent from the cache selected by `chars` are skipped during drawing.
 //!
 //! Call [`TextRenderer::resize`] before the first render and on every viewport
 //! change. Later font loads are picked up by [`TextRenderer::prepare`].

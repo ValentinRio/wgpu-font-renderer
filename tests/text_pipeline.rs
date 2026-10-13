@@ -98,6 +98,16 @@ fn draw_targets(
     size: [u32; 2],
     draws: &[Option<std::ops::Range<usize>>],
 ) -> Vec<Vec<u8>> {
+    draw_range_targets(device, queue, renderer, size, draws)
+}
+
+fn draw_range_targets<R: std::ops::RangeBounds<usize> + Clone>(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    renderer: &TextRenderer,
+    size: [u32; 2],
+    draws: &[Option<R>],
+) -> Vec<Vec<u8>> {
     let mut encoder = device.create_command_encoder(&Default::default());
     let mut buffers = Vec::new();
     for range in draws {
@@ -426,8 +436,9 @@ fn prepared_ranges_draw_layers_in_one_submit_and_preserve_indices() {
     // Borrow two separate vectors without cloning their paragraphs.
     renderer.prepare(&device, &queue, first.iter().chain(last.iter()), &store);
     assert_eq!(wgpu_font_renderer::internals::instance_count(&renderer), 2);
-    let pixels = draw_targets(&device, &queue, &renderer, [128, 128],
-        &[Some(0..1), Some(1..2), None, Some(0..2), Some(0..usize::MAX)]);
+    let mut pixels = draw_targets(&device, &queue, &renderer, [128, 128],
+        &[Some(0..1), Some(1..2), None, Some(0..2)]);
+    pixels.push(draw_range_targets(&device, &queue, &renderer, [128, 128], &[Some(..)]).remove(0));
     for (target, area) in pixels[..2].iter().zip([[16, 16, 48, 64], [80, 80, 112, 128]]) {
         ink_bounds(target, 128); // Each target must contain ink.
         for (i, pixel) in target.as_chunks::<4>().0.iter().enumerate() {
@@ -440,6 +451,24 @@ fn prepared_ranges_draw_layers_in_one_submit_and_preserve_indices() {
     }
     assert_eq!(pixels[2], pixels[3], "render and full render_range must match");
     assert_eq!(pixels[2], pixels[4], "range end must be clamped");
+    assert_eq!(pixels[2], draw_range_targets(&device, &queue, &renderer, [128, 128], &[Some(..)])[0]);
+    assert_eq!(pixels[1], draw_range_targets(&device, &queue, &renderer, [128, 128], &[Some(1..)])[0]);
+    assert_eq!(pixels[0], draw_range_targets(&device, &queue, &renderer, [128, 128], &[Some(..1)])[0]);
+    assert_eq!(pixels[0], draw_range_targets(&device, &queue, &renderer, [128, 128], &[Some(..=0)])[0]);
+    use std::ops::Bound;
+    let extreme = draw_range_targets(&device, &queue, &renderer, [128, 128], &[
+        Some((Bound::Excluded(usize::MAX), Bound::Unbounded)),
+        Some((Bound::Unbounded, Bound::Included(usize::MAX))),
+    ]);
+    assert!(extreme[0].iter().all(|&b| b == 255));
+    assert_eq!(pixels[2], extreme[1], "inclusive maximum end must be clamped");
+
+    renderer.prepare(&device, &queue, &first, &store);
+    assert_eq!(pixels[0], draw_targets(&device, &queue, &renderer, [128, 128], &[None])[0],
+        "range selecting A must exactly match preparing A alone");
+    renderer.prepare(&device, &queue, &last, &store);
+    assert_eq!(pixels[1], draw_targets(&device, &queue, &renderer, [128, 128], &[None])[0],
+        "range selecting B must exactly match preparing B alone");
 
     let mut other = FontStore::new(&device);
     let foreign_font = other.load_from_bytes(&device, &queue, bytes, "A").unwrap();
@@ -451,6 +480,9 @@ fn prepared_ranges_draw_layers_in_one_submit_and_preserve_indices() {
         &[Some(2..3), Some(1..2)]);
     assert_eq!(pixels[1], after_skip[0], "skipping a paragraph must preserve later indices");
     assert!(after_skip[1].iter().all(|&b| b == 255));
+    renderer.prepare(&device, &queue, &first, &store);
+    let stale = draw_targets(&device, &queue, &renderer, [128, 128], &[Some(1..2)]);
+    assert!(stale[0].iter().all(|&b| b == 255), "a shorter prepare must clear stale offsets");
     assert!(pollster::block_on(scope.pop()).is_none());
 }
 
@@ -464,8 +496,9 @@ fn invalid_ranges_and_sizes_draw_nothing_and_zero_resize_keeps_viewport() {
     let mut renderer = TextRenderer::new(&device, config.format, &store);
     renderer.resize(&queue, [128, 128]);
     let inverted = std::ops::Range { start: 2, end: 1 };
-    let ranges = [Some(0..usize::MAX), Some(5..10), Some(1..1), Some(inverted.clone()), None];
-    let before_prepare = draw_targets(&device, &queue, &renderer, [128, 128], &ranges);
+    let ranges = [Some(5..10), Some(1..1), Some(inverted.clone()), None];
+    let mut before_prepare = draw_targets(&device, &queue, &renderer, [128, 128], &ranges);
+    before_prepare.push(draw_range_targets(&device, &queue, &renderer, [128, 128], &[Some(..)]).remove(0));
     assert!(before_prepare.iter().all(|target| target.iter().all(|&b| b == 255)));
 
     let paragraph = TypeWriter::new().shape_text(&store, font,
@@ -490,6 +523,31 @@ fn invalid_ranges_and_sizes_draw_nothing_and_zero_resize_keeps_viewport() {
         assert_eq!(wgpu_font_renderer::internals::instance_count(&renderer), 0);
         assert!(draw_targets(&device, &queue, &renderer, [128, 128], &[None])[0]
             .iter().all(|&b| b == 255));
+    }
+    assert!(pollster::block_on(scope.pop()).is_none());
+}
+
+#[test]
+fn rendering_without_a_valid_resize_preserves_clear_colour() {
+    let Some((device, queue, config)) = gpu() else { return; };
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut store = FontStore::new(&device);
+    let font = store.load_from_bytes(&device, &queue,
+        include_bytes!("../fonts/Roboto-Regular.ttf"), "Hi").unwrap();
+    let paragraph = TypeWriter::new().shape_text(&store, font,
+        [24., 48.], 32., [0., 0., 0., 1.], "Hi").unwrap();
+    let mut renderer = TextRenderer::new(&device, config.format, &store);
+    renderer.prepare(&device, &queue, &[paragraph], &store);
+    assert!(wgpu_font_renderer::internals::instance_count(&renderer) > 0);
+    let assert_clear = |renderer: &TextRenderer| {
+        let targets = draw_targets(&device, &queue, renderer, [128, 128], &[None, Some(0..1)]);
+        assert!(targets.iter().all(|target| target.iter().all(|&b| b == 255)),
+            "render and render_range must preserve the clear colour before a valid resize");
+    };
+    assert_clear(&renderer);
+    for size in [[0, 600], [800, 0], [0, 0]] {
+        renderer.resize(&queue, size);
+        assert_clear(&renderer);
     }
     assert!(pollster::block_on(scope.pop()).is_none());
 }

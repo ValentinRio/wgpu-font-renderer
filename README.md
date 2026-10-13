@@ -60,7 +60,7 @@ text_renderer.render(&mut pass);
 ```
 
 Call `prepare` once per queue submit with every paragraph of the frame. A second
-`prepare` before the submit changes what earlier `render` calls of that submit
+`prepare` before the submit can change what earlier `render` calls of that submit
 draw. For layers, prepare both lists together and draw ranges at different points
 of a pass (or in different passes):
 
@@ -70,7 +70,7 @@ text_renderer.prepare(
 );
 text_renderer.render_range(&mut pass, 0..body.len()); // Text below.
 // Draw something else into the same pass here.
-text_renderer.render_range(&mut pass, body.len()..body.len() + overlay.len()); // Text on top.
+text_renderer.render_range(&mut pass, body.len()..); // Text on top.
 // End the pass, then submit the encoder once.
 ```
 

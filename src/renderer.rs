@@ -1,4 +1,4 @@
-use std::mem;
+use std::{mem, ops::{Bound, RangeBounds}};
 
 use bytemuck::{Pod, Zeroable};
 use owned_ttf_parser::AsFaceRef;
@@ -35,6 +35,7 @@ pub struct TextRenderer {
     subpixel_order: SubpixelOrder,
     pipeline: RenderPipeline,
     uniforms: Buffer,
+    has_valid_size: bool,
     vertices: Buffer,
     indices: Buffer,
     instances_buffer: Option<Buffer>,
@@ -274,6 +275,7 @@ impl TextRenderer {
             subpixel_order,
             pipeline,
             uniforms,
+            has_valid_size: false,
             vertices,
             indices,
             instances_buffer: None,
@@ -298,7 +300,7 @@ impl TextRenderer {
     /// when its capacity suffices.
     ///
     /// Call `prepare` once per queue submit with every paragraph of the frame.
-    /// A second `prepare` before the submit changes what earlier `render` calls
+    /// A second `prepare` before the submit can change what earlier `render` calls
     /// of that submit draw. Use [`Self::render_range`] to draw subsets at different
     /// points of a pass or in different passes.
     pub fn prepare<'a>(
@@ -399,6 +401,7 @@ impl TextRenderer {
     /// Must be called before the first [`Self::render`] and on every viewport
     /// change. Writes the existing uniform buffer using the renderer's queue.
     /// If either dimension is zero, returns without changing the previous size.
+    /// Until a resize with two nonzero dimensions, rendering leaves the pass untouched.
     pub fn resize(&mut self, queue: &wgpu::Queue, size: [u32; 2]) {
         if size[0] == 0 || size[1] == 0 {
             return;
@@ -408,38 +411,57 @@ impl TextRenderer {
             _pad: [0, 0],
             transform: orthographic_projection_matrix(0., size[0] as f32, size[1] as f32, 0.),
         }));
+        self.has_valid_size = true;
     }
 
     /// Draw all prepared paragraphs into a pass with the configured target format.
-    /// Equivalent to [`Self::render_range`] with `0..count`, where `count` is the
-    /// number of paragraphs in the last preparation. An empty batch does nothing.
+    /// Equivalent to [`Self::render_range`] with `..`. An empty batch does nothing.
+    /// Until a resize with two nonzero dimensions, leaves the pass untouched.
+    /// Zero-dimension resize calls keep any previous valid size.
     /// Call [`Self::resize`] before the first render and on every viewport change.
     /// The pass's scissor rectangle is preserved.
     ///
     /// Call `prepare` once per queue submit with every paragraph of the frame.
-    /// A second `prepare` before the submit changes what earlier `render` calls
+    /// A second `prepare` before the submit can change what earlier `render` calls
     /// of that submit draw. Use [`Self::render_range`] to draw subsets at different
     /// points of a pass or in different passes.
     pub fn render(&self, pass: &mut RenderPass<'_>) {
-        self.render_range(pass, 0..self.paragraph_offsets.len().saturating_sub(1));
+        self.render_range(pass, ..);
     }
 
     /// Draw paragraphs by their position in the sequence given to the last
     /// [`Self::prepare`]. Skipped paragraphs keep their index and draw nothing.
-    /// The end is clamped to the paragraph count; empty or inverted ranges and
-    /// calls before any preparation draw nothing. The pass's scissor is preserved.
+    /// Accepts any range syntax, including `2..4`, `2..`, `..2`, `..=1`, and `..`.
+    /// Bounds are clamped to the paragraph count; empty or inverted ranges and
+    /// calls before any preparation draw nothing. Bounds never overflow or panic.
+    /// Until a resize with two nonzero dimensions, leaves the pass untouched.
+    /// Zero-dimension resize calls keep any previous valid size.
+    /// The pass's scissor is preserved.
     /// Call [`Self::resize`] before the first render and on every viewport change.
     ///
     /// Call `prepare` once per queue submit with every paragraph of the frame.
-    /// A second `prepare` before the submit changes what earlier `render` calls
+    /// A second `prepare` before the submit can change what earlier `render` calls
     /// of that submit draw. Use `render_range` to draw subsets at different points
     /// of a pass or in different passes.
-    pub fn render_range(&self, pass: &mut RenderPass<'_>, paragraphs: std::ops::Range<usize>) {
-        let end = paragraphs.end.min(self.paragraph_offsets.len().saturating_sub(1));
-        if paragraphs.start >= end {
+    pub fn render_range(&self, pass: &mut RenderPass<'_>, paragraphs: impl RangeBounds<usize>) {
+        if !self.has_valid_size {
             return;
         }
-        let instances = self.paragraph_offsets[paragraphs.start]..self.paragraph_offsets[end];
+        let count = self.paragraph_offsets.len().saturating_sub(1);
+        let start = match paragraphs.start_bound() {
+            Bound::Included(&index) => index,
+            Bound::Excluded(&index) => index.saturating_add(1),
+            Bound::Unbounded => 0,
+        }.min(count);
+        let end = match paragraphs.end_bound() {
+            Bound::Included(&index) => index.saturating_add(1),
+            Bound::Excluded(&index) => index,
+            Bound::Unbounded => count,
+        }.min(count);
+        if start >= end {
+            return;
+        }
+        let instances = self.paragraph_offsets[start]..self.paragraph_offsets[end];
         if instances.is_empty() {
             return;
         }

@@ -23,7 +23,7 @@ below 1.0, a minor bump (0.x) may break the API.
 - `TextRenderer::new` takes a texture format and `&FontStore` instead of a surface configuration and atlas.
 - `TextRenderer::new_with_subpixel_order` becomes `with_subpixel_order`, with the same format/store change.
 - `TextRenderer::update_uniforms` becomes `resize`, takes a queue, and must be called before the first render and on every viewport change.
-- `TextRenderer::prepare` also takes a queue, skips unknown fonts and invalid sizes, refreshes the atlas binding, and reuses instance buffers. Call it once per queue submit with every paragraph of the frame: a second preparation before submit changes what earlier render calls draw. Use `render_range` for layered or multi-pass drawing.
+- `TextRenderer::prepare` also takes a queue, skips unknown fonts and invalid sizes, refreshes the atlas binding, and reuses instance buffers. Call it once per queue submit with every paragraph of the frame: a second preparation before submit can change what earlier render calls draw. Use `render_range` for layered or multi-pass drawing.
 - `TextRenderer::render` takes `&self` and a render pass without a size argument or lifetime tie to the renderer, and preserves the pass scissor rectangle.
 - `Font`, `Glyph`, `Atlas`, `Allocation`, `Resolution`, `Params`, `FontStore::get`, and `FontStore::atlas` leave the stable API; limited inspection is available only through the hidden, semver-exempt `internals` module with `unstable-internals`.
 
