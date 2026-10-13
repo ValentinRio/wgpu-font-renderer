@@ -28,30 +28,39 @@ wgpu-font-renderer = "0.2"
 
 ## Usage
 
+These examples target the upcoming 1.0 API. For changes from the published 0.2
+API, see [the migration guide](CHANGELOG.md#migrating-from-02).
+
 ```rust
 use wgpu_font_renderer::{FontStore, TextRenderer, TypeWriter};
 
 // Once, at startup. `config` is your wgpu::SurfaceConfiguration.
 // The preset string lists the characters your app will draw.
-let mut font_store = FontStore::new(&device, &config);
+let mut font_store = FontStore::new(&device);
 let cache_preset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789,;:!ù*^$=)àç_è-('\"é&²<>+°§/.? ";
 let font_key = font_store
     .load(&device, &queue, "fonts/Roboto-Regular.ttf", cache_preset)
     .expect("Couldn't load the font");
-let mut text_renderer = TextRenderer::new(&device, &config, font_store.atlas());
+let mut text_renderer = TextRenderer::new(&device, config.format, &font_store);
+// Before the first render and on every viewport change.
+text_renderer.resize(&queue, [config.width, config.height]);
 
 // Whenever the text changes: shape paragraphs and hand them to the renderer.
 // Arguments: font, position on screen, font size, linear RGBA color, text.
 let mut type_writer = TypeWriter::new();
 let mut paragraphs = Vec::new();
-if let Some(paragraph) = type_writer.shape_text(&font_store, font_key, [100., 100.], 72, [0.68, 0.5, 0.12, 1.], "Salut, c'est cool!") {
+if let Some(paragraph) = type_writer.shape_text(&font_store, font_key, [100., 100.], 72., [0.68, 0.5, 0.12, 1.], "Salut, c'est cool!") {
     paragraphs.push(paragraph);
 }
-text_renderer.prepare(&device, &paragraphs, &font_store);
+text_renderer.prepare(&device, &queue, &paragraphs, &font_store);
 
 // Every frame, inside an existing render pass.
-text_renderer.render(&mut pass, [config.width, config.height]);
+text_renderer.render(&mut pass);
 ```
+
+Font sizes are `f32` physical pixels per em. Fonts loaded after renderer construction
+are picked up by the next `prepare` call. Paragraph fields are read through getters;
+use `set_position`, `set_color`, and `push` to edit a run.
 
 `FontStore::load` reads the font from a file path. On wasm, or to embed the font in the binary, use `FontStore::load_from_bytes`.
 
@@ -59,7 +68,7 @@ A complete program is in [`examples/simple.rs`](examples/simple.rs).
 
 ### Subpixel (LCD) anti-aliasing
 
-For subpixel (LCD) anti-aliasing, create the renderer with `TextRenderer::new_with_subpixel_order(&device, &config, font_store.atlas(), SubpixelOrder::Rgb)` (or `SubpixelOrder::Bgr`), and request `wgpu::Features::DUAL_SOURCE_BLENDING` when creating the device. Without that feature the renderer stays grayscale and `lcd_active()` returns `false`. `TextRenderer::new` is always grayscale.
+For subpixel (LCD) anti-aliasing, create the renderer with `TextRenderer::with_subpixel_order(&device, config.format, &font_store, SubpixelOrder::Rgb)` (or `SubpixelOrder::Bgr`), and request `wgpu::Features::DUAL_SOURCE_BLENDING` when creating the device. Without that feature the renderer stays grayscale and `lcd_active()` returns `false`. `TextRenderer::new` is always grayscale.
 
 In LCD mode the horizontal ray is evaluated once and its coverage is taken at three positions a third of a pixel apart, one per channel; the vertical ray is shared. LCD output assumes a horizontal RGB or BGR panel, text drawn over an opaque background, and no rotation or scaling after rendering. It scales each channel's coverage by `color.a`; grayscale ignores `color.a`. There is no LCD filter yet, so small sizes show some colour fringing.
 
@@ -96,12 +105,12 @@ To run the same example in a browser:
 
 ## Testing
 
-Run `cargo test --offline`. Native GPU tests skip with a diagnostic when no adapter
+Run `cargo test --all-features --offline`. Native GPU tests skip with a diagnostic when no adapter
 is available. Set `REQUIRE_GPU=1` to fail instead, so CI cannot silently skip GPU
 coverage:
 
 ```sh
-REQUIRE_GPU=1 cargo test --offline
+REQUIRE_GPU=1 cargo test --all-features --offline
 ```
 
 CI runs the suite on Mesa lavapipe with `REQUIRE_GPU=1`. A software adapter
@@ -111,7 +120,7 @@ wasm32. No tests are marked ignored.
 ## Benchmarking
 
 ```sh
-cargo bench --offline --bench shader
+cargo bench --all-features --offline --bench shader
 ```
 
 The shader benchmark renders four fixed scenes and can compare a branch against a saved baseline. Options, methodology and how to read the verdicts are in [`benches/README.md`](benches/README.md).

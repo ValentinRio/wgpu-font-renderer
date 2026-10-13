@@ -21,9 +21,8 @@
 //! both x and y. Shaping retains only the first glyph of each cluster,
 //! and glyphs absent from the cache preset are skipped during drawing.
 //!
-//! Load all required outlines before constructing the renderer: its atlas bind
-//! group is not refreshed when subsequent loads grow the atlas. Use nonzero
-//! viewport dimensions and update uniforms whenever the viewport changes.
+//! Call [`TextRenderer::resize`] before the first render and on every viewport
+//! change. Later font loads are picked up by [`TextRenderer::prepare`].
 //!
 //! ```no_run
 //! use wgpu_font_renderer::{FontStore, TextRenderer, TypeWriter};
@@ -31,16 +30,16 @@
 //! # fn draw(device: &wgpu::Device, queue: &wgpu::Queue,
 //! # config: &wgpu::SurfaceConfiguration, view: &wgpu::TextureView)
 //! # -> Result<(), wgpu_font_renderer::LoadingError> {
-//! let mut fonts = FontStore::new(device, config);
+//! let mut fonts = FontStore::new(device);
 //! // On wasm, embed bytes with include_bytes! rather than reading a file.
 //! let bytes = std::fs::read("fonts/Roboto-Regular.ttf").expect("read font");
 //! let key = fonts.load_from_bytes(device, queue, &bytes, "Hello")?;
 //! let paragraph = TypeWriter::new()
-//!     .shape_text(&fonts, key, [24.0, 24.0], 32, [0.0, 0.0, 0.0, 1.0], "Hello")
+//!     .shape_text(&fonts, key, [24.0, 24.0], 32.0, [0.0, 0.0, 0.0, 1.0], "Hello")
 //!     .expect("font is loaded");
-//! let mut renderer = TextRenderer::new(device, config, fonts.atlas());
-//! renderer.prepare(device, &[paragraph], &fonts);
-//! renderer.update_uniforms(device, [config.width, config.height]);
+//! let mut renderer = TextRenderer::new(device, config.format, &fonts);
+//! renderer.prepare(device, queue, &[paragraph], &fonts);
+//! renderer.resize(queue, [config.width, config.height]);
 //! let mut encoder = device.create_command_encoder(&Default::default());
 //! {
 //!     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -52,11 +51,29 @@
 //!         })],
 //!         ..Default::default()
 //!     });
-//!     renderer.render(&mut pass, [config.width, config.height]);
+//!     renderer.render(&mut pass);
 //! }
 //! queue.submit(Some(encoder.finish()));
 //! # Ok(())
 //! # }
+//! ```
+
+//! Every stable public type can be named through this crate or wgpu alone.
+//! ```
+//! fn public_types(
+//!     _: Option<wgpu_font_renderer::FontId>,
+//!     _: wgpu_font_renderer::GlyphId,
+//!     _: Option<wgpu_font_renderer::FontStore>,
+//!     _: Option<wgpu_font_renderer::LoadingError>,
+//!     _: Option<wgpu_font_renderer::Paragraph>,
+//!     _: wgpu_font_renderer::TypeWriter,
+//!     _: wgpu_font_renderer::SubpixelOrder,
+//!     _: Option<wgpu_font_renderer::TextRenderer>,
+//!     _: Option<wgpu::TextureFormat>,
+//! ) {}
+//! public_types(None, wgpu_font_renderer::GlyphId(0), None, None, None,
+//!     wgpu_font_renderer::TypeWriter::default(),
+//!     wgpu_font_renderer::SubpixelOrder::None, None, None);
 //! ```
 
 mod loader;
@@ -66,10 +83,35 @@ mod renderer;
 mod typewriter;
 mod ortho;
 pub use renderer::{SubpixelOrder, TextRenderer};
-pub use store::FontStore;
+pub use store::{FontId, FontStore};
 pub use loader::LoadingError;
 pub use typewriter::TypeWriter;
-pub use typewriter::Paragraph;
+pub use typewriter::{GlyphId, Paragraph};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod atlas_tests;
+
+/// Inspection helpers for tests and benchmarks; exempt from semver guarantees.
+#[cfg(feature = "unstable-internals")]
+#[doc(hidden)]
+pub mod internals {
+    pub use crate::loader::{Font, Glyph};
+    pub use crate::atlas::allocation::Allocation;
+
+    /// Inspect a loaded font.
+    pub fn font(store: &crate::FontStore, id: crate::FontId) -> Option<&Font> {
+        store.get(id)
+    }
+    /// Inspect the current atlas view.
+    pub fn atlas_view(store: &crate::FontStore) -> &wgpu::TextureView {
+        store.atlas().view()
+    }
+    /// Inspect the number of logical atlas layers.
+    pub fn atlas_layer_count(store: &crate::FontStore) -> usize {
+        store.atlas().layer_count()
+    }
+    /// Inspect the buffer identity to check instance allocation reuse.
+    pub fn instance_buffer(renderer: &crate::TextRenderer) -> Option<&wgpu::Buffer> {
+        renderer.instance_buffer()
+    }
+}

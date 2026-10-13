@@ -7,6 +7,109 @@ below 1.0, a minor bump (0.x) may break the API.
 
 ## [Unreleased]
 
+### Breaking
+
+- Font handles returned by `load` and `load_from_bytes` are opaque `FontId` values.
+- Glyph indices in paragraphs use the root-exported `GlyphId(pub u16)`.
+- `FontStore::new` takes only a device.
+- `FontStore::load` accepts any `AsRef<Path>` path and returns `FontId`.
+- `FontStore::load_from_bytes` returns `FontId`.
+- `LoadingError` is non-exhaustive, with `Io(std::io::Error)` and `InvalidFont`; it implements `Error` and preserves the I/O source.
+- `Paragraph` fields are private; use getters, `set_position`, and `set_color`.
+- `Paragraph::new` takes the font first, followed by position, size, and color.
+- `Paragraph::append` is renamed to `push`.
+- Font sizes in `Paragraph` and `TypeWriter::shape_text` are `f32` pixels per em.
+- `SubpixelOrder` is non-exhaustive; include a fallback arm when matching.
+- `TextRenderer::new` takes a texture format and `&FontStore` instead of a surface configuration and atlas.
+- `TextRenderer::new_with_subpixel_order` becomes `with_subpixel_order`, with the same format/store change.
+- `TextRenderer::update_uniforms` becomes `resize`, takes a queue, and must be called before the first render and on every viewport change.
+- `TextRenderer::prepare` also takes a queue, skips unknown fonts, refreshes the atlas binding, and reuses instance buffers.
+- `TextRenderer::render` takes `&self` and a render pass without a size argument or lifetime tie to the renderer, and preserves the pass scissor rectangle.
+- `Font`, `Glyph`, `Atlas`, `Allocation`, `Resolution`, `Params`, `FontStore::get`, and `FontStore::atlas` leave the stable API; limited inspection is available only through the hidden, semver-exempt `internals` module with `unstable-internals`.
+
+### Migrating from 0.2
+
+Before (0.2):
+
+```rust,ignore
+let mut store = FontStore::new(device, config);
+let key = store.load(device, queue, "font.otf", "Hi")?; // external cache key
+let memory_key = store.load_from_bytes(device, queue, bytes, "Hi")?;
+let mut writer = TypeWriter::new(); // Default is also available
+let mut paragraph = Paragraph::new([24., 24.], 32, [0., 0., 0., 1.], key);
+paragraph.append(owned_ttf_parser::GlyphId(1), 12.);
+paragraph.position = [40., 24.];
+paragraph.color = [1.; 4];
+let metrics = (paragraph.font_key, paragraph.position, paragraph.size,
+    paragraph.color, paragraph.width, &paragraph.glyphs);
+let shaped = writer.shape_text(&store, memory_key, [24., 24.], 32, [1.; 4], "Hi");
+let mut gray = TextRenderer::new(device, config, store.atlas());
+let mut renderer = TextRenderer::new_with_subpixel_order(
+    device, config, store.atlas(), SubpixelOrder::Rgb); // None and Bgr also exist
+let lcd = renderer.lcd_active();
+renderer.update_uniforms(device, [config.width, config.height]);
+renderer.prepare(device, &[paragraph], &store);
+renderer.render(pass, [config.width, config.height]);
+match error {
+    LoadingError::FileNotFound => {},
+    LoadingError::InvalidFile => {},
+}
+let font = store.get(key).unwrap(); // Font: face, offset, key, glyph_cache, as_ref()
+let glyph = font.glyph_cache.values().next().unwrap();
+let outlines = (&glyph.curves, &glyph.bands);
+let glyph_metrics = (glyph.bbox, glyph.descent, glyph.y_offset, glyph.left_side_bearing);
+let atlas = store.atlas(); // Atlas: view(), layer_count(), upload(), upload_bands(), texture_format
+let allocation = &glyph.allocation; // Allocation: position(), size(), layer(), layer, region
+// Font::from_file/from_bytes and Atlas::new supported direct internal loading.
+// Resolution and Params described the renderer's GPU uniform layout.
+```
+
+After:
+
+```rust,ignore
+use wgpu_font_renderer::{FontId, GlyphId, FontStore, LoadingError,
+    Paragraph, SubpixelOrder, TextRenderer, TypeWriter};
+let mut store = FontStore::new(device);
+let font: FontId = store.load(device, queue, "font.otf", "Hi")?;
+let memory_font = store.load_from_bytes(device, queue, bytes, "Hi")?;
+let mut writer = TypeWriter::default(); // new() remains available
+let mut paragraph = Paragraph::new(font, [24., 24.], 32., [0., 0., 0., 1.]);
+paragraph.push(GlyphId(1), 12.);
+paragraph.set_position([40., 24.]);
+paragraph.set_color([1.; 4]);
+let metrics = (paragraph.font(), paragraph.position(), paragraph.size(),
+    paragraph.color(), paragraph.width(), paragraph.glyphs());
+let shaped = writer.shape_text(&store, memory_font, [24., 24.], 32., [1.; 4], "Hi");
+let mut gray = TextRenderer::new(device, config.format, &store);
+let mut renderer = TextRenderer::with_subpixel_order(
+    device, config.format, &store, SubpixelOrder::Rgb); // None and Bgr unchanged
+let lcd = renderer.lcd_active();
+renderer.resize(queue, [config.width, config.height]);
+renderer.prepare(device, queue, &[paragraph], &store);
+// Set the scissor rectangle yourself if needed.
+renderer.render(pass);
+match error {
+    LoadingError::Io(error) => { /* std::error::Error::source preserves this */ },
+    LoadingError::InvalidFont => {},
+    _ => {},
+}
+// Tests/benchmarks only, with unstable-internals enabled:
+let font = wgpu_font_renderer::internals::font(&store, font).unwrap();
+let glyph = font.glyph_cache.values().next().unwrap();
+let curves = &glyph.curves;
+let glyph_metrics = (glyph.bbox, glyph.descent, glyph.y_offset, glyph.left_side_bearing);
+let allocation = &glyph.allocation; // position(), size(), layer() remain inspectable
+let bands = &glyph.bands;
+let face = &font.face;
+let view = wgpu_font_renderer::internals::atlas_view(&store);
+let layers = wgpu_font_renderer::internals::atlas_layer_count(&store);
+// Direct Font/Atlas construction, uploading, parser references, allocation mutation,
+// and Resolution/Params have no stable replacement: load through FontStore,
+// use Paragraph for placement, and resize for the uniform viewport dimensions.
+```
+
+Run tests and benchmarks with `--all-features` to enable inspection targets.
+
 ### Added
 
 - CI checks for GPU tests on Mesa lavapipe, lint warnings, documentation, MSRV,

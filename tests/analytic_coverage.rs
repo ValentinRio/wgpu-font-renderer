@@ -19,7 +19,7 @@ use common::coverage_limits::{C3_DENSE_MEAN_ERRORS, C3_MAX_ERROR, C3_MEAN_ERRORS
 
 #[test]
 fn c3_every_cached_glyph_matches_method_and_box_error_bounds() {
-    let Some((device, queue, config)) = common::gpu() else {
+    let Some((device, queue, _config)) = common::gpu() else {
         return;
     };
     let mut compared = 0_usize;
@@ -45,11 +45,11 @@ fn c3_every_cached_glyph_matches_method_and_box_error_bounds() {
             C3_DENSE_MEAN_ERRORS,
         ),
     ] {
-        let mut store = FontStore::new(&device, &config);
+        let mut store = FontStore::new(&device);
         let key = store
             .load_from_bytes(&device, &queue, bytes, preset)
             .unwrap();
-        let font = store.get(key).unwrap();
+        let font = wgpu_font_renderer::internals::font(&store, key).unwrap();
         if name == "Noto Serif SC" {
             for ch in NOTO_PRESET.chars() {
                 let id = font
@@ -90,7 +90,7 @@ fn c3_every_cached_glyph_matches_method_and_box_error_bounds() {
                 }
                 body += "return vec4(0.);";
                 let source = analytic::source(&body);
-                let pixels = probe::probe_pixels(&device, &queue, store.atlas().view(), &source);
+                let pixels = probe::probe_pixels(&device, &queue, wgpu_font_renderer::internals::atlas_view(&store), &source);
                 for (tile, (id, glyph)) in batch.iter().enumerate() {
                     let ch = preset
                         .chars()
@@ -175,7 +175,7 @@ fn c7_dilated_quad_covers_pixels_outside_bbox_without_moving_ink() {
     let Some((device, queue, config)) = common::gpu() else {
         return;
     };
-    let mut store = FontStore::new(&device, &config);
+    let mut store = FontStore::new(&device);
     let key = store
         .load_from_bytes(
             &device,
@@ -184,7 +184,7 @@ fn c7_dilated_quad_covers_pixels_outside_bbox_without_moving_ink() {
             "I",
         )
         .unwrap();
-    let font = store.get(key).unwrap();
+    let font = wgpu_font_renderer::internals::font(&store, key).unwrap();
     let id = font.face.as_face_ref().glyph_index('I').unwrap();
     let glyph = &font.glyph_cache[&id];
     let scale = 48. / font.face.as_face_ref().units_per_em() as f32;
@@ -195,10 +195,10 @@ fn c7_dilated_quad_covers_pixels_outside_bbox_without_moving_ink() {
         20.75,
         top - (glyph.y_offset as f32 + f32::from(glyph.descent).abs()) * scale,
     ];
-    let mut paragraph = Paragraph::new(position, 48, [1.; 4], key);
-    paragraph.append(id, 0.);
-    let mut renderer = TextRenderer::new(&device, &config, store.atlas());
-    renderer.prepare(&device, &[paragraph], &store);
+    let mut paragraph = Paragraph::new(key, position, 48., [1.; 4]);
+    paragraph.push(wgpu_font_renderer::GlyphId(id.0), 0.);
+    let mut renderer = TextRenderer::new(&device, config.format, &store);
+    renderer.prepare(&device, &queue, &[paragraph], &store);
     let pixels = draw::draw_pixels(
         &device,
         &queue,

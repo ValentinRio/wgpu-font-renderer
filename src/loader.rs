@@ -15,6 +15,7 @@ pub struct Glyph {
     /// explicitly closed; glyphs with negative total signed area are reversed
     /// to match TrueType winding for the shader.
     /// Coordinates use x rightward and y downward, flipped around `bbox.y_max`.
+    #[cfg(feature = "unstable-internals")]
     pub curves: Vec<f32>,
     /// Atlas location and float-texel count for the encoded segments.
     pub allocation: Allocation,
@@ -38,9 +39,9 @@ pub struct Font {
     /// Parsed face; metrics and outlines use font units, y upward.
     pub face: OwnedFace,
     /// Byte offset of this face within the font data.
-    pub offset: u32,
+    pub(crate) offset: u32,
     /// Unique swash cache key identifying this loaded face.
-    pub key: CacheKey,
+    pub(crate) key: CacheKey,
     /// Outlines successfully cached for the requested characters, by glyph ID.
     pub glyph_cache: HashMap<GlyphId, Glyph>,
 }
@@ -49,50 +50,40 @@ type Result<T> = std::result::Result<T, LoadingError>;
 
 #[derive(Debug)]
 /// Failure to read or parse a font. GPU errors are handled by wgpu instead.
+#[non_exhaustive]
 pub enum LoadingError {
     /// The file could not be read, including permission and other I/O failures.
-    FileNotFound,
+    Io(std::io::Error),
     /// Invalid font bytes or a face index absent from the font collection.
-    InvalidFile,
+    InvalidFont,
 }
 
 impl fmt::Display for LoadingError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            LoadingError::FileNotFound =>
-                write!(f, "TTF Font file not found"),
-            LoadingError::InvalidFile =>
-                write!(f, "TTF Font file provided is invalid"),
+        match self {
+            Self::Io(error) => write!(f, "Could not read font: {error}"),
+            Self::InvalidFont => write!(f, "Invalid font data"),
+        }
+    }
+}
+
+impl std::error::Error for LoadingError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::InvalidFont => None,
         }
     }
 }
 
 impl Font {
-    /// Read a font file, select a zero-based face index, and upload preset outlines.
-    /// Returns `FileNotFound` for I/O errors and `InvalidFile` for parsing failures.
-    /// Submit the encoder after loading; device, queue, and atlas must match.
-    /// GPU failures follow wgpu validation. Filesystem access is unavailable on wasm.
-    pub fn from_file(
-        device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
-        queue: &wgpu::Queue,
-        path: &str,
-        index: usize,
-        cache_preset: &str,
-        atlas: &mut Atlas
-    ) -> Result<Font> {
-        // Read the font file as bytes
-        let data = std::fs::read(path).or(Err(LoadingError::FileNotFound))?;
-        Self::from_bytes(device, encoder, queue, data, index, cache_preset, atlas)
-    }
-
     /// Parse owned font bytes at a zero-based face index and upload preset outlines.
     /// Variable fonts use the default variation instance.
-    /// Returns `InvalidFile` for invalid data or an absent face. Unsupported
+    /// Returns `InvalidFont` for invalid data or an absent face. Unsupported
     /// characters and outlines without bounding boxes are skipped. A glyph is
     /// also silently skipped if `atlas.upload` returns `None`. Submit the encoder
     /// afterward; device, queue, and atlas must match. GPU failures follow wgpu validation.
-    pub fn from_bytes(
+    pub(crate) fn from_bytes(
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         queue: &wgpu::Queue,
@@ -110,7 +101,7 @@ impl Font {
     }
 
     /// Borrow the original bytes as a swash font reference with the same cache key.
-    pub fn as_ref(&self) -> FontRef<'_> {
+    pub(crate) fn as_ref(&self) -> FontRef<'_> {
         FontRef {
             data: &self.data,
             offset: self.offset,
@@ -122,10 +113,10 @@ impl Font {
 
 // Both parsers must accept the same face; keep its offset/key from swash.
 fn parse_font(data: &[u8], index: usize) -> Result<(OwnedFace, u32, CacheKey)> {
-    let font = FontRef::from_index(data, index).ok_or(LoadingError::InvalidFile)?;
+    let font = FontRef::from_index(data, index).ok_or(LoadingError::InvalidFont)?;
     let (offset, key) = (font.offset, font.key);
     let face = OwnedFace::from_vec(data.to_vec(), index as u32)
-        .or(Err(LoadingError::InvalidFile))?;
+        .or(Err(LoadingError::InvalidFont))?;
     Ok((face, offset, key))
 }
 
@@ -181,6 +172,7 @@ fn create_glyph_cache(
                         device, encoder, queue,
                     );
                     let glyph = Glyph {
+                        #[cfg(feature = "unstable-internals")]
                         curves: builder.curves,
                         allocation,
                         bands,
@@ -577,12 +569,12 @@ mod tests {
         ] {
             assert!(matches!(
                 parse_font(bytes, 0),
-                Err(LoadingError::InvalidFile)
+                Err(LoadingError::InvalidFont)
             ));
         }
         assert!(matches!(
             parse_font(include_bytes!("../fonts/Roboto-Regular.ttf"), 1),
-            Err(LoadingError::InvalidFile)
+            Err(LoadingError::InvalidFont)
         ));
     }
 

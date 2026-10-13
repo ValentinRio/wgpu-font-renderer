@@ -1,7 +1,6 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use owned_ttf_parser::AsFaceRef;
-use swash::CacheKey;
 use wgpu_font_renderer::{FontStore, LoadingError, TextRenderer, TypeWriter};
 
 mod common;
@@ -10,13 +9,13 @@ use common::gpu;
 
 #[test]
 fn shape_text_preserves_glyphs_advances_and_rejects_unknown_font() {
-    let Some((device, queue, config)) = gpu() else {
+    let Some((device, queue, _config)) = gpu() else {
         return;
     };
-    let mut store = FontStore::new(&device, &config);
+    let mut store = FontStore::new(&device);
     assert!(matches!(
         store.load_from_bytes(&device, &queue, b"bad font", "Hi"),
-        Err(LoadingError::InvalidFile)
+        Err(LoadingError::InvalidFont)
     ));
     let key = store
         .load_from_bytes(
@@ -28,18 +27,17 @@ fn shape_text_preserves_glyphs_advances_and_rejects_unknown_font() {
         .unwrap();
     let mut writer = TypeWriter::new();
     let paragraph = writer
-        .shape_text(&store, key, [24., 24.], 32, [0., 0., 0., 1.], "Hi Hi")
+        .shape_text(&store, key, [24., 24.], 32., [0., 0., 0., 1.], "Hi Hi")
         .unwrap();
-    let face = store.get(key).unwrap().face.as_face_ref();
+    let face = wgpu_font_renderer::internals::font(&store, key).unwrap().face.as_face_ref();
     let expected: Vec<_> = "Hi Hi"
         .chars()
         .map(|c| face.glyph_index(c).unwrap())
         .collect();
     assert_eq!(
-        paragraph
-            .glyphs
+        paragraph.glyphs()
             .iter()
-            .map(|(id, _)| *id)
+            .map(|(id, _)| owned_ttf_parser::GlyphId(id.0))
             .collect::<Vec<_>>(),
         expected
     );
@@ -48,11 +46,11 @@ fn shape_text_preserves_glyphs_advances_and_rejects_unknown_font() {
         .map(|id| face.glyph_hor_advance(*id).unwrap() as f32 * 32. / face.units_per_em() as f32)
         .sum();
     assert!(
-        (paragraph.width - expected_width).abs() < 1e-5,
+        (paragraph.width() - expected_width).abs() < 1e-5,
         "shaped advances must scale font units into pixels"
     );
-    let mut pen = paragraph.position[0];
-    for (_, advance) in &paragraph.glyphs {
+    let mut pen = paragraph.position()[0];
+    for (_, advance) in paragraph.glyphs() {
         let next = pen + advance;
         assert!(
             next > pen,
@@ -60,13 +58,16 @@ fn shape_text_preserves_glyphs_advances_and_rejects_unknown_font() {
         );
         pen = next;
     }
-    assert!((pen - paragraph.position[0] - paragraph.width).abs() < 1e-5);
+    assert!((pen - paragraph.position()[0] - paragraph.width()).abs() < 1e-5);
+    let mut other_store = FontStore::new(&device);
+    let unknown = other_store.load_from_bytes(&device, &queue,
+        include_bytes!("../fonts/Roboto-Regular.ttf"), "Hi").unwrap();
     assert!(writer
         .shape_text(
             &store,
-            CacheKey::new(),
+            unknown,
             [0., 0.],
-            32,
+            32.,
             [0., 0., 0., 1.],
             "Hi"
         )
@@ -80,6 +81,7 @@ fn draw_pixels(
     renderer: &mut TextRenderer,
     size: [u32; 2],
 ) -> Vec<u8> {
+    renderer.resize(queue, size);
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Text test target"),
         size: wgpu::Extent3d {
@@ -117,7 +119,7 @@ fn draw_pixels(
             })],
             ..Default::default()
         });
-        renderer.render(&mut pass, size);
+        renderer.render(&mut pass);
     }
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
@@ -202,7 +204,7 @@ fn prepare_and_resize_keep_ink_at_pixel_coordinates() {
         return;
     };
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-    let mut store = FontStore::new(&device, &config);
+    let mut store = FontStore::new(&device);
     let key = store
         .load_from_bytes(
             &device,
@@ -212,10 +214,10 @@ fn prepare_and_resize_keep_ink_at_pixel_coordinates() {
         )
         .unwrap();
     let paragraph: wgpu_font_renderer::Paragraph = TypeWriter::new()
-        .shape_text(&store, key, [24., 48.], 32, [0., 0., 0., 1.], "Hi")
+        .shape_text(&store, key, [24., 48.], 32., [0., 0., 0., 1.], "Hi")
         .unwrap();
-    let mut renderer = TextRenderer::new(&device, &config, store.atlas());
-    renderer.prepare(&device, &[paragraph], &store);
+    let mut renderer = TextRenderer::new(&device, config.format, &store);
+    renderer.prepare(&device, &queue, &[paragraph], &store);
     let pixels = draw_pixels(&device, &queue, &mut renderer, [128, 128]);
     assert_hi_fill(&pixels, 187..=253);
     let before = ink_bounds(&pixels, 128);
@@ -224,7 +226,7 @@ fn prepare_and_resize_keep_ink_at_pixel_coordinates() {
         "all ink must be within the expected box: {before:?}"
     );
     for size in [[256, 192], [128, 128]] {
-        renderer.update_uniforms(&device, size);
+        renderer.resize(&queue, size);
         let after = ink_bounds(&draw_pixels(&device, &queue, &mut renderer, size), size[0]);
         assert!(
             after
@@ -234,7 +236,7 @@ fn prepare_and_resize_keep_ink_at_pixel_coordinates() {
             "resizing must preserve physical pixel placement within 1 px: {before:?} -> {after:?}"
         );
     }
-    renderer.prepare(&device, &[], &store);
+    renderer.prepare(&device, &queue, &[], &store);
     assert!(
         draw_pixels(&device, &queue, &mut renderer, [128, 128])
             .as_chunks::<4>()
@@ -251,7 +253,7 @@ fn prepare_uses_paragraph_y_coordinate() {
     let Some((device, queue, config)) = gpu() else {
         return;
     };
-    let mut store = FontStore::new(&device, &config);
+    let mut store = FontStore::new(&device);
     let key = store
         .load_from_bytes(
             &device,
@@ -261,10 +263,10 @@ fn prepare_uses_paragraph_y_coordinate() {
         )
         .unwrap();
     let paragraph = TypeWriter::new()
-        .shape_text(&store, key, [24., 64.], 32, [0., 0., 0., 1.], "Hi")
+        .shape_text(&store, key, [24., 64.], 32., [0., 0., 0., 1.], "Hi")
         .unwrap();
-    let mut renderer = TextRenderer::new(&device, &config, store.atlas());
-    renderer.prepare(&device, &[paragraph], &store);
+    let mut renderer = TextRenderer::new(&device, config.format, &store);
+    renderer.prepare(&device, &queue, &[paragraph], &store);
     let bounds = ink_bounds(
         &draw_pixels(&device, &queue, &mut renderer, [128, 128]),
         128,
@@ -281,7 +283,7 @@ fn cantarell_cff2_loads_outlines_and_renders_ink() {
         return;
     };
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-    let mut store = FontStore::new(&device, &config);
+    let mut store = FontStore::new(&device);
     let key = store
         .load_from_bytes(
             &device,
@@ -290,7 +292,7 @@ fn cantarell_cff2_loads_outlines_and_renders_ink() {
             "Hi",
         )
         .unwrap();
-    let font = store.get(key).unwrap();
+    let font = wgpu_font_renderer::internals::font(&store, key).unwrap();
     for c in "Hi".chars() {
         let id = font.face.as_face_ref().glyph_index(c).unwrap();
         let glyph = font
@@ -311,10 +313,10 @@ fn cantarell_cff2_loads_outlines_and_renders_ink() {
         }
     }
     let paragraph = TypeWriter::new()
-        .shape_text(&store, key, [24., 48.], 32, [0., 0., 0., 1.], "Hi")
+        .shape_text(&store, key, [24., 48.], 32., [0., 0., 0., 1.], "Hi")
         .unwrap();
-    let mut renderer = TextRenderer::new(&device, &config, store.atlas());
-    renderer.prepare(&device, &[paragraph], &store);
+    let mut renderer = TextRenderer::new(&device, config.format, &store);
+    renderer.prepare(&device, &queue, &[paragraph], &store);
     let pixels = draw_pixels(&device, &queue, &mut renderer, [128, 128]);
     assert_hi_fill(&pixels, 149..=201);
     let bounds = ink_bounds(&pixels, 128);
@@ -323,4 +325,60 @@ fn cantarell_cff2_loads_outlines_and_renders_ink() {
         "CFF2 ink must be within the expected box: {bounds:?}"
     );
     assert!(pollster::block_on(scope.pop()).is_none());
+}
+
+#[test]
+fn missing_font_file_preserves_io_source() {
+    use std::error::Error;
+    let Some((device, queue, _config)) = gpu() else { return; };
+    let error = FontStore::new(&device)
+        .load(&device, &queue, "fonts/missing-font-file.otf", "Hi")
+        .unwrap_err();
+    assert!(matches!(error, LoadingError::Io(_)));
+    assert!(error.source().is_some());
+}
+
+#[test]
+fn unknown_font_and_empty_batches_draw_nothing_and_instances_are_reused() {
+    let Some((device, queue, config)) = gpu() else { return; };
+    let mut store = FontStore::new(&device);
+    let bytes = include_bytes!("../fonts/Roboto-Regular.ttf");
+    let font = store.load_from_bytes(&device, &queue, bytes, "Hi").unwrap();
+    let mut other = FontStore::new(&device);
+    let unknown = other.load_from_bytes(&device, &queue, bytes, "Hi").unwrap();
+    let mut writer = TypeWriter::new();
+    let paragraph = writer.shape_text(&store, font, [24., 24.], 32., [0., 0., 0., 1.], "Hi").unwrap();
+    let foreign = writer.shape_text(&other, unknown, [24., 24.], 32., [0., 0., 0., 1.], "Hi").unwrap();
+    let mut renderer = TextRenderer::new(&device, config.format, &store);
+    renderer.prepare(&device, &queue, &[], &store);
+    assert!(draw_pixels(&device, &queue, &mut renderer, [128, 128]).iter().all(|&b| b == 255));
+    renderer.prepare(&device, &queue, std::slice::from_ref(&paragraph), &store);
+    let buffer = wgpu_font_renderer::internals::instance_buffer(&renderer).unwrap().clone();
+    renderer.prepare(&device, &queue, std::slice::from_ref(&paragraph), &store);
+    assert_eq!(&buffer, wgpu_font_renderer::internals::instance_buffer(&renderer).unwrap());
+    let expected = draw_pixels(&device, &queue, &mut renderer, [128, 128]);
+    renderer.prepare(&device, &queue, &[paragraph, foreign.clone()], &store);
+    assert_eq!(expected, draw_pixels(&device, &queue, &mut renderer, [128, 128]));
+    renderer.prepare(&device, &queue, &[foreign], &store);
+    assert!(draw_pixels(&device, &queue, &mut renderer, [128, 128]).iter().all(|&b| b == 255));
+}
+
+#[test]
+fn fonts_loaded_after_renderer_construction_refresh_the_atlas() {
+    let Some((device, queue, config)) = gpu() else { return; };
+    let mut store = FontStore::new(&device);
+    store.load_from_bytes(&device, &queue,
+        include_bytes!("../fonts/Roboto-Regular.ttf"), "Hi").unwrap();
+    let mut renderer = TextRenderer::new(&device, config.format, &store);
+    let layers = wgpu_font_renderer::internals::atlas_layer_count(&store);
+    // Repeated uploads force growth; the final Hi outlines reside in new layers.
+    let preset = "@".repeat(12000) + "Hi";
+    let font = store.load_from_bytes(&device, &queue,
+        include_bytes!("../fonts/Cantarell-VF.otf"), &preset).unwrap();
+    assert!(wgpu_font_renderer::internals::atlas_layer_count(&store) > layers);
+    let paragraph = TypeWriter::new().shape_text(&store, font,
+        [24., 24.], 32., [0., 0., 0., 1.], "Hi").unwrap();
+    renderer.prepare(&device, &queue, &[paragraph], &store);
+    let pixels = draw_pixels(&device, &queue, &mut renderer, [128, 128]);
+    assert!(pixels.as_chunks::<4>().0.iter().any(|p| p[..3] != [255; 3]));
 }

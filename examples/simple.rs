@@ -87,7 +87,7 @@ impl State {
             format: view_format,
             ..config.clone()
         };
-        let mut font_store = FontStore::new(&device, &renderer_config);
+        let mut font_store = FontStore::new(&device);
         let roboto_text = "Salut, c'est cool!";
         let cantarell_text = "Cantarell draws cubic outlines.";
         let noto_preset = "龍鬱齉直接从轮廓渲染字形文本";
@@ -119,19 +119,19 @@ impl State {
         let mut paragraphs = Vec::new();
         let mut type_writer = TypeWriter::new();
         for (font, position, size, color, text) in [
-            (roboto, [40., 30.], 72, [0.68, 0.5, 0.12, 1.], roboto_text),
+            (roboto, [40., 30.], 72., [0.68, 0.5, 0.12, 1.], roboto_text),
             (
                 cantarell,
                 [40., 140.],
-                32,
+                32.,
                 [0.15, 0.35, 0.55, 1.],
                 cantarell_text,
             ),
-            (noto, [40., 210.], 200, [0.2, 0.2, 0.2, 1.], "龍"),
+            (noto, [40., 210.], 200., [0.2, 0.2, 0.2, 1.], "龍"),
             (
                 noto,
                 [40., 490.],
-                40,
+                40.,
                 [0.2, 0.2, 0.2, 1.],
                 "直接从轮廓渲染字形",
             ),
@@ -142,8 +142,9 @@ impl State {
                     .expect("Font is loaded"),
             );
         }
-        let mut text_renderer = TextRenderer::new(&device, &renderer_config, font_store.atlas());
-        text_renderer.prepare(&device, &paragraphs, &font_store);
+        let mut text_renderer = TextRenderer::new(&device, renderer_config.format, &font_store);
+        text_renderer.prepare(&device, &queue, &paragraphs, &font_store);
+        text_renderer.resize(&queue, [renderer_config.width, renderer_config.height]);
 
         Self {
             window,
@@ -163,7 +164,7 @@ impl State {
         }
         self.surface.configure(&self.device, &self.config);
         self.text_renderer
-            .update_uniforms(&self.device, [size.width, size.height]);
+            .resize(&self.queue, [size.width, size.height]);
         self.window.request_redraw();
     }
 
@@ -206,7 +207,7 @@ impl State {
                 ..Default::default()
             });
             self.text_renderer
-                .render(&mut pass, [self.config.width, self.config.height]);
+                .render(&mut pass);
         }
         self.queue.submit(Some(encoder.finish()));
         self.queue.present(frame);

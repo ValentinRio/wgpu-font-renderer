@@ -293,7 +293,7 @@ fn c5_public_renderer_blends_per_channel() {
     let Some((device, queue, config)) = lcd_gpu() else {
         return;
     };
-    let mut store = FontStore::new(&device, &config);
+    let mut store = FontStore::new(&device);
     let key = store
         .load_from_bytes(
             &device,
@@ -304,11 +304,11 @@ fn c5_public_renderer_blends_per_channel() {
         .unwrap();
     let mut writer = TypeWriter::new();
     let mut renderer =
-        TextRenderer::new_with_subpixel_order(&device, &config, store.atlas(), SubpixelOrder::Rgb);
+        TextRenderer::with_subpixel_order(&device, config.format, &store, SubpixelOrder::Rgb);
     let paragraph = writer
-        .shape_text(&store, key, [12.25, 24.5], 24, [1.; 4], "HiB@")
+        .shape_text(&store, key, [12.25, 24.5], 24., [1.; 4], "HiB@")
         .unwrap();
-    renderer.prepare(&device, &[paragraph], &store);
+    renderer.prepare(&device, &queue, &[paragraph], &store);
     let coverage = draw::draw_pixels(
         &device,
         &queue,
@@ -326,12 +326,12 @@ fn c5_public_renderer_blends_per_channel() {
                 &store,
                 key,
                 [12.25, 24.5],
-                24,
+                24.,
                 [0.8, 0.2, 0.6, alpha],
                 "HiB@",
             )
             .unwrap();
-        renderer.prepare(&device, &[paragraph], &store);
+        renderer.prepare(&device, &queue, &[paragraph], &store);
         let pixels = draw::draw_pixels(
             &device,
             &queue,
@@ -364,18 +364,18 @@ fn c5_public_renderer_blends_per_channel() {
 
 #[test]
 fn c6_lcd_bands_match_full_list_and_are_taken() {
-    let Some((device, queue, config)) = lcd_gpu() else {
+    let Some((device, queue, _config)) = lcd_gpu() else {
         return;
     };
     for bytes in [
         &include_bytes!("../fonts/Roboto-Regular.ttf")[..],
         &include_bytes!("../fonts/Cantarell-VF.otf")[..],
     ] {
-        let mut store = FontStore::new(&device, &config);
+        let mut store = FontStore::new(&device);
         let key = store
             .load_from_bytes(&device, &queue, bytes, "igB@é")
             .unwrap();
-        let font = store.get(key).unwrap();
+        let font = wgpu_font_renderer::internals::font(&store, key).unwrap();
         for c in "igB@é".chars() {
             let glyph = &font.glyph_cache[&font.face.as_face_ref().glyph_index(c).unwrap()];
             let [x, y] = glyph.allocation.position();
@@ -411,8 +411,8 @@ fn c6_lcd_bands_match_full_list_and_are_taken() {
                 "if input.bands.z >= 0. && input.atlas_size > 0 {",
                 "if false {",
             );
-            let actual = probe::probe_pixels(&device, &queue, store.atlas().view(), &shader);
-            let expected = probe::probe_pixels(&device, &queue, store.atlas().view(), &full);
+            let actual = probe::probe_pixels(&device, &queue, wgpu_font_renderer::internals::atlas_view(&store), &shader);
+            let expected = probe::probe_pixels(&device, &queue, wgpu_font_renderer::internals::atlas_view(&store), &full);
             assert!(
                 expected.as_chunks::<4>().0.iter().any(|p| p[0] > 128),
                 "reference must contain ink"
@@ -435,7 +435,7 @@ fn c6_lcd_bands_match_full_list_and_are_taken() {
                 "if input.bands.z >= 0. && input.atlas_size > 0 {",
                 "if input.bands.z >= 0. && input.atlas_size > 0 { return vec3(1., 0., 0.);",
             );
-            let paths = probe::probe_pixels(&device, &queue, store.atlas().view(), &debug);
+            let paths = probe::probe_pixels(&device, &queue, wgpu_font_renderer::internals::atlas_view(&store), &debug);
             // Includes the 12 px and 16 px tiles (indices 9 and 10).
             for tile in 0..12 {
                 assert_eq!(
@@ -456,7 +456,7 @@ fn c7_device_without_feature_falls_back_byte_identically() {
     assert!(!device
         .features()
         .contains(wgpu::Features::DUAL_SOURCE_BLENDING));
-    let mut store = FontStore::new(&device, &config);
+    let mut store = FontStore::new(&device);
     let key = store
         .load_from_bytes(
             &device,
@@ -475,16 +475,16 @@ fn c7_device_without_feature_falls_back_byte_identically() {
                     &store,
                     key,
                     [12.25, 8.5 + i as f32 * 24.],
-                    size,
+                    size as f32,
                     [0.3, 0.6, 0.9, 0.5],
                     "HiB@",
                 )
                 .unwrap()
         })
         .collect();
-    let mut gray = TextRenderer::new(&device, &config, store.atlas());
+    let mut gray = TextRenderer::new(&device, config.format, &store);
     assert!(!gray.lcd_active());
-    gray.prepare(&device, &paragraphs, &store);
+    gray.prepare(&device, &queue, &paragraphs, &store);
     let expected = draw::draw_pixels(&device, &queue, &mut gray, [128, 128], wgpu::Color::WHITE);
     assert!(expected
         .as_chunks::<4>()
@@ -492,9 +492,9 @@ fn c7_device_without_feature_falls_back_byte_identically() {
         .iter()
         .any(|p| p[..3] != [255; 3]));
     for order in [SubpixelOrder::Rgb, SubpixelOrder::Bgr] {
-        let mut lcd = TextRenderer::new_with_subpixel_order(&device, &config, store.atlas(), order);
+        let mut lcd = TextRenderer::with_subpixel_order(&device, config.format, &store, order);
         assert!(!lcd.lcd_active());
-        lcd.prepare(&device, &paragraphs, &store);
+        lcd.prepare(&device, &queue, &paragraphs, &store);
         assert_eq!(
             draw::draw_pixels(&device, &queue, &mut lcd, [128, 128], wgpu::Color::WHITE),
             expected
@@ -510,7 +510,7 @@ fn c9_write_roboto_lcd_comparison_png() {
     config.width = 768;
     config.height = 240;
     let text = "Roboto: Hamburgefontsiv 012345";
-    let mut store = FontStore::new(&device, &config);
+    let mut store = FontStore::new(&device);
     let key = store
         .load_from_bytes(
             &device,
@@ -527,7 +527,7 @@ fn c9_write_roboto_lcd_comparison_png() {
         .enumerate()
     {
         let mut renderer =
-            TextRenderer::new_with_subpixel_order(&device, &config, store.atlas(), order);
+            TextRenderer::with_subpixel_order(&device, config.format, &store, order);
         assert_eq!(renderer.lcd_active(), order != SubpixelOrder::None);
         let paragraphs: Vec<_> = [12, 16, 24]
             .into_iter()
@@ -538,14 +538,14 @@ fn c9_write_roboto_lcd_comparison_png() {
                         &store,
                         key,
                         [12.25, 20. + row as f32 * 72.],
-                        size,
+                        size as f32,
                         [0., 0., 0., 1.],
                         text,
                     )
                     .unwrap()
             })
             .collect();
-        renderer.prepare(&device, &paragraphs, &store);
+        renderer.prepare(&device, &queue, &paragraphs, &store);
         let pixels = draw::draw_pixels(
             &device,
             &queue,

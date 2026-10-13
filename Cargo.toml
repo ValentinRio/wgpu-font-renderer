@@ -10,6 +10,9 @@ readme = "README.md"
 keywords = ["wgpu", "font", "text", "rendering", "gpu"]
 categories = ["graphics", "rendering"]
 
+[features]
+unstable-internals = []
+
 [dependencies]
 wgpu = { version = "30", default-features = true }
 owned_ttf_parser = { version = "0.21.0", default-features = false, features = ["variable-fonts"] }
@@ -32,3 +35,24 @@ console_error_panic_hook = "0.1"
 [[bench]]
 name = "shader"
 harness = false
+required-features = ["unstable-internals"]
+
+[[test]]
+name = "shader_pipeline"
+required-features = ["unstable-internals"]
+
+[[test]]
+name = "lcd_pipeline"
+required-features = ["unstable-internals"]
+
+[[test]]
+name = "text_pipeline"
+required-features = ["unstable-internals"]
+
+[[test]]
+name = "analytic_coverage"
+required-features = ["unstable-internals"]
+
+[[test]]
+name = "benchmark_helpers"
+required-features = ["unstable-internals"]

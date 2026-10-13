@@ -34,7 +34,7 @@ fn row_wrapped_band_data_matches_unwrapped_and_uses_bands_at_400() {
 
 fn placement_regression(prefix: u32, band_prefix: u32, check_path: bool) {
     use owned_ttf_parser::AsFaceRef;
-    let Some((device, queue, config)) = common::gpu() else {
+    let Some((device, queue, _config)) = common::gpu() else {
         return;
     };
     for (c, bytes) in [
@@ -47,7 +47,7 @@ fn placement_regression(prefix: u32, band_prefix: u32, check_path: bool) {
     ] {
         let mut results = Vec::new();
         for (padding, band_padding) in [(0, 0), (prefix, band_prefix)] {
-            let mut atlas = atlas::Atlas::new(&device, &config);
+            let mut atlas = atlas::Atlas::new(&device);
             let mut encoder = device.create_command_encoder(&Default::default());
             if padding > 0 {
                 atlas

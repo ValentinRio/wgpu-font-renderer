@@ -6,7 +6,10 @@ pub mod allocation;
 pub mod layer;
 
 use layer::Layer;
-use wgpu::{SurfaceConfiguration, TextureFormat};
+use wgpu::TextureFormat;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static NEXT_VERSION: AtomicUsize = AtomicUsize::new(1);
 
 use self::{allocation::Allocation, allocator::Allocator};
 
@@ -14,11 +17,10 @@ use self::{allocation::Allocation, allocator::Allocator};
 /// Texel coordinates start at the top left, x rightward and y downward.
 pub struct Atlas {
     texture: wgpu::Texture,
+    pub(crate) version: usize,
     texture_view: wgpu::TextureView,
     layers: Vec<Layer>,
     band_layers: Vec<Layer>,
-    /// Storage format of the outline texture, initially Rgba32Float.
-    pub texture_format: wgpu::TextureFormat,
 }
 
 /// Float slots per row and rows per layer. The texture is SIZE/4 by SIZE
@@ -26,10 +28,10 @@ pub struct Atlas {
 pub const SIZE: u32 = 2048;
 
 impl Atlas {
-    /// Create an empty atlas; the surface configuration is currently unused.
+    /// Create an empty atlas.
     /// Requires device support for a 512-by-2048 Rgba32Float array texture.
     /// Unsupported resources cause wgpu validation errors.
-    pub fn new(device: &wgpu::Device, _surface_config: &SurfaceConfiguration) -> Self {
+    pub fn new(device: &wgpu::Device) -> Self {
         
         let extent = wgpu::Extent3d {
             width: SIZE / 4,
@@ -60,7 +62,7 @@ impl Atlas {
             texture_view,
             layers: vec![Layer::Empty],
             band_layers: vec![Layer::Empty],
-            texture_format: TextureFormat::Rgba32Float,
+            version: NEXT_VERSION.fetch_add(1, Ordering::Relaxed),
         }
     }
 
@@ -250,6 +252,7 @@ impl Atlas {
         // Queue writes are flushed before this submission; later writes then
         // follow the copy, so they cannot be overwritten by atlas growth.
         queue.submit(Some(encoder.finish()));
+        self.version = NEXT_VERSION.fetch_add(1, Ordering::Relaxed);
         self.texture = new_texture;
         self.texture_view = self.texture.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2Array),

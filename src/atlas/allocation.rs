@@ -4,9 +4,9 @@ use super::allocator::Region;
 /// A contiguous row-major run of floats in one atlas layer.
 pub struct Allocation {
     /// Zero-based texture array layer.
-    pub layer: usize,
+    pub(crate) layer: usize,
     /// Float-slot start and count; a region may span rows.
-    pub region: Region,
+    pub(crate) region: Region,
 }
 
 impl Allocation {

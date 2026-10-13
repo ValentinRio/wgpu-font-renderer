@@ -160,10 +160,10 @@ fn glyph_scale_discriminant_is_positive_despite_old_f32_cancellation() {
 
 #[test]
 fn glyph_scale_grazing_ray_keeps_both_gpu_crossings() {
-    let Some((device, queue, config)) = common::gpu() else {
+    let Some((device, queue, _config)) = common::gpu() else {
         return;
     };
-    let atlas = crate::atlas::Atlas::new(&device, &config);
+    let atlas = crate::atlas::Atlas::new(&device);
     let [x, y, z] = GRAZING_Q;
     let body = format!(
         r#"
