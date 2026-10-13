@@ -302,7 +302,7 @@ impl TextRenderer {
     /// # Panics
     /// Panics if a paragraph's font key is absent from `store`. The store and
     /// renderer must share an atlas and device; mismatches can cause GPU errors.
-    pub fn prepare(&mut self, device: &Device, paragraphs: &Vec<Paragraph>, store: &FontStore) {
+    pub fn prepare(&mut self, device: &Device, paragraphs: &[Paragraph], store: &FontStore) {
         self.instances = Vec::new();
         let mut glyph_count = 0;
 

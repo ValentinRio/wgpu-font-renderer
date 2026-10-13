@@ -51,6 +51,12 @@ pub struct TypeWriter {
     context: ShapeContext,
 }
 
+impl Default for TypeWriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TypeWriter {
 
     /// Create an empty shaping context.

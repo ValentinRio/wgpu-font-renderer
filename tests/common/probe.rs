@@ -163,7 +163,7 @@ pub fn assert_ink_tiles(pixels: &[u8]) {
         256 * 768 * 4,
         "reference must contain all size tiles"
     );
-    for (index, tile) in pixels.chunks_exact(256 * 64 * 4).enumerate() {
+    for (index, tile) in pixels.as_chunks::<{ 256 * 64 * 4 }>().0.iter().enumerate() {
         let ink = tile
             .as_chunks::<4>()
             .0

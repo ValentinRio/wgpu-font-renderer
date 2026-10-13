@@ -308,7 +308,7 @@ fn c5_public_renderer_blends_per_channel() {
     let paragraph = writer
         .shape_text(&store, key, [12.25, 24.5], 24, [1.; 4], "HiB@")
         .unwrap();
-    renderer.prepare(&device, &vec![paragraph], &store);
+    renderer.prepare(&device, &[paragraph], &store);
     let coverage = draw::draw_pixels(
         &device,
         &queue,
@@ -331,7 +331,7 @@ fn c5_public_renderer_blends_per_channel() {
                 "HiB@",
             )
             .unwrap();
-        renderer.prepare(&device, &vec![paragraph], &store);
+        renderer.prepare(&device, &[paragraph], &store);
         let pixels = draw::draw_pixels(
             &device,
             &queue,
@@ -466,7 +466,7 @@ fn c7_device_without_feature_falls_back_byte_identically() {
         )
         .unwrap();
     let mut writer = TypeWriter::new();
-    let paragraphs = [12, 16, 24, 72]
+    let paragraphs: Vec<_> = [12, 16, 24, 72]
         .into_iter()
         .enumerate()
         .map(|(i, size)| {
@@ -529,7 +529,7 @@ fn c9_write_roboto_lcd_comparison_png() {
         let mut renderer =
             TextRenderer::new_with_subpixel_order(&device, &config, store.atlas(), order);
         assert_eq!(renderer.lcd_active(), order != SubpixelOrder::None);
-        let paragraphs = [12, 16, 24]
+        let paragraphs: Vec<_> = [12, 16, 24]
             .into_iter()
             .enumerate()
             .map(|(row, size)| {

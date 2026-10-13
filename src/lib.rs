@@ -39,7 +39,7 @@
 //!     .shape_text(&fonts, key, [24.0, 24.0], 32, [0.0, 0.0, 0.0, 1.0], "Hello")
 //!     .expect("font is loaded");
 //! let mut renderer = TextRenderer::new(device, config, fonts.atlas());
-//! renderer.prepare(device, &vec![paragraph], &fonts);
+//! renderer.prepare(device, &[paragraph], &fonts);
 //! renderer.update_uniforms(device, [config.width, config.height]);
 //! let mut encoder = device.create_command_encoder(&Default::default());
 //! {
