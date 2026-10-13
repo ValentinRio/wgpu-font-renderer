@@ -13,7 +13,7 @@ mod analytic;
 
 #[test]
 fn shader_pipeline_validates() {
-    let Some((device, _queue, _config)) = common::gpu() else {
+    let Some((device, queue, _config)) = common::gpu() else {
         return;
     };
     pollster::block_on(async {
@@ -33,9 +33,9 @@ fn shader_pipeline_validates() {
                 view_formats: vec![],
                 desired_maximum_frame_latency: 2,
             };
-            let store = FontStore::new(&device, &config);
-            let mut renderer = TextRenderer::new(&device, &config, store.atlas());
-            renderer.update_uniforms(&device, [1024, 768]);
+            let store = FontStore::new(&device);
+            let mut renderer = TextRenderer::new(&device, config.format, &store);
+            renderer.resize(&queue, [1024, 768]);
         }
         let error = scope.pop().await;
         assert!(error.is_none(), "Pipeline validation failed: {error:?}");
@@ -48,7 +48,7 @@ fn c6_bands_match_full_list_shader_pixels_and_grow_mid_load() {
 }
 
 fn compare_shader_pixels() {
-    let Some((device, queue, config)) = common::gpu() else {
+    let Some((device, queue, _config)) = common::gpu() else {
         return;
     };
     for (bytes, grow) in [
@@ -56,12 +56,12 @@ fn compare_shader_pixels() {
         (&include_bytes!("../fonts/Cantarell-VF.otf")[..], false),
         (&include_bytes!("../fonts/Cantarell-VF.otf")[..], true),
     ] {
-        let mut store = FontStore::new(&device, &config);
+        let mut store = FontStore::new(&device);
         let mut preset =
             "igB@éABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".to_owned();
         if grow {
             let inspection_key = store.load_from_bytes(&device, &queue, bytes, "").unwrap();
-            let face = store.get(inspection_key).unwrap().face.as_face_ref();
+            let face = wgpu_font_renderer::internals::font(&store, inspection_key).unwrap().face.as_face_ref();
             let chars: Vec<_> = (0..=0xffff)
                 .filter_map(char::from_u32)
                 .filter(|&c| {
@@ -84,11 +84,11 @@ fn compare_shader_pixels() {
             .unwrap();
         if grow {
             assert!(
-                store.atlas().layer_count() > 2,
+                wgpu_font_renderer::internals::atlas_layer_count(&store) > 2,
                 "band layers must grow mid-load"
             );
         }
-        let font = store.get(key).unwrap();
+        let font = wgpu_font_renderer::internals::font(&store, key).unwrap();
         let wrapped = preset.chars().find(|&c| {
             let id = font.face.as_face_ref().glyph_index(c).unwrap();
             let glyph = &font.glyph_cache[&id];
@@ -145,9 +145,9 @@ fn compare_shader_pixels() {
             );
             let source = analytic::source(&body);
             let full = analytic::full(&source);
-            let expected = probe_pixels(&device, &queue, store.atlas().view(), &full);
+            let expected = probe_pixels(&device, &queue, wgpu_font_renderer::internals::atlas_view(&store), &full);
             assert_ink_tiles(&expected);
-            let actual = probe_pixels(&device, &queue, store.atlas().view(), &source);
+            let actual = probe_pixels(&device, &queue, wgpu_font_renderer::internals::atlas_view(&store), &source);
             let differences: Vec<_> = actual
                 .as_chunks::<4>()
                 .0
@@ -164,7 +164,7 @@ fn compare_shader_pixels() {
             let paths = probe_pixels(
                 &device,
                 &queue,
-                store.atlas().view(),
+                wgpu_font_renderer::internals::atlas_view(&store),
                 &analytic::band_debug(&source),
             );
             assert!(
@@ -177,10 +177,10 @@ fn compare_shader_pixels() {
 
 #[test]
 fn analytic_inside_opaque() {
-    let Some((device, queue, config)) = common::gpu() else {
+    let Some((device, queue, _config)) = common::gpu() else {
         return;
     };
-    let mut store = FontStore::new(&device, &config);
+    let mut store = FontStore::new(&device);
     let key = store
         .load_from_bytes(
             &device,
@@ -189,7 +189,7 @@ fn analytic_inside_opaque() {
             "B",
         )
         .unwrap();
-    let font = store.get(key).unwrap();
+    let font = wgpu_font_renderer::internals::font(&store, key).unwrap();
     let glyph = &font.glyph_cache[&font.face.as_face_ref().glyph_index('B').unwrap()];
     let a = &glyph.allocation;
     let b = glyph.bands.as_ref().unwrap();
@@ -212,7 +212,7 @@ fn analytic_inside_opaque() {
     let pixels = probe_pixels(
         &device,
         &queue,
-        store.atlas().view(),
+        wgpu_font_renderer::internals::atlas_view(&store),
         &analytic::source(&body),
     );
     assert!(pixels.as_chunks::<4>().0.iter().all(|p| p[0] == 255));

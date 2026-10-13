@@ -41,3 +41,7 @@ Another regression forces their band allocations to start at column 2045 and
 wrap a row. They compare banded and forced full-list RGBA8 output at all twelve
 sampled sizes and instrument band use at size 400. Every reference size tile
 must contain at least 64 black pixels with alpha >= 32 before pixel comparison.
+
+Run the full suite with `REQUIRE_GPU=1 cargo test --offline --all-features`.
+The `unstable-internals` feature enables integration targets that inspect fonts
+and the atlas; its hidden inspection module is exempt from semver.

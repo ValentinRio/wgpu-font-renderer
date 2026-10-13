@@ -1,4 +1,4 @@
-use std::mem;
+use std::{mem, ops::{Bound, RangeBounds}};
 
 use bytemuck::{Pod, Zeroable};
 use owned_ttf_parser::AsFaceRef;
@@ -10,14 +10,15 @@ use wgpu::{
     Device, FilterMode, FragmentState, FrontFace, MultisampleState, PipelineLayoutDescriptor, 
     PrimitiveState, PrimitiveTopology, RenderPass, RenderPipeline, RenderPipelineDescriptor, 
     SamplerBindingType, SamplerDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages, 
-    SurfaceConfiguration, TextureSampleType, TextureViewDimension, VertexAttribute, VertexBufferLayout, 
+    TextureSampleType, TextureViewDimension, VertexAttribute, VertexBufferLayout,
     VertexFormat, VertexState, VertexStepMode
 };
 
-use crate::{atlas::Atlas, ortho::orthographic_projection_matrix, typewriter::Paragraph, FontStore};
+use crate::{ortho::orthographic_projection_matrix, typewriter::Paragraph, FontStore};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 /// Horizontal physical subpixel order. LCD requires dual-source blending.
+#[non_exhaustive]
 pub enum SubpixelOrder {
     /// Grayscale antialiasing (the default).
     #[default]
@@ -28,52 +29,49 @@ pub enum SubpixelOrder {
     Bgr,
 }
 
-/// GPU pipeline and prepared glyph instances for a fixed atlas and target format.
+/// GPU pipeline and prepared glyph instances for a target format.
 /// Screen coordinates are physical pixels, origin top left, y downward.
 pub struct TextRenderer {
     subpixel_order: SubpixelOrder,
     pipeline: RenderPipeline,
     uniforms: Buffer,
+    has_valid_size: bool,
     vertices: Buffer,
     indices: Buffer,
     instances_buffer: Option<Buffer>,
     instances: Vec<Instance>,
+    paragraph_offsets: Vec<u32>,
     constants: BindGroup,
-    sampler: wgpu::Sampler,
     texture: BindGroup,
-    #[allow(dead_code)]
     texture_version: usize,
-    #[allow(dead_code)]
     texture_layout: BindGroupLayout,
-    #[allow(dead_code)]
-    screen_size: [u32; 2],
 }
 
 impl TextRenderer {
-    /// Create a renderer for the configured target format and pixel dimensions.
-    /// Dimensions must be nonzero; atlas and device must match. Load all fonts
-    /// first: later atlas growth does not refresh this renderer's texture binding.
-    /// Invalid GPU resources or unsupported formats produce wgpu validation errors.
-    pub fn new(device: &Device, surface_config: &SurfaceConfiguration, atlas: &Atlas) -> Self {
-        Self::new_with_subpixel_order(device, surface_config, atlas, SubpixelOrder::None)
+    /// Create a grayscale renderer for `format` and the store's atlas.
+    /// Call [`Self::resize`] before the first render and on every viewport change.
+    pub fn new(device: &Device, format: wgpu::TextureFormat, store: &FontStore) -> Self {
+        Self::with_subpixel_order(device, format, store, SubpixelOrder::None)
     }
 
-    /// Create a renderer with horizontal LCD antialiasing when the device has
-    /// `DUAL_SOURCE_BLENDING` enabled; otherwise fall back to grayscale.
-    /// Use opaque backgrounds and an unscaled, unrotated pixel transform.
-    pub fn new_with_subpixel_order(
+    /// Create an LCD renderer when `DUAL_SOURCE_BLENDING` is enabled on the device,
+    /// otherwise fall back to grayscale. Use an opaque background and an unscaled,
+    /// unrotated pixel transform. Call [`Self::resize`] before the first render
+    /// and on every viewport change.
+    pub fn with_subpixel_order(
         device: &Device,
-        surface_config: &SurfaceConfiguration,
-        atlas: &Atlas,
+        format: wgpu::TextureFormat,
+        store: &FontStore,
         order: SubpixelOrder,
     ) -> Self {
+        let atlas = store.atlas();
         let subpixel_order = if device.features().contains(wgpu::Features::DUAL_SOURCE_BLENDING) {
             order
         } else {
             SubpixelOrder::None
         };
         let lcd = subpixel_order != SubpixelOrder::None;
-        let screen_size = [surface_config.width, surface_config.height];
+        let screen_size = [0, 0];
 
         let sampler = device.create_sampler(&SamplerDescriptor {
             label: Some("Text sampler"),
@@ -120,7 +118,7 @@ impl TextRenderer {
                     height: screen_size[1],
                 },
                 _pad: [0, 0],
-                transform: orthographic_projection_matrix(0., screen_size[0] as f32, screen_size[1] as f32, 0.)
+                transform: [0.; 16]
             }),
         });
 
@@ -228,7 +226,7 @@ impl TextRenderer {
                     ..Default::default()
                 },
                 targets: &[Some(ColorTargetState {
-                    format: surface_config.format,
+                    format,
                     blend: Some(BlendState {
                         color: BlendComponent {
                             src_factor: if lcd { BlendFactor::Src1 } else { BlendFactor::SrcAlpha },
@@ -277,16 +275,16 @@ impl TextRenderer {
             subpixel_order,
             pipeline,
             uniforms,
+            has_valid_size: false,
             vertices,
             indices,
             instances_buffer: None,
             instances: Vec::new(),
+            paragraph_offsets: Vec::new(),
             constants: constant_bind_group,
-            sampler,
             texture,
-            texture_version: atlas.layer_count(),
+            texture_version: atlas.version,
             texture_layout,
-            screen_size,
         }
     }
 
@@ -295,44 +293,68 @@ impl TextRenderer {
         self.subpixel_order != SubpixelOrder::None
     }
 
-    /// Replace prepared instances with the supplied shaped runs.
-    /// Uncached glyphs are skipped but their pixel advances are preserved.
-    /// Positions are pixels (x right, y down), anchored at paragraph.position.
+    /// Replace prepared instances, skipping unknown fonts, uncached glyphs, and
+    /// paragraphs whose size is not finite or is <= 0.0. Skipped paragraphs keep
+    /// their index in the input sequence. An empty sequence clears the draw batch.
+    /// Refresh the atlas binding after loading fonts and reuse the instance buffer
+    /// when its capacity suffices.
     ///
-    /// # Panics
-    /// Panics if a paragraph's font key is absent from `store`. The store and
-    /// renderer must share an atlas and device; mismatches can cause GPU errors.
-    pub fn prepare(&mut self, device: &Device, paragraphs: &[Paragraph], store: &FontStore) {
-        self.instances = Vec::new();
-        let mut glyph_count = 0;
+    /// Call `prepare` once per queue submit with every paragraph of the frame.
+    /// A second `prepare` before the submit can change what earlier `render` calls
+    /// of that submit draw. Use [`Self::render_range`] to draw subsets at different
+    /// points of a pass or in different passes.
+    pub fn prepare<'a>(
+        &mut self,
+        device: &Device,
+        queue: &wgpu::Queue,
+        paragraphs: impl IntoIterator<Item = &'a Paragraph>,
+        store: &FontStore,
+    ) {
+        let atlas = store.atlas();
+        if self.texture_version != atlas.version {
+            self.texture = device.create_bind_group(&BindGroupDescriptor {
+                label: Some("Text texture atlas bind group"),
+                layout: &self.texture_layout,
+                entries: &[BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(atlas.view()),
+                }],
+            });
+            self.texture_version = atlas.version;
+        }
+        self.instances.clear();
+        self.paragraph_offsets.clear();
 
-        paragraphs.iter().for_each(|paragraph| {
-
-            let font = store.get(paragraph.font_key).expect("Paragraph has been created without valid font");
+        paragraphs.into_iter().for_each(|paragraph| {
+            self.paragraph_offsets.push(self.instances.len() as u32);
+            if !paragraph.size().is_finite() || paragraph.size() <= 0.0 {
+                return;
+            }
+            let Some(font) = store.get(paragraph.font()) else { return; };
 
             let units_per_em = font.face.as_face_ref().units_per_em() as f32;
 
-            let mut glyph_x = paragraph.position[0];
+            let mut glyph_x = paragraph.position()[0];
 
-            paragraph.glyphs.iter().for_each(|(glyph_id, left)| {
-                if let Some(glyph) = font.glyph_cache.get(glyph_id) {
-                    let glyph_y = paragraph.position[1] + (glyph.y_offset as f32 / units_per_em * paragraph.size as f32) + (f32::abs(glyph.descent as f32) / units_per_em * paragraph.size as f32);
+            paragraph.glyphs().iter().for_each(|(glyph_id, left)| {
+                if let Some(glyph) = font.glyph_cache.get(&owned_ttf_parser::GlyphId(glyph_id.0)) {
+                    let glyph_y = paragraph.position()[1] + (glyph.y_offset as f32 / units_per_em * paragraph.size()) + (f32::abs(glyph.descent as f32) / units_per_em * paragraph.size());
 
                     let size = [
-                        (glyph.bbox.width() as f32 * paragraph.size as f32 / units_per_em),
-                        (glyph.bbox.height() as f32 * paragraph.size as f32 / units_per_em),
+                        (glyph.bbox.width() as f32 * paragraph.size() / units_per_em),
+                        (glyph.bbox.height() as f32 * paragraph.size() / units_per_em),
                     ];
 
                     let instance = Instance {
                         _position: [glyph_x, glyph_y],
                         _left_side_bearing: glyph.left_side_bearing as f32,
-                        _font_size: paragraph.size as f32,
+                        _font_size: paragraph.size(),
                         _size: size,
                         _position_in_atlas: [glyph.allocation.position()[0] as f32, glyph.allocation.position()[1] as f32],
                         _size_in_atlas: glyph.allocation.size(),
                         _units_per_em: units_per_em,
                         _layer: glyph.allocation.layer() as u32,
-                        _color: paragraph.color,
+                        _color: paragraph.color(),
                         _bands: glyph.bands.as_ref().map_or([0., 0., -1.], |bands| {
                             [
                                 bands.position()[0] as f32,
@@ -343,85 +365,123 @@ impl TextRenderer {
                     };
 
                     self.instances.push(instance);
-
-                    glyph_count += 1;
                 }
                 
                 glyph_x += left;
             })
         });
 
-        self.instances_buffer = Some(device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("Text instances buffer"),
-            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
-            contents: bytemuck::cast_slice(&self.instances[0..self.instances.len()])
-        }));
+        self.paragraph_offsets.push(self.instances.len() as u32);
+
+        let bytes = bytemuck::cast_slice(&self.instances);
+        if !bytes.is_empty() {
+            if let Some(buffer) = self.instances_buffer.as_ref().filter(|buffer| buffer.size() >= bytes.len() as u64) {
+                queue.write_buffer(buffer, 0, bytes);
+            } else {
+                self.instances_buffer = Some(device.create_buffer_init(&BufferInitDescriptor {
+                    label: Some("Text instances buffer"),
+                    usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+                    contents: bytes,
+                }));
+            }
+        }
     }
 
-    /// Replace the pixel-to-clip transform and rebind its buffer after resizing.
-    /// `screen_size` is the nonzero viewport width/height in physical pixels;
-    /// zero dimensions produce a nonfinite transform. Use the renderer's device.
-    pub fn update_uniforms(&mut self, device: &Device, screen_size: [u32; 2]) {
-        self.uniforms = device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("Text uniforms buffer"),
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-            contents: bytemuck::bytes_of(&Params {
-                screen_resolution: Resolution {
-                    width: screen_size[0],
-                    height: screen_size[1],
-                },
-                _pad: [0, 0],
-                transform: orthographic_projection_matrix(0., screen_size[0] as f32, screen_size[1] as f32, 0.)
-            }),
-        });
-        // Bind groups retain buffers: replacing uniforms also requires rebinding.
-        self.constants = device.create_bind_group(&BindGroupDescriptor {
-            label: Some("Text texture bind group"),
-            layout: &self.pipeline.get_bind_group_layout(0),
-            entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: self.uniforms.as_entire_binding(),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: BindingResource::Sampler(&self.sampler),
-                },
-            ],
-        });
+    #[cfg(feature = "unstable-internals")]
+    pub(crate) fn instance_count(&self) -> usize {
+        self.instances.len()
     }
 
-    /// Draw prepared glyphs into the pass; an empty batch does nothing.
-    /// `screen_size` is the pixel scissor width/height from the top-left origin
-    /// and must fit the attachment. Update uniforms to the same dimensions first.
-    /// Target format and device must match construction; invalid pass resources
-    /// or scissor bounds produce wgpu validation errors.
-    pub fn render<'rpass>(&'rpass mut self, render_pass: &mut RenderPass<'rpass>, screen_size: [u32; 2]) {
+    #[cfg(feature = "unstable-internals")]
+    pub(crate) fn instance_buffer(&self) -> Option<&Buffer> {
+        self.instances_buffer.as_ref()
+    }
 
-        if self.instances.is_empty() {
+    /// Set the nonzero viewport dimensions in physical pixels.
+    /// Must be called before the first [`Self::render`] and on every viewport
+    /// change. Writes the existing uniform buffer using the renderer's queue.
+    /// If either dimension is zero, returns without changing the previous size.
+    /// Until a resize with two nonzero dimensions, rendering leaves the pass untouched.
+    pub fn resize(&mut self, queue: &wgpu::Queue, size: [u32; 2]) {
+        if size[0] == 0 || size[1] == 0 {
             return;
         }
-
-        render_pass.set_pipeline(&self.pipeline);
-        render_pass.set_bind_group(0, &self.constants, &[]);
-        render_pass.set_bind_group(1, &self.texture, &[]);
-        render_pass.set_index_buffer(
-            self.indices.slice(..),
-            wgpu::IndexFormat::Uint16,
-        );
-        render_pass.set_vertex_buffer(0, self.vertices.slice(..));
-        render_pass.set_vertex_buffer(1, self.instances_buffer.as_ref().unwrap().slice(..));
-
-        render_pass.set_scissor_rect(0, 0, screen_size[0], screen_size[1]);
-
-        render_pass.draw_indexed(0..INDICES.len() as u32, 0, 0..self.instances.len() as u32);
+        queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&Params {
+            screen_resolution: Resolution { width: size[0], height: size[1] },
+            _pad: [0, 0],
+            transform: orthographic_projection_matrix(0., size[0] as f32, size[1] as f32, 0.),
+        }));
+        self.has_valid_size = true;
     }
+
+    /// Draw all prepared paragraphs into a pass with the configured target format.
+    /// Equivalent to [`Self::render_range`] with `..`. An empty batch does nothing.
+    /// Until a resize with two nonzero dimensions, leaves the pass untouched.
+    /// Zero-dimension resize calls keep any previous valid size.
+    /// Call [`Self::resize`] before the first render and on every viewport change.
+    /// The pass's scissor rectangle is preserved.
+    ///
+    /// Call `prepare` once per queue submit with every paragraph of the frame.
+    /// A second `prepare` before the submit can change what earlier `render` calls
+    /// of that submit draw. Use [`Self::render_range`] to draw subsets at different
+    /// points of a pass or in different passes.
+    pub fn render(&self, pass: &mut RenderPass<'_>) {
+        self.render_range(pass, ..);
+    }
+
+    /// Draw paragraphs by their position in the sequence given to the last
+    /// [`Self::prepare`]. Skipped paragraphs keep their index and draw nothing.
+    /// Accepts any range syntax, including `2..4`, `2..`, `..2`, `..=1`, and `..`.
+    /// Bounds are clamped to the paragraph count; empty or inverted ranges and
+    /// calls before any preparation draw nothing. Bounds never overflow or panic.
+    /// Until a resize with two nonzero dimensions, leaves the pass untouched.
+    /// Zero-dimension resize calls keep any previous valid size.
+    /// The pass's scissor is preserved.
+    /// Call [`Self::resize`] before the first render and on every viewport change.
+    ///
+    /// Call `prepare` once per queue submit with every paragraph of the frame.
+    /// A second `prepare` before the submit can change what earlier `render` calls
+    /// of that submit draw. Use `render_range` to draw subsets at different points
+    /// of a pass or in different passes.
+    pub fn render_range(&self, pass: &mut RenderPass<'_>, paragraphs: impl RangeBounds<usize>) {
+        if !self.has_valid_size {
+            return;
+        }
+        let count = self.paragraph_offsets.len().saturating_sub(1);
+        let start = match paragraphs.start_bound() {
+            Bound::Included(&index) => index,
+            Bound::Excluded(&index) => index.saturating_add(1),
+            Bound::Unbounded => 0,
+        }.min(count);
+        let end = match paragraphs.end_bound() {
+            Bound::Included(&index) => index.saturating_add(1),
+            Bound::Excluded(&index) => index,
+            Bound::Unbounded => count,
+        }.min(count);
+        if start >= end {
+            return;
+        }
+        let instances = self.paragraph_offsets[start]..self.paragraph_offsets[end];
+        if instances.is_empty() {
+            return;
+        }
+        let Some(buffer) = self.instances_buffer.as_ref() else { return; };
+
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.constants, &[]);
+        pass.set_bind_group(1, &self.texture, &[]);
+        pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint16);
+        pass.set_vertex_buffer(0, self.vertices.slice(..));
+        pass.set_vertex_buffer(1, buffer.slice(..));
+        pass.draw_indexed(0..INDICES.len() as u32, 0, instances);
+    }
+
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Pod, Zeroable)]
 /// Viewport dimensions in physical pixels.
-pub struct Resolution {
+struct Resolution {
     /// Horizontal pixel count.
     pub width: u32,
     /// Vertical pixel count.
@@ -431,7 +491,7 @@ pub struct Resolution {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 /// GPU uniform layout: pixel viewport dimensions and column-major clip transform.
-pub struct Params {
+struct Params {
     screen_resolution: Resolution,
     _pad: [u32; 2],
     transform: [f32; 16],

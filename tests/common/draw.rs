@@ -7,6 +7,7 @@ pub fn draw_pixels(
     size: [u32; 2],
     background: wgpu::Color,
 ) -> Vec<u8> {
+    renderer.resize(queue, size);
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Text test target"),
         size: wgpu::Extent3d {
@@ -44,7 +45,7 @@ pub fn draw_pixels(
             })],
             ..Default::default()
         });
-        renderer.render(&mut pass, size);
+        renderer.render(&mut pass);
     }
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {

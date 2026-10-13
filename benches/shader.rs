@@ -901,7 +901,7 @@ pub(crate) mod native {
                 } else {
                     include_bytes!("../fonts/Roboto-Regular.ttf")
                 };
-                let mut store = FontStore::new(&device, &config);
+                let mut store = FontStore::new(&device);
                 let key = store
                     .load_from_bytes(&device, &queue, bytes, text)
                     .map_err(|error| error.to_string())?;
@@ -913,27 +913,27 @@ pub(crate) mod native {
                                 &store,
                                 key,
                                 [32., 24. + line as f32 * spacing],
-                                size,
+                                size as f32,
                                 [0., 0., 0., 1.],
                                 text,
                             )
                             .unwrap()
                     })
                     .collect();
-                let font = store.get(key).unwrap();
+                let font = wgpu_font_renderer::internals::font(&store, key).unwrap();
                 let mut curves = 0;
                 let mut instances = 0u32;
                 // Count rasterized glyph-quad pixel centres, including overdraw, not just ink.
                 let mut covered_pixels = 0u64;
                 let units = font.face.as_face_ref().units_per_em() as f32;
                 for paragraph in &paragraphs {
-                    let mut x = paragraph.position[0];
-                    for (id, advance) in &paragraph.glyphs {
-                        if let Some(glyph) = font.glyph_cache.get(id) {
+                    let mut x = paragraph.position()[0];
+                    for (id, advance) in paragraph.glyphs() {
+                        if let Some(glyph) = font.glyph_cache.get(&owned_ttf_parser::GlyphId(id.0)) {
                             instances += 1;
                             curves += glyph.curves.len() / 8;
-                            let scale = paragraph.size as f32 / units;
-                            let y = paragraph.position[1]
+                            let scale = paragraph.size() / units;
+                            let y = paragraph.position()[1]
                                 + (glyph.y_offset as f32 + (glyph.descent as f32).abs()) * scale;
                             let extent = |start: f32, length: f32, limit: u32| {
                                 ((start + length - 0.5).ceil().clamp(0., limit as f32)
@@ -946,8 +946,9 @@ pub(crate) mod native {
                         x += advance;
                     }
                 }
-                let mut renderer = TextRenderer::new(&device, &config, store.atlas());
-                renderer.prepare(&device, &paragraphs, &store);
+                let mut renderer = TextRenderer::new(&device, config.format, &store);
+                renderer.prepare(&device, &queue, &paragraphs, &store);
+                renderer.resize(&queue, [WIDTH, HEIGHT]);
                 device.poll(wgpu::PollType::wait_indefinitely())?;
                 let mut samples = Vec::with_capacity(frames);
                 let calibrate = !repeats.contains_key(name);
@@ -984,9 +985,8 @@ pub(crate) mod native {
                                 }),
                             ..Default::default()
                         });
-                        renderer.render(&mut pass, [WIDTH, HEIGHT]);
-                        // render borrows the renderer for the pass lifetime. Reuse its
-                        // bindings and six-index glyph quads for the remaining draws.
+                        renderer.render(&mut pass);
+                        // Reuse the bindings and six-index glyph quads for the remaining draws.
                         for _ in 1..repeat {
                             pass.draw_indexed(0..6, 0, 0..instances);
                         }
@@ -1060,7 +1060,7 @@ pub(crate) mod native {
                         })],
                         ..Default::default()
                     });
-                    renderer.render(&mut pass, [WIDTH, HEIGHT]);
+                    renderer.render(&mut pass);
                 }
                 encoder.copy_texture_to_buffer(
                     wgpu::TexelCopyTextureInfo {

@@ -1,6 +1,6 @@
 [package]
 name = "wgpu-font-renderer"
-version = "0.2.1"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.88"
 description = "GPU-Centered Font Rendering crate"
@@ -9,6 +9,9 @@ repository = "https://github.com/ValentinRio/wgpu-font-renderer"
 readme = "README.md"
 keywords = ["wgpu", "font", "text", "rendering", "gpu"]
 categories = ["graphics", "rendering"]
+
+[features]
+unstable-internals = []
 
 [dependencies]
 wgpu = { version = "30", default-features = true }
@@ -32,3 +35,24 @@ console_error_panic_hook = "0.1"
 [[bench]]
 name = "shader"
 harness = false
+required-features = ["unstable-internals"]
+
+[[test]]
+name = "shader_pipeline"
+required-features = ["unstable-internals"]
+
+[[test]]
+name = "lcd_pipeline"
+required-features = ["unstable-internals"]
+
+[[test]]
+name = "text_pipeline"
+required-features = ["unstable-internals"]
+
+[[test]]
+name = "analytic_coverage"
+required-features = ["unstable-internals"]
+
+[[test]]
+name = "benchmark_helpers"
+required-features = ["unstable-internals"]

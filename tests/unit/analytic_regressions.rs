@@ -22,8 +22,8 @@ pub(super) fn pixels(
     scale: f32,
     weighted: bool,
 ) -> Option<(Vec<u8>, Vec<u8>)> {
-    let (device, queue, config) = common::gpu()?;
-    let mut atlas = crate::atlas::Atlas::new(&device, &config);
+    let (device, queue, _config) = common::gpu()?;
+    let mut atlas = crate::atlas::Atlas::new(&device);
     let mut encoder = device.create_command_encoder(&Default::default());
     let a = atlas
         .upload(

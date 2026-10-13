@@ -4,11 +4,11 @@ The native shader benchmark renders four fixed scenes at 1920×1080 in sRGB,
 using the public font loading, shaping and rendering API. Run it with:
 
 ```sh
-cargo bench --offline --bench shader
-BENCH_ROUNDS=7 BENCH_FRAMES=40 BENCH_WARMUP=10 cargo bench --offline --bench shader -- large_glyphs
+cargo bench --all-features --offline --bench shader
+BENCH_ROUNDS=7 BENCH_FRAMES=40 BENCH_WARMUP=10 cargo bench --all-features --offline --bench shader -- large_glyphs
 ```
 
-Set the `WGPU_BACKEND` environment variable to `dx12` or `vulkan` to select the backend (POSIX shells: `WGPU_BACKEND=dx12 cargo bench ...`; PowerShell: `$env:WGPU_BACKEND = "dx12"`; cmd: `set WGPU_BACKEND=dx12`). Leave it unset for wgpu's defaults. Some Vulkan drivers return zero timestamps (seen on an AMD RX 9070 XT with the proprietary driver); DX12 works there.
+Set the `WGPU_BACKEND` environment variable to `dx12` or `vulkan` to select the backend (POSIX shells: `WGPU_BACKEND=dx12 cargo bench --all-features ...`; PowerShell: `$env:WGPU_BACKEND = "dx12"`; cmd: `set WGPU_BACKEND=dx12`). Leave it unset for wgpu's defaults. Some Vulkan drivers return zero timestamps (seen on an AMD RX 9070 XT with the proprietary driver); DX12 works there.
 
 Defaults are **5 rounds**, each with 10 discarded warm-up frames and 30 measured
 frames per scene. Override them with `BENCH_ROUNDS`, `BENCH_WARMUP` and
@@ -46,9 +46,9 @@ If main already contains the harness:
 
 ```sh
 git switch main
-BENCH_SAVE=main cargo bench --offline --bench shader
+BENCH_SAVE=main cargo bench --all-features --offline --bench shader
 git switch shader-bench
-BENCH_BASELINE=main cargo bench --offline --bench shader
+BENCH_BASELINE=main cargo bench --all-features --offline --bench shader
 ```
 
 If main predates the harness, use a separate checkout with the identical harness
@@ -61,11 +61,11 @@ for file in Cargo.toml Cargo.lock benches/shader.rs; do
     mkdir -p "/tmp/wgpu-font-renderer-main/$(dirname "$file")"
     git show "HEAD:$file" > "/tmp/wgpu-font-renderer-main/$file"
 done
-(cd /tmp/wgpu-font-renderer-main && BENCH_SAVE=main cargo bench --offline --bench shader)
+(cd /tmp/wgpu-font-renderer-main && BENCH_SAVE=main cargo bench --all-features --offline --bench shader)
 mkdir -p target/shader-bench/main
 cp /tmp/wgpu-font-renderer-main/target/shader-bench/main.json target/shader-bench/main.json
 cp -r /tmp/wgpu-font-renderer-main/target/shader-bench/main/. target/shader-bench/main/
-BENCH_BASELINE=main cargo bench --offline --bench shader
+BENCH_BASELINE=main cargo bench --all-features --offline --bench shader
 ```
 
 Reports live in `target/shader-bench/<name>.json`. Schema 2 records the per-round
@@ -135,11 +135,11 @@ can reduce contention; use the same setting on every run, for example:
 
 ```sh
 export LP_NUM_THREADS=2
-BENCH_SAVE=main cargo bench --offline --bench shader
-BENCH_SAVE=main BENCH_APPEND=1 cargo bench --offline --bench shader
-BENCH_SAVE=main BENCH_APPEND=1 cargo bench --offline --bench shader
+BENCH_SAVE=main cargo bench --all-features --offline --bench shader
+BENCH_SAVE=main BENCH_APPEND=1 cargo bench --all-features --offline --bench shader
+BENCH_SAVE=main BENCH_APPEND=1 cargo bench --all-features --offline --bench shader
 # Switch to the candidate branch, retaining the baseline and RGBA directory.
-BENCH_BASELINE=main cargo bench --offline --bench shader
+BENCH_BASELINE=main cargo bench --all-features --offline --bench shader
 ```
 
 `BENCH_APPEND=1` pools round records and recomputes summaries; it refuses changed

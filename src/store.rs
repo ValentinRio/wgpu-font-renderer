@@ -1,49 +1,55 @@
 use swash::CacheKey;
-use wgpu::{CommandEncoderDescriptor, SurfaceConfiguration};
+use wgpu::CommandEncoderDescriptor;
 
 use std::collections::HashMap;
 
 use crate::{atlas::Atlas, loader::Font, LoadingError};
 
+/// Opaque handle to a font loaded into a particular store.
+/// IDs from different stores are never equal. With an ID from another store,
+/// [`crate::TextRenderer::prepare`] skips the paragraph and
+/// [`crate::TypeWriter::shape_text`] returns `None`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct FontId(CacheKey);
+
 /// Owns loaded font data and the shared GPU outline atlas.
-/// Load fonts before constructing a renderer, whose atlas binding is fixed.
+/// Later loads are picked up by the renderer on its next preparation.
 pub struct FontStore {
-    cache: HashMap<CacheKey, Font>,
+    cache: HashMap<FontId, Font>,
     atlas: Atlas,
 }
 
 impl FontStore {
-    /// Create an empty store on `device`; the surface configuration is reserved
-    /// for compatibility and currently does not affect the Rgba32Float atlas.
+    /// Create an empty store and Rgba32Float atlas on `device`.
     /// wgpu validation errors occur if the device cannot support the atlas.
-    pub fn new(device: &wgpu::Device, surface_config: &SurfaceConfiguration) -> Self {
+    pub fn new(device: &wgpu::Device) -> Self {
         Self {
             cache: HashMap::new(),
-            atlas: Atlas::new(device, surface_config),  
+            atlas: Atlas::new(device),
         }
     }
 
-    /// Read face zero from a font file and cache outlines for `cache_preset`.
+    /// Read face zero from a font file and cache outlines for `chars`.
     ///
-    /// Returns [`LoadingError::FileNotFound`] for any file read failure, or
-    /// [`LoadingError::InvalidFile`] for invalid font data. On wasm, use
+    /// Returns [`LoadingError::Io`] for any file read failure, or
+    /// [`LoadingError::InvalidFont`] for invalid font data. On wasm, use
     /// [`Self::load_from_bytes`] instead of filesystem access.
     /// Device and queue must belong together; GPU failures follow wgpu validation.
     pub fn load(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        font_file_path: &str,
-        cache_preset: &str
-    ) -> Result<CacheKey, LoadingError>{
+        path: impl AsRef<std::path::Path>,
+        chars: &str
+    ) -> Result<FontId, LoadingError>{
 
-        let data = std::fs::read(font_file_path).or(Err(LoadingError::FileNotFound))?;
-        self.load_from_bytes(device, queue, &data, cache_preset)
+        let data = std::fs::read(path).map_err(LoadingError::Io)?;
+        self.load_from_bytes(device, queue, &data, chars)
     }
 
-    /// Load face zero from font bytes and upload outlines for `cache_preset`.
+    /// Load face zero from font bytes and upload outlines for `chars`.
     ///
-    /// Returns a fresh font key, or [`LoadingError::InvalidFile`] for invalid data.
+    /// Returns a fresh font key, or [`LoadingError::InvalidFont`] for invalid data.
     /// Unsupported characters and glyphs without bounding boxes are not cached.
     /// Device and queue must belong together; GPU failures follow wgpu validation.
     /// Outline coordinates in the atlas are font units, not screen pixels.
@@ -52,15 +58,15 @@ impl FontStore {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         data: &[u8],
-        cache_preset: &str
-    ) -> Result<CacheKey, LoadingError> {
+        chars: &str
+    ) -> Result<FontId, LoadingError> {
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
 
-        let font = Font::from_bytes(device, &mut encoder, queue, data.to_vec(), 0, cache_preset, &mut self.atlas)?;
+        let font = Font::from_bytes(device, &mut encoder, queue, data.to_vec(), 0, chars, &mut self.atlas)?;
 
         queue.submit(Some(encoder.finish()));
 
-        let cache_key = font.key;
+        let cache_key = FontId(font.key);
 
         self.cache.insert(cache_key, font);
 
@@ -68,12 +74,12 @@ impl FontStore {
     }
 
     /// Borrow the shared GPU outline atlas for renderer construction.
-    pub fn atlas(&self) -> &Atlas {
+    pub(crate) fn atlas(&self) -> &Atlas {
         &self.atlas
     }
 
     /// Look up a loaded font by key; returns `None` for an unknown key.
-    pub fn get(&self, font_key: CacheKey) -> Option<&Font> {
+    pub(crate) fn get(&self, font_key: FontId) -> Option<&Font> {
         self.cache.get(&font_key)
     }
 }

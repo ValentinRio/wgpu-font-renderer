@@ -23,7 +23,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y mesa-vulkan-drivers
-      - run: REQUIRE_GPU=1 cargo test
+      - run: REQUIRE_GPU=1 cargo test --all-features
 
   clippy:
     runs-on: ubuntu-latest
@@ -33,7 +33,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-targets --all-features -- -D warnings
 
   docs:
     runs-on: ubuntu-latest
@@ -56,7 +56,7 @@ jobs:
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-targets
+      - run: cargo check --all-targets --all-features
 
   wasm:
     runs-on: ubuntu-latest
@@ -79,13 +79,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y mesa-vulkan-drivers
-      - run: cargo package
+      - run: cargo package --all-features
       - name: Test packaged crate
         run: |
           package_dir=$(mktemp -d)
           tar -xzf target/package/wgpu-font-renderer-*.crate -C "$package_dir"
           cd "$package_dir"/wgpu-font-renderer-*
-          REQUIRE_GPU=1 cargo test
+          REQUIRE_GPU=1 cargo test --all-features
 
   semver:
     runs-on: ubuntu-latest
