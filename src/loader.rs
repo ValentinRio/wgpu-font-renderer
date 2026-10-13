@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt};
 use skrifa::{
     instance::{LocationRef, Size},
-    outline::{pen::{PathStyle, ControlBoundsPen}, DrawSettings, OutlinePen},
+    outline::{pen::{PathStyle, ControlBoundsPen, PathElement}, DrawSettings, OutlinePen},
     raw::TableProvider,
     FontRef as SkFontRef, GlyphId, MetadataProvider,
 };
@@ -154,8 +154,17 @@ fn select_ascender(hhea: i16, os2: Option<(u16, bool, i16, i16)>) -> i16 {
 
 fn face_ascender(face: &SkFontRef<'_>) -> i16 {
     use skrifa::raw::tables::os2::SelectionFlags;
-    // The old parser ignored OS/2 versions it did not recognize.
-    let os2 = face.os2().ok().filter(|table| table.version() <= 5).map(|table| (
+    // Match the old parser's version and minimum-length checks.
+    let os2 = face.os2().ok().filter(|table| {
+        let minimum = match table.version() {
+            0 => 78,
+            1 => 86,
+            2..=4 => 96,
+            5 => 100,
+            _ => return false,
+        };
+        table.offset_data().len() >= minimum
+    }).map(|table| (
         table.version(), table.fs_selection().contains(SelectionFlags::USE_TYPO_METRICS),
         table.s_typo_ascender(), table.us_win_ascent() as i16,
     ));
@@ -163,7 +172,8 @@ fn face_ascender(face: &SkFontRef<'_>) -> i16 {
 }
 
 fn glyph_ids<'a>(font: FontRef<'a>, characters: &'a str) -> impl Iterator<Item = GlyphId> + 'a {
-    // Use the shaper's Unicode/symbol cmap selection; glyph zero is unmapped.
+    // Use the shaper's Unicode/symbol cmap selection. Deliberately skip glyph
+    // zero, including explicit .notdef mappings; 0.2 could cache its outline.
     let charmap = font.charmap();
     characters.chars().filter_map(move |ch| {
         let id = charmap.map(ch);
@@ -264,9 +274,28 @@ fn draw_settings() -> DrawSettings<'static> {
         .with_path_style(PathStyle::HarfBuzz)
 }
 
+// Restore raw TrueType coordinates using the actual phantom-point shift,
+// including USE_MY_METRICS on composite glyphs. CFF outlines have no shift.
+fn draw_glyph(face: &SkFontRef<'_>, id: GlyphId, pen: &mut impl OutlinePen) -> Option<()> {
+    let mut path = Vec::new();
+    let metrics = face.outline_glyphs().get(id)?.draw(draw_settings(), &mut path).ok()?;
+    let shift = metrics.lsb.unwrap_or(0.);
+    for element in path {
+        match element {
+            PathElement::MoveTo { x, y } => pen.move_to(x + shift, y),
+            PathElement::LineTo { x, y } => pen.line_to(x + shift, y),
+            PathElement::QuadTo { cx0, cy0, x, y } => pen.quad_to(cx0 + shift, cy0, x + shift, y),
+            PathElement::CurveTo { cx0, cy0, cx1, cy1, x, y } =>
+                pen.curve_to(cx0 + shift, cy0, cx1 + shift, cy1, x + shift, y),
+            PathElement::Close => pen.close(),
+        }
+    }
+    Some(())
+}
+
 fn glyph_bounding_box(face: &SkFontRef<'_>, id: GlyphId) -> Option<Rect> {
     let mut pen = ControlBoundsPen::default();
-    face.outline_glyphs().get(id)?.draw(draw_settings(), &mut pen).ok()?;
+    draw_glyph(face, id, &mut pen)?;
     let bounds = pen.bounding_box()?;
     // Bounds enclose control points, including CFF/CFF2 controls, and truncate
     // toward zero to preserve the cached integer font-unit metrics.
@@ -284,7 +313,7 @@ fn glyph_bounding_box(face: &SkFontRef<'_>, id: GlyphId) -> Option<Rect> {
 }
 
 fn outline_glyph(face: &SkFontRef<'_>, id: GlyphId, pen: &mut impl OutlinePen) -> Option<Rect> {
-    face.outline_glyphs().get(id)?.draw(draw_settings(), pen).ok()?;
+    draw_glyph(face, id, pen)?;
     glyph_bounding_box(face, id)
 }
 
@@ -631,14 +660,9 @@ mod tests {
         let height = bbox.y_max as f32;
         let mut builder = BezierBuilder::new(height);
         assert_eq!(outline_glyph(&face, id, &mut builder), Some(bbox));
-        // GlyphMetrics::bounds reads the raw glyf box. Drawing shifts it by
-        // hmtx.lsb - glyf.xMin; the cached box must equal that placed box.
         let bounds = face.glyph_metrics(Size::unscaled(), LocationRef::default()).bounds(id).unwrap();
-        let glyf = face.glyf().unwrap();
-        let glyph = face.loca(None).unwrap().get_glyf(id, &glyf).unwrap().unwrap();
-        let shift = (face.hmtx().unwrap().side_bearing(id).unwrap() - glyph.x_min()) as f32;
         assert_eq!(
-            [bounds.x_min + shift, bounds.y_min, bounds.x_max + shift, bounds.y_max],
+            [bounds.x_min, bounds.y_min, bounds.x_max, bounds.y_max],
             [bbox.x_min, bbox.y_min, bbox.x_max, bbox.y_max].map(f32::from),
         );
         assert!(!builder.curves.is_empty());

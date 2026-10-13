@@ -6,22 +6,26 @@ pub(crate) mod probe;
 use probe::{assert_ink_tiles, probe_pixels};
 
 #[test]
-fn roboto_935_cached_left_edge_matches_hmtx_bearing() {
+fn roboto_935_cached_left_edge_matches_raw_glyf_bounds() {
     use skrifa::{raw::TableProvider, MetadataProvider};
-    let Some((device, queue, _config)) = common::gpu() else {
-        return;
-    };
     let bytes = include_bytes!("../fonts/Roboto-Regular.ttf");
     let face = skrifa::FontRef::new(bytes).unwrap();
     let id = skrifa::GlyphId::new(935);
     let character = face.charmap().mappings()
         .find_map(|(codepoint, mapped)| (mapped == id).then(|| char::from_u32(codepoint)).flatten())
         .expect("glyph 935 has a character mapping");
+    let glyf = face.glyf().unwrap();
+    let raw = face.loca(None).unwrap().get_glyf(id, &glyf).unwrap().unwrap();
+    let expected = raw.x_min();
+    assert_eq!(expected, 90);
+    assert_ne!(face.hmtx().unwrap().side_bearing(id).unwrap(), expected);
+    let Some((device, queue, _config)) = common::gpu() else {
+        return;
+    };
     let mut store = crate::FontStore::new(&device);
     let key = store.load_from_bytes(&device, &queue, bytes, &character.to_string()).unwrap();
     let font = store.get(key).unwrap();
     let glyph = &font.glyph_cache[&id.to_u32()];
-    let expected = face.hmtx().unwrap().side_bearing(id).unwrap();
     assert_eq!(glyph.bbox.x_min, expected);
     assert_eq!(glyph.left_side_bearing, expected);
 }

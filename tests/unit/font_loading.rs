@@ -56,10 +56,10 @@ fn with_macintosh_cmap() -> Vec<u8> {
 
 #[test]
 fn bundled_unicode_and_presets_agree_with_swash() {
-    let Some((device, queue, _)) = common::gpu() else { return; };
     // All Unicode mappings, without a runtime cap, plus the coverage, shader,
     // LCD and text presets (and a missing character and glyph-zero mapping).
     let presets = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789,;:!ù*^$=)àç_è-('\"é&²<>+°§/.? igB@éHiAVToWAàÅgß龍鬱齉直接从轮廓渲染字形文本\u{ffff}\u{10ffff}";
+    let mut cases = Vec::new();
     for (name, bytes) in [
         ("Roboto", ROBOTO),
         ("Cantarell", &include_bytes!("../../fonts/Cantarell-VF.otf")[..]),
@@ -74,36 +74,60 @@ fn bundled_unicode_and_presets_agree_with_swash() {
             if let Some(ch) = char::from_u32(codepoint) { characters.insert(ch); }
         });
         characters.extend(presets.chars());
-        let mut expected = BTreeSet::new();
-        for &ch in &characters {
-            let text = ch.to_string();
-            let id = charmap.map(ch);
-            let actual = glyph_ids(font, &text).next().map(|id| id.to_u32());
-            let mapped = (id != 0).then_some(id as u32);
-            assert_eq!(actual, mapped, "{name} U+{:04X}: loader and shaper cmap", ch as u32);
-            if let Some(id) = mapped {
-                if glyph_bounding_box(&face, GlyphId::new(id)).is_some() { expected.insert(id); }
-            }
-        }
         let preset: String = characters.iter().collect();
+        let expected: BTreeSet<_> = glyph_ids(font, &preset)
+            .filter(|&id| glyph_bounding_box(&face, id).is_some())
+            .map(|id| id.to_u32()).collect();
+        assert!(!expected.contains(&0), "{name}: glyph zero is deliberately skipped");
+        let mut writer = TypeWriter::new();
+        // U+00AD SOFT HYPHEN produces an empty cluster in Roboto and Cantarell;
+        // there is no first shaped glyph to compare. Keep its cache coverage.
+        let shaped_characters: Vec<_> = characters.iter().copied()
+            .filter(|&ch| ch != '\u{00ad}').collect();
+        for &ch in &shaped_characters {
+            let id = charmap.map(ch) as u32;
+            if !expected.contains(&id) { continue; }
+            let shaped = writer.shape_glyphs(font, 32., &ch.to_string());
+            let first = shaped.first().unwrap_or_else(||
+                panic!("{name} U+{:04X}: outlined character shapes a glyph", ch as u32)).0.0 as u32;
+            assert!(expected.contains(&first),
+                "{name} U+{:04X}: first shaped glyph {first} must have a cached outline", ch as u32);
+        }
+        eprintln!("{name}: {} characters checked, no cap", characters.len());
+        cases.push((name, bytes, shaped_characters, preset, expected));
+    }
+    let Some((device, queue, _)) = common::gpu() else { return; };
+    for (name, bytes, characters, preset, expected) in cases {
         let mut store = FontStore::new(&device);
         let key = store.load_from_bytes(&device, &queue, bytes, &preset).unwrap();
         let cached: BTreeSet<_> = store.get(key).unwrap().glyph_cache.keys().copied().collect();
-        assert_eq!(cached, expected, "{name}: cached keys match the shaper's outlined glyphs");
-        assert!(!cached.contains(&0), "{name}: glyph zero is unmapped");
-        eprintln!("{name}: {} characters checked, no cap", characters.len());
+        assert_eq!(cached, expected, "{name}: cached keys match loader-selected outlined glyphs");
+        let mut writer = TypeWriter::new();
+        for ch in characters {
+            let text = ch.to_string();
+            let Some(id) = glyph_ids(FontRef::from_index(bytes, 0).unwrap(), &text).next() else { continue; };
+            if !expected.contains(&id.to_u32()) { continue; }
+            let paragraph = writer.shape_text(&store, key, [0.; 2], 32., [1.; 4], &text).unwrap();
+            let first = paragraph.glyphs().first().unwrap().0.0 as u32;
+            assert!(cached.contains(&first),
+                "{name} U+{:04X}: first shaped glyph {first} must be in the font cache", ch as u32);
+        }
     }
 }
 
 #[test]
 fn macintosh_cmap_before_unicode_still_caches_the_shaped_glyph() {
-    let Some((device, queue, _)) = common::gpu() else { return; };
     let bytes = with_macintosh_cmap();
     let face = SkFontRef::new(&bytes).unwrap();
     let font = FontRef::from_index(&bytes, 0).unwrap();
     let unicode = font.charmap().map('A') as u32;
     let macintosh = face.cmap().unwrap().map_codepoint('A').unwrap().to_u32();
     assert_ne!(macintosh, unicode, "fixture must expose the first-record lookup bug");
+    let shaped = TypeWriter::new().shape_glyphs(font, 32., "A");
+    assert_eq!(shaped.len(), 1);
+    assert_eq!(shaped[0].0.0 as u32, unicode);
+    assert_eq!(glyph_ids(font, "A").next().unwrap().to_u32(), unicode);
+    let Some((device, queue, _)) = common::gpu() else { return; };
     let mut store = FontStore::new(&device);
     let key = store.load_from_bytes(&device, &queue, &bytes, "A").unwrap();
     let paragraph = TypeWriter::new().shape_text(&store, key, [0.; 2], 32., [1.; 4], "A").unwrap();
@@ -115,18 +139,16 @@ fn macintosh_cmap_before_unicode_still_caches_the_shaped_glyph() {
 
 #[test]
 fn units_per_em_range_is_validated_before_loading() {
-    let Some((device, queue, _)) = common::gpu() else { return; };
-    let mut store = FontStore::new(&device);
     for upem in [0, 15, 16385] {
         let mut bytes = ROBOTO.to_vec();
         patch_u16(&mut bytes, b"head", 18, upem);
-        assert!(matches!(store.load_from_bytes(&device, &queue, &bytes, "A"),
+        assert!(matches!(parse_font(&bytes, 0),
             Err(LoadingError::InvalidFont)), "invalid unitsPerEm {upem}");
     }
     for upem in [16, 16384] {
         let mut bytes = ROBOTO.to_vec();
         patch_u16(&mut bytes, b"head", 18, upem);
-        assert!(store.load_from_bytes(&device, &queue, &bytes, "A").is_ok(),
+        assert!(parse_font(&bytes, 0).is_ok(),
             "valid unitsPerEm endpoint {upem}");
     }
 }
@@ -153,13 +175,14 @@ fn ascender_selection_covers_every_021_branch() {
 
 #[test]
 fn ascender_reads_legacy_table_values_including_the_version_gate() {
-    for (version, use_typo, hhea, typo, windows, expected) in [
-        (3, true, 900, 800, 1000, 900),
-        (4, true, 900, 800, 1000, 800),
-        (4, false, 0, 800, 1000, 800),
-        (4, false, 0, 0, 1000, 1000),
-        (4, true, 900, 0, 1000, 0),
-        (6, true, 900, 800, 1000, 900),
+    for (version, length, use_typo, hhea, typo, windows, expected) in [
+        (3, 100, true, 900, 800, 1000, 900),
+        (4, 100, true, 900, 800, 1000, 800),
+        (4, 100, false, 0, 800, 1000, 800),
+        (4, 100, false, 0, 0, 1000, 1000),
+        (4, 100, true, 900, 0, 1000, 0),
+        (6, 100, true, 900, 800, 1000, 900),
+        (4, 78, false, 0, 800, 1000, 0),
     ] {
         let mut bytes = ROBOTO.to_vec();
         patch_u16(&mut bytes, b"hhea", 4, hhea as u16);
@@ -168,11 +191,8 @@ fn ascender_reads_legacy_table_values_including_the_version_gate() {
         patch_u16(&mut bytes, b"OS/2", 62, if use_typo { 1 << 7 } else { 0 });
         patch_u16(&mut bytes, b"OS/2", 68, typo as u16);
         patch_u16(&mut bytes, b"OS/2", 74, windows);
-        if version == 6 {
-            // Let read-fonts parse this future version; the old reader ignored it.
-            let record = table_record(&bytes, b"OS/2");
-            bytes[record + 12..record + 16].copy_from_slice(&100u32.to_be_bytes());
-        }
+        let record = table_record(&bytes, b"OS/2");
+        bytes[record + 12..record + 16].copy_from_slice(&(length as u32).to_be_bytes());
         let face = SkFontRef::new(&bytes).unwrap();
         assert!(face.os2().is_ok());
         assert_eq!(face_ascender(&face), expected, "OS/2 version {version}, hhea {hhea}");
@@ -180,7 +200,7 @@ fn ascender_reads_legacy_table_values_including_the_version_gate() {
 }
 
 #[test]
-fn placed_bounds_account_for_a_changed_g_bearing() {
+fn raw_bounds_ignore_a_changed_g_bearing() {
     let mut bytes = ROBOTO.to_vec();
     let face = SkFontRef::new(&bytes).unwrap();
     let id = face.charmap().map('g').unwrap();
@@ -193,6 +213,35 @@ fn placed_bounds_account_for_a_changed_g_bearing() {
     let shift = (face.hmtx().unwrap().side_bearing(id).unwrap() - glyph.x_min()) as f32;
     assert_ne!(shift, 0.);
     let placed = glyph_bounding_box(&face, id).unwrap();
-    assert_eq!([raw.x_min + shift, raw.y_min, raw.x_max + shift, raw.y_max],
+    assert_eq!([raw.x_min, raw.y_min, raw.x_max, raw.y_max],
         [placed.x_min, placed.y_min, placed.x_max, placed.y_max].map(f32::from));
+}
+
+#[test]
+fn roboto_mismatched_bearings_preserve_raw_bounds_and_outline() {
+    let face = SkFontRef::new(ROBOTO).unwrap();
+    let glyf = face.glyf().unwrap();
+    let loca = face.loca(None).unwrap();
+    let id = GlyphId::new(935);
+    let glyph = loca.get_glyf(id, &glyf).unwrap().unwrap();
+    assert_ne!(face.hmtx().unwrap().side_bearing(id).unwrap(), glyph.x_min());
+    let bbox = glyph_bounding_box(&face, id).unwrap();
+    assert_eq!([bbox.x_min, bbox.y_min, bbox.x_max, bbox.y_max],
+        [glyph.x_min(), glyph.y_min(), glyph.x_max(), glyph.y_max()]);
+    let mut builder = BezierBuilder::new(bbox.y_max as f32);
+    assert_eq!(outline_glyph(&face, id, &mut builder), Some(bbox));
+    builder.finish();
+    let xs: Vec<_> = builder.curves.as_chunks::<8>().0.iter()
+        .flat_map(|s| [s[0], s[2], s[4]]).collect();
+    assert_eq!(xs.iter().copied().reduce(f32::min).unwrap(), glyph.x_min() as f32);
+    assert_eq!(xs.iter().copied().reduce(f32::max).unwrap(), glyph.x_max() as f32);
+    let ch = face.charmap().mappings().find(|&(_, mapped)| mapped == id).unwrap().0;
+    let text = char::from_u32(ch).unwrap().to_string();
+    let Some((device, queue, _)) = common::gpu() else { return; };
+    let mut store = FontStore::new(&device);
+    let key = store.load_from_bytes(&device, &queue, ROBOTO, &text).unwrap();
+    let cached = &store.get(key).unwrap().glyph_cache[&id.to_u32()];
+    assert_eq!(cached.bbox, bbox);
+    #[cfg(feature = "unstable-internals")]
+    assert_eq!(cached.curves, builder.curves);
 }
