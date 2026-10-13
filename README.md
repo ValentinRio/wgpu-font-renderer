@@ -89,7 +89,7 @@ Add dependency to you cargo.toml
 
 ```toml
 [dependencies]
-wgpu-font-renderer = "0.1.0"
+wgpu-font-renderer = "0.2"
 ```
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
@@ -402,7 +402,7 @@ Don't forget to give the project a star! Thanks again!
 <!-- LICENSE -->
 ## License
 
-Distributed under the MIT License.
+Licensed under either of the [Apache License, Version 2.0](LICENSE-APACHE) or the [MIT license](LICENSE-MIT), at your option.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -419,6 +419,5 @@ Project Link: [https://github.com/ValentinRio/wgpu-font-renderer](https://github
 <!-- MARKDOWN LINKS & IMAGES -->
 <!-- https://www.markdownguide.org/basic-syntax/#reference-style-links -->
 [issues-url]: https://github.com/ValentinRio/wgpu-font-renderer/issues
-[license-url]: https://github.com/ValentinRio/wgpu-font-renderer/blob/main/LICENSE.txt
 [product-screenshot]: examples/screenshot.png
 
