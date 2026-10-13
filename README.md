@@ -5,7 +5,7 @@
 
 GPU-centered font rendering for [wgpu](https://wgpu.rs/). Glyphs are drawn straight from their outlines in the fragment shader. No signed distance field cache of any sort.
 
-![Text rendered by the example](examples/screenshot.png)
+![The simple example drawing Roboto, Cantarell and Noto Serif SC, with a large 龍 above a line of Chinese text](examples/screenshot.png)
 
 ## Features
 
