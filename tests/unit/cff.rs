@@ -4,23 +4,23 @@ use super::*;
 fn noto_subset_characters_have_outlines() {
     let (face, _, _) = parse_font(include_bytes!("../../fonts/NotoSerifSC-Subset.otf"), 0)
         .expect("Noto Serif SC subset loads");
-    let face = face.as_face_ref();
+
     for ch in "龍鬱齉直接从轮廓渲染字形文本".chars() {
         let id = face
-            .glyph_index(ch)
+            .charmap().map(ch)
             .unwrap_or_else(|| panic!("Noto {ch}: missing glyph"));
-        assert_ne!(id.0, 0, "Noto {ch}: mapped to .notdef");
+        assert_ne!(id.to_u32(), 0, "Noto {ch}: mapped to .notdef");
         let mut builder = BezierBuilder::new(0.);
         assert!(
-            face.outline_glyph(id, &mut builder).is_some(),
+            outline_glyph(&face, id, &mut builder).is_some(),
             "Noto {ch}, id {}: missing outline",
-            id.0
+            id.to_u32()
         );
         builder.finish();
         assert!(
             !builder.curves.is_empty(),
             "Noto {ch}, id {}: empty outline",
-            id.0
+            id.to_u32()
         );
     }
 }
@@ -42,15 +42,15 @@ fn cff_winding_matches_truetype_and_final_close_is_idempotent() {
     let (cantarell, _, _) = parse_font(include_bytes!("../../fonts/Cantarell-VF.otf"), 0).unwrap();
     let mut areas = Vec::new();
     for (face, reverse) in [
-        (roboto.as_face_ref(), false),
-        (cantarell.as_face_ref(), true),
+        (roboto, false),
+        (cantarell, true),
     ] {
-        let id = face.glyph_index('H').unwrap();
-        let bbox = face.glyph_bounding_box(id).unwrap();
+        let id = face.charmap().map('H').unwrap();
+        let bbox = glyph_bounding_box(&face, id).unwrap();
         let mut raw = BezierBuilder::new(bbox.y_max as f32);
-        face.outline_glyph(id, &mut raw).unwrap();
+        outline_glyph(&face, id, &mut raw).unwrap();
         let mut encoded = BezierBuilder::new(bbox.y_max as f32);
-        face.outline_glyph(id, &mut encoded).unwrap();
+        outline_glyph(&face, id, &mut encoded).unwrap();
         encoded.finish();
         let finished = encoded.curves.clone();
         encoded.finish();
@@ -83,7 +83,7 @@ fn cantarell_cff2_outlines_chain_inside_padded_bounds() {
         starts: Vec<usize>,
         cubics: usize,
     }
-    impl OutlineBuilder for Contours {
+    impl OutlinePen for Contours {
         fn move_to(&mut self, x: f32, y: f32) {
             self.starts.push(self.builder.curves.len() / 8);
             self.builder.move_to(x, y);
@@ -103,22 +103,21 @@ fn cantarell_cff2_outlines_chain_inside_padded_bounds() {
         }
     }
     let (face, _, _) = parse_font(include_bytes!("../../fonts/Cantarell-VF.otf"), 0).unwrap();
-    let face = face.as_face_ref();
+
     assert!(
-        face.raw_face()
-            .table(owned_ttf_parser::Tag::from_bytes(b"CFF2"))
+        face.table_data(skrifa::raw::types::Tag::new(b"CFF2"))
             .is_some()
     );
     let mut outlined = 0;
     let mut cubics = 0;
-    for id in 0..face.number_of_glyphs() {
-        let id = GlyphId(id);
+    for id in 0..face.glyph_metrics(Size::unscaled(), LocationRef::default()).glyph_count() {
+        let id = GlyphId::new(id);
         let mut contours = Contours {
             builder: BezierBuilder::new(0.),
             starts: Vec::new(),
             cubics: 0,
         };
-        let Some(bbox) = face.outline_glyph(id, &mut contours) else {
+        let Some(bbox) = outline_glyph(&face, id, &mut contours) else {
             assert!(contours.builder.curves.is_empty(), "partial glyph {id:?}");
             continue;
         };
@@ -141,7 +140,7 @@ fn cantarell_cff2_outlines_chain_inside_padded_bounds() {
                 assert_eq!(pair[0][4..6], pair[1][..2], "glyph {id:?}");
             }
         }
-        let pad = face.units_per_em() as f32 * 0.15;
+        let pad = face.metrics(Size::unscaled(), LocationRef::default()).units_per_em as f32 * 0.15;
         for segment in segments {
             assert_eq!(segment[6..], [0., 0.]);
             for point in segment[..6].as_chunks::<2>().0 {

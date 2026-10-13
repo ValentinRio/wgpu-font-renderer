@@ -1,6 +1,6 @@
 #![cfg(not(target_arch = "wasm32"))]
 
-use owned_ttf_parser::AsFaceRef;
+use skrifa::{MetadataProvider, instance::{Size, LocationRef}};
 use wgpu_font_renderer::{FontStore, LoadingError, TextRenderer, TypeWriter};
 
 mod common;
@@ -29,21 +29,21 @@ fn shape_text_preserves_glyphs_advances_and_rejects_unknown_font() {
     let paragraph = writer
         .shape_text(&store, key, [24., 24.], 32., [0., 0., 0., 1.], "Hi Hi")
         .unwrap();
-    let face = wgpu_font_renderer::internals::font(&store, key).unwrap().face.as_face_ref();
+    let face = wgpu_font_renderer::internals::font(&store, key).unwrap().face();
     let expected: Vec<_> = "Hi Hi"
         .chars()
-        .map(|c| face.glyph_index(c).unwrap())
+        .map(|c| face.charmap().map(c).unwrap())
         .collect();
     assert_eq!(
         paragraph.glyphs()
             .iter()
-            .map(|(id, _)| owned_ttf_parser::GlyphId(id.0))
+            .map(|(id, _)| skrifa::GlyphId::new(id.0 as u32))
             .collect::<Vec<_>>(),
         expected
     );
     let expected_width: f32 = expected
         .iter()
-        .map(|id| face.glyph_hor_advance(*id).unwrap() as f32 * 32. / face.units_per_em() as f32)
+        .map(|id| face.glyph_metrics(Size::unscaled(), LocationRef::default()).advance_width(*id).unwrap() * 32. / face.metrics(Size::unscaled(), LocationRef::default()).units_per_em as f32)
         .sum();
     assert!(
         (paragraph.width() - expected_width).abs() < 1e-5,
@@ -330,13 +330,13 @@ fn cantarell_cff2_loads_outlines_and_renders_ink() {
         .unwrap();
     let font = wgpu_font_renderer::internals::font(&store, key).unwrap();
     for c in "Hi".chars() {
-        let id = font.face.as_face_ref().glyph_index(c).unwrap();
+        let id = font.face().charmap().map(c).unwrap();
         let glyph = font
             .glyph_cache
-            .get(&id)
+            .get(&id.to_u32())
             .expect("CFF2 glyph must be cached");
         assert!(!glyph.curves.is_empty());
-        let pad = font.face.as_face_ref().units_per_em() as f32 * 0.15;
+        let pad = font.face().metrics(Size::unscaled(), LocationRef::default()).units_per_em as f32 * 0.15;
         for segment in glyph.curves.as_chunks::<8>().0 {
             for p in segment[..6].as_chunks::<2>().0 {
                 assert!(

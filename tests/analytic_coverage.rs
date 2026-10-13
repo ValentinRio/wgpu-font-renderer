@@ -1,6 +1,6 @@
 #![cfg(not(target_arch = "wasm32"))]
 
-use owned_ttf_parser::AsFaceRef;
+use skrifa::{MetadataProvider, instance::{Size, LocationRef}};
 use wgpu_font_renderer::FontStore;
 #[path = "common/analytic.rs"]
 #[allow(dead_code)]
@@ -53,23 +53,22 @@ fn c3_every_cached_glyph_matches_method_and_box_error_bounds() {
         if name == "Noto Serif SC" {
             for ch in NOTO_PRESET.chars() {
                 let id = font
-                    .face
-                    .as_face_ref()
-                    .glyph_index(ch)
+                    .face()
+                    .charmap().map(ch)
                     .expect("Noto character exists");
                 assert!(
                     font.glyph_cache
-                        .get(&id)
+                        .get(&id.to_u32())
                         .is_some_and(|glyph| !glyph.curves.is_empty()),
                     "Noto {ch} (id {}): outline was not cached",
-                    id.0
+                    id
                 );
             }
         }
         let mut glyphs: Vec<_> = font.glyph_cache.iter().collect();
-        glyphs.sort_by_key(|(id, _)| id.0);
+        glyphs.sort_by_key(|(id, _)| **id);
         for (size, mean_limit) in mean_errors {
-            let scale = size / font.face.as_face_ref().units_per_em() as f32;
+            let scale = size / font.face().metrics(Size::unscaled(), LocationRef::default()).units_per_em as f32;
             let (mut max, mut total, mut count) = (0_f32, 0_f64, 0_usize);
             let mut worst = String::new();
             let mut method_size_max = 0_f32;
@@ -94,7 +93,7 @@ fn c3_every_cached_glyph_matches_method_and_box_error_bounds() {
                 for (tile, (id, glyph)) in batch.iter().enumerate() {
                     let ch = preset
                         .chars()
-                        .find(|&ch| font.face.as_face_ref().glyph_index(ch) == Some(**id));
+                        .find(|&ch| font.face().charmap().map(ch).map(|id| id.to_u32()) == Some(**id));
                     let width = (glyph.bbox.width() as f32 * scale).ceil() as u32 + 2;
                     let height = (glyph.bbox.height() as f32 * scale).ceil() as u32 + 2;
                     assert!(width <= 256 && height <= 256);
@@ -124,7 +123,7 @@ fn c3_every_cached_glyph_matches_method_and_box_error_bounds() {
                                 max = error;
                                 worst = format!(
                                     "{ch:?}, id {}, pixel {x},{y}: GPU {actual:.6}, box {:.6}",
-                                    id.0, reference[index]
+                                    id, reference[index]
                                 );
                             }
                             let difference = (actual - centre[index]).abs();
@@ -133,7 +132,7 @@ fn c3_every_cached_glyph_matches_method_and_box_error_bounds() {
                                 method_max = difference;
                                 method_worst = format!(
                                     "{name} {size}, {ch:?}, id {}, pixel {x},{y}: GPU {actual:.8}, CPU {:.8}",
-                                    id.0, centre[index]
+                                    id, centre[index]
                                 );
                             }
                             total += f64::from(error);
@@ -185,9 +184,9 @@ fn c7_dilated_quad_covers_pixels_outside_bbox_without_moving_ink() {
         )
         .unwrap();
     let font = wgpu_font_renderer::internals::font(&store, key).unwrap();
-    let id = font.face.as_face_ref().glyph_index('I').unwrap();
-    let glyph = &font.glyph_cache[&id];
-    let scale = 48. / font.face.as_face_ref().units_per_em() as f32;
+    let id = font.face().charmap().map('I').unwrap();
+    let glyph = &font.glyph_cache[&id.to_u32()];
+    let scale = 48. / font.face().metrics(Size::unscaled(), LocationRef::default()).units_per_em as f32;
     // Place the old left edge at x=20.75. Pixel x=20 has its centre outside
     // that quad but intersects the stem by one quarter of a pixel.
     let top = 20.75;
@@ -196,7 +195,7 @@ fn c7_dilated_quad_covers_pixels_outside_bbox_without_moving_ink() {
         top - (glyph.y_offset as f32 + f32::from(glyph.descent).abs()) * scale,
     ];
     let mut paragraph = Paragraph::new(key, position, 48., [1.; 4]);
-    paragraph.push(wgpu_font_renderer::GlyphId(id.0), 0.);
+    paragraph.push(wgpu_font_renderer::GlyphId(id.to_u32() as u16), 0.);
     let mut renderer = TextRenderer::new(&device, config.format, &store);
     renderer.prepare(&device, &queue, &[paragraph], &store);
     let pixels = draw::draw_pixels(

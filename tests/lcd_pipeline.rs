@@ -1,6 +1,6 @@
 #![cfg(not(target_arch = "wasm32"))]
 
-use owned_ttf_parser::AsFaceRef;
+use skrifa::MetadataProvider;
 use wgpu_font_renderer::{FontStore, SubpixelOrder, TextRenderer, TypeWriter};
 mod common;
 #[path = "common/draw.rs"]
@@ -377,7 +377,7 @@ fn c6_lcd_bands_match_full_list_and_are_taken() {
             .unwrap();
         let font = wgpu_font_renderer::internals::font(&store, key).unwrap();
         for c in "igB@é".chars() {
-            let glyph = &font.glyph_cache[&font.face.as_face_ref().glyph_index(c).unwrap()];
+            let glyph = &font.glyph_cache[&font.face().charmap().map(c).unwrap().to_u32()];
             let [x, y] = glyph.allocation.position();
             let bands = glyph.bands.as_ref().unwrap();
             let [bx, by] = bands.position();

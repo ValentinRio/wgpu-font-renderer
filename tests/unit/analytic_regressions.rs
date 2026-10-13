@@ -1,6 +1,6 @@
 use super::{build_slug_bands, BezierBuilder};
 use crate::atlas_tests::{common, probe};
-use owned_ttf_parser::OutlineBuilder;
+use skrifa::outline::OutlinePen;
 
 fn square(lo: [f32; 2], hi: [f32; 2], reverse: bool) -> Vec<f32> {
     let mut points = [lo, [hi[0], lo[1]], hi, [lo[0], hi[1]]];

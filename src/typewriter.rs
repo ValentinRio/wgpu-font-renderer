@@ -101,21 +101,29 @@ impl TypeWriter {
         }
         let mut paragraph = Paragraph::new(font, position, size, color);
         if let Some(font) = store.get(font) {
-            let mut shaper = self.context.builder(font.as_ref())
-                .script(Script::Latin)
-                .size(size)
-                .build();
-
-            shaper.add_str(text);
-            shaper.shape_with(|cluster| {
-                if let Some(glyph) = cluster.glyphs.first() {
-                    paragraph.push(GlyphId(glyph.id), glyph.advance);
-                }
-            });
+            for (id, advance) in self.shape_glyphs(font.as_ref(), size, text) {
+                paragraph.push(id, advance);
+            }
 
             Some(paragraph)
         } else {
             None
         }
     } 
+
+    pub(crate) fn shape_glyphs(&mut self, font: swash::FontRef<'_>, size: f32, text: &str) -> Vec<(GlyphId, f32)> {
+        let mut glyphs = Vec::new();
+        let mut shaper = self.context.builder(font)
+            .script(Script::Latin)
+            .size(size)
+            .build();
+        shaper.add_str(text);
+        shaper.shape_with(|cluster| {
+            if let Some(glyph) = cluster.glyphs.first() {
+                glyphs.push((GlyphId(glyph.id), glyph.advance));
+            }
+        });
+        glyphs
+    }
+
 }

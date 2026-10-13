@@ -1,5 +1,10 @@
 use std::{collections::HashMap, fmt};
-use owned_ttf_parser::{AsFaceRef, GlyphId, OutlineBuilder, OwnedFace, Rect};
+use skrifa::{
+    instance::{LocationRef, Size},
+    outline::{pen::{PathStyle, ControlBoundsPen, PathElement}, DrawSettings, OutlinePen},
+    raw::TableProvider,
+    FontRef as SkFontRef, GlyphId, MetadataProvider,
+};
 use swash::{CacheKey, FontRef};
 
 use crate::atlas::{allocation::Allocation, Atlas};
@@ -36,14 +41,13 @@ pub struct Glyph {
 /// Owned font bytes, parsed face, and selected cached outlines.
 pub struct Font {
     data: Vec<u8>,
-    /// Parsed face; metrics and outlines use font units, y upward.
-    pub face: OwnedFace,
+    index: u32,
     /// Byte offset of this face within the font data.
     pub(crate) offset: u32,
     /// Unique swash cache key identifying this loaded face.
     pub(crate) key: CacheKey,
     /// Outlines successfully cached for the requested characters, by glyph ID.
-    pub glyph_cache: HashMap<GlyphId, Glyph>,
+    pub glyph_cache: HashMap<u32, Glyph>,
 }
 
 type Result<T> = std::result::Result<T, LoadingError>;
@@ -95,9 +99,11 @@ impl Font {
         let (face, offset, key) = parse_font(&data, index)?;
 
         // Generate glyph cache for each glyph present in the font file
-        let glyph_cache = create_glyph_cache(device, encoder, queue, &face, cache_preset, atlas);
+        let font = FontRef { data: &data, offset, key };
+        let glyph_cache = create_glyph_cache(device, encoder, queue, &face,
+            glyph_ids(font, cache_preset), atlas);
 
-        Ok(Self { data, face, offset, key, glyph_cache })
+        Ok(Self { data, index: index as u32, offset, key, glyph_cache })
     }
 
     /// Borrow the original bytes as a swash font reference with the same cache key.
@@ -108,82 +114,132 @@ impl Font {
             key: self.key,
         }
     }
+
+    /// Borrow the selected face; metrics and outlines use font units, y upward.
+    pub fn face(&self) -> SkFontRef<'_> {
+        SkFontRef::from_index(&self.data, self.index).expect("validated font face")
+    }
 }
 
 
 // Both parsers must accept the same face; keep its offset/key from swash.
-fn parse_font(data: &[u8], index: usize) -> Result<(OwnedFace, u32, CacheKey)> {
+fn parse_font(data: &[u8], index: usize) -> Result<(SkFontRef<'_>, u32, CacheKey)> {
+    let face_index = u32::try_from(index).map_err(|_| LoadingError::InvalidFont)?;
     let font = FontRef::from_index(data, index).ok_or(LoadingError::InvalidFont)?;
     let (offset, key) = (font.offset, font.key);
-    let face = OwnedFace::from_vec(data.to_vec(), index as u32)
-        .or(Err(LoadingError::InvalidFont))?;
+    let face = SkFontRef::from_index(data, face_index).map_err(|_| LoadingError::InvalidFont)?;
+    // Require the same core face tables as the shaping parser.
+    let head = face.head().map_err(|_| LoadingError::InvalidFont)?;
+    if !(16..=16384).contains(&head.units_per_em()) {
+        return Err(LoadingError::InvalidFont);
+    }
+    face.hhea().map_err(|_| LoadingError::InvalidFont)?;
+    face.maxp().map_err(|_| LoadingError::InvalidFont)?;
     Ok((face, offset, key))
 }
 
+// Default-instance selection from the 0.21 parser: only OS/2 v4+ can request
+// typo metrics, and hhea's ascender alone controls the fallback.
+fn select_ascender(hhea: i16, os2: Option<(u16, bool, i16, i16)>) -> i16 {
+    if let Some((version, use_typo, typo, windows)) = os2 {
+        if version >= 4 && use_typo {
+            return typo;
+        }
+        if hhea == 0 {
+            return if typo != 0 { typo } else { windows };
+        }
+    }
+    hhea
+}
+
+fn face_ascender(face: &SkFontRef<'_>) -> i16 {
+    use skrifa::raw::tables::os2::SelectionFlags;
+    // Match the old parser's version and minimum-length checks.
+    let os2 = face.os2().ok().filter(|table| {
+        let minimum = match table.version() {
+            0 => 78,
+            1 => 86,
+            2..=4 => 96,
+            5 => 100,
+            _ => return false,
+        };
+        table.offset_data().len() >= minimum
+    }).map(|table| (
+        table.version(), table.fs_selection().contains(SelectionFlags::USE_TYPO_METRICS),
+        table.s_typo_ascender(), table.us_win_ascent() as i16,
+    ));
+    select_ascender(face.hhea().expect("validated hhea table").ascender().to_i16(), os2)
+}
+
+fn glyph_ids<'a>(font: FontRef<'a>, characters: &'a str) -> impl Iterator<Item = GlyphId> + 'a {
+    // Use the shaper's Unicode/symbol cmap selection. Deliberately skip glyph
+    // zero, including explicit .notdef mappings; 0.2 could cache its outline.
+    let charmap = font.charmap();
+    characters.chars().filter_map(move |ch| {
+        let id = charmap.map(ch);
+        (id != 0).then_some(GlyphId::new(id as u32))
+    })
+}
 
 fn create_glyph_cache(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
     queue: &wgpu::Queue,
-    face: &OwnedFace,
-    cache_preset: &str,
+    face: &SkFontRef<'_>,
+    glyph_ids: impl Iterator<Item = GlyphId>,
     atlas: &mut Atlas
-) -> HashMap<GlyphId, Glyph> {
+) -> HashMap<u32, Glyph> {
     let mut glyph_cache = HashMap::new();
 
-    let face = face.as_face_ref();
+    let ascender = face_ascender(face);
 
-    let ascender = face.ascender();
-
-    for code_point in cache_preset.chars() { 
-        if let Some(glyph_id) = face.glyph_index(code_point) {
-            if let Some(bbox) = face.glyph_bounding_box(glyph_id) {
-                let height = bbox.height();
-                let left_side_bearing = bbox.x_min;
+    for glyph_id in glyph_ids {
+        if let Some(bbox) = glyph_bounding_box(face, glyph_id) {
+            let height = bbox.height();
+            let left_side_bearing = bbox.x_min;
     
-                let (descent, distance_from_baseline) = if bbox.y_min <= 0 {
-                    (bbox.y_min, 0)
-                } else {
-                    (0, bbox.y_min)
+            let (descent, distance_from_baseline) = if bbox.y_min <= 0 {
+                (bbox.y_min, 0)
+            } else {
+                (0, bbox.y_min)
+            };
+    
+            let total_height = height + descent + distance_from_baseline;
+            let y_offset = ascender - distance_from_baseline - height;
+    
+            let mut builder = BezierBuilder::new(total_height as f32);
+    
+            outline_glyph(face, glyph_id, &mut builder);
+            // Close the final contour before winding normalization.
+            builder.finish();
+
+            // Each eight-float segment occupies two RGBA32F texels, including
+            // the original index and sort-key padding slots.
+            let curves_count = builder.curves.len() as u32;
+    
+            let bytes = unsafe {
+                std::slice::from_raw_parts(builder.curves.as_ptr() as *const u8, builder.curves.len() * 4)
+            };
+
+            if let Some(allocation) = atlas.upload(curves_count, bytes, device, encoder, queue) {
+                let band_data = build_slug_bands(&builder.curves);
+                let bands = atlas.upload_bands(
+                    band_data.len() as u32,
+                    bytemuck::cast_slice(&band_data),
+                    device, encoder, queue,
+                );
+                let glyph = Glyph {
+                    #[cfg(feature = "unstable-internals")]
+                    curves: builder.curves,
+                    allocation,
+                    bands,
+                    bbox,
+                    descent,
+                    y_offset,
+                    left_side_bearing,
                 };
-    
-                let total_height = height + descent + distance_from_baseline;
-                let y_offset = ascender - distance_from_baseline - height;
-    
-                let mut builder = BezierBuilder::new(total_height as f32);
-    
-                face.outline_glyph(glyph_id, &mut builder);
-                // ttf-parser's CFF2 path omits close() for the final contour.
-                builder.finish();
-
-                // Each eight-float segment occupies two RGBA32F texels, including
-                // the original index and sort-key padding slots.
-                let curves_count = builder.curves.len() as u32;
-    
-                let bytes = unsafe {
-                    std::slice::from_raw_parts(builder.curves.as_ptr() as *const u8, builder.curves.len() * 4)
-                };
-
-                if let Some(allocation) = atlas.upload(curves_count, bytes, device, encoder, queue) {
-                    let band_data = build_slug_bands(&builder.curves);
-                    let bands = atlas.upload_bands(
-                        band_data.len() as u32,
-                        bytemuck::cast_slice(&band_data),
-                        device, encoder, queue,
-                    );
-                    let glyph = Glyph {
-                        #[cfg(feature = "unstable-internals")]
-                        curves: builder.curves,
-                        allocation,
-                        bands,
-                        bbox,
-                        descent,
-                        y_offset,
-                        left_side_bearing,
-                    };
         
-                    glyph_cache.insert(glyph_id, glyph);
-                }
+                glyph_cache.insert(glyph_id.to_u32(), glyph);
             }
         }
     }
@@ -192,6 +248,74 @@ fn create_glyph_cache(
 }
 
 const SLUG_BAND_EPSILON: f32 = 0.05;
+
+/// Font-unit bounding box with y increasing upward.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Rect {
+    /// Left edge.
+    pub x_min: i16,
+    /// Bottom edge.
+    pub y_min: i16,
+    /// Right edge.
+    pub x_max: i16,
+    /// Top edge.
+    pub y_max: i16,
+}
+
+impl Rect {
+    /// Width in font units.
+    pub fn width(&self) -> i16 { self.x_max - self.x_min }
+    /// Height in font units.
+    pub fn height(&self) -> i16 { self.y_max - self.y_min }
+}
+
+fn draw_settings() -> DrawSettings<'static> {
+    DrawSettings::unhinted(Size::unscaled(), LocationRef::default())
+        .with_path_style(PathStyle::HarfBuzz)
+}
+
+// Restore raw TrueType coordinates using the actual phantom-point shift,
+// including USE_MY_METRICS on composite glyphs. CFF outlines have no shift.
+fn draw_glyph(face: &SkFontRef<'_>, id: GlyphId, pen: &mut impl OutlinePen) -> Option<()> {
+    let mut path = Vec::new();
+    let metrics = face.outline_glyphs().get(id)?.draw(draw_settings(), &mut path).ok()?;
+    let shift = metrics.lsb.unwrap_or(0.);
+    for element in path {
+        match element {
+            PathElement::MoveTo { x, y } => pen.move_to(x + shift, y),
+            PathElement::LineTo { x, y } => pen.line_to(x + shift, y),
+            PathElement::QuadTo { cx0, cy0, x, y } => pen.quad_to(cx0 + shift, cy0, x + shift, y),
+            PathElement::CurveTo { cx0, cy0, cx1, cy1, x, y } =>
+                pen.curve_to(cx0 + shift, cy0, cx1 + shift, cy1, x + shift, y),
+            PathElement::Close => pen.close(),
+        }
+    }
+    Some(())
+}
+
+fn glyph_bounding_box(face: &SkFontRef<'_>, id: GlyphId) -> Option<Rect> {
+    let mut pen = ControlBoundsPen::default();
+    draw_glyph(face, id, &mut pen)?;
+    let bounds = pen.bounding_box()?;
+    // Bounds enclose control points, including CFF/CFF2 controls, and truncate
+    // toward zero to preserve the cached integer font-unit metrics.
+    let integer = |v: f32| {
+        if v.is_finite() && v.trunc() >= i16::MIN as f32 && v.trunc() <= i16::MAX as f32 {
+            Some(v as i16)
+        } else {
+            None
+        }
+    };
+    Some(Rect {
+        x_min: integer(bounds.x_min)?, y_min: integer(bounds.y_min)?,
+        x_max: integer(bounds.x_max)?, y_max: integer(bounds.y_max)?,
+    })
+}
+
+fn outline_glyph(face: &SkFontRef<'_>, id: GlyphId, pen: &mut impl OutlinePen) -> Option<Rect> {
+    draw_glyph(face, id, pen)?;
+    glyph_bounding_box(face, id)
+}
 
 // Header: min x/y, band width/height, horizontal/vertical counts.
 // Descriptors: float offset/length. Curve padding: original index, maximum key.
@@ -349,7 +473,7 @@ impl BezierBuilder {
     }
 }
 
-impl OutlineBuilder for BezierBuilder {
+impl OutlinePen for BezierBuilder {
     fn move_to(&mut self, x: f32, y: f32) {
         self.last_position = [x, self.total_height - y];
         self.contour_position = [x, y];
@@ -530,12 +654,17 @@ mod tests {
     fn roboto_bytes_produce_padded_y_down_outline() {
         let (face, _, _) = parse_font(include_bytes!("../fonts/Roboto-Regular.ttf"), 0)
             .expect("bundled font parses");
-        let face = face.as_face_ref();
-        let id = face.glyph_index('g').unwrap();
-        let bbox = face.glyph_bounding_box(id).unwrap();
+
+        let id = face.charmap().map('g').unwrap();
+        let bbox = glyph_bounding_box(&face, id).unwrap();
         let height = bbox.y_max as f32;
         let mut builder = BezierBuilder::new(height);
-        assert_eq!(face.outline_glyph(id, &mut builder), Some(bbox));
+        assert_eq!(outline_glyph(&face, id, &mut builder), Some(bbox));
+        let bounds = face.glyph_metrics(Size::unscaled(), LocationRef::default()).bounds(id).unwrap();
+        assert_eq!(
+            [bounds.x_min, bounds.y_min, bounds.x_max, bounds.y_max],
+            [bbox.x_min, bbox.y_min, bbox.x_max, bbox.y_max].map(f32::from),
+        );
         assert!(!builder.curves.is_empty());
         assert_eq!(builder.curves.len() % 8, 0);
         let bands = build_slug_bands(&builder.curves);
@@ -602,3 +731,7 @@ mod analytic_regressions;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "../tests/unit/ray_review.rs"]
 mod ray_review;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "../tests/unit/font_loading.rs"]
+mod font_loading_tests;

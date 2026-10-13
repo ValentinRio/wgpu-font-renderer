@@ -9,6 +9,7 @@ below 1.0, a minor bump (0.x) may break the API.
 
 ### Breaking
 
+- The library no longer enables any `wgpu` backend. Applications must enable the backends they want on their own `wgpu` dependency; a plain `wgpu = "30"` enables the defaults.
 - Font handles returned by `load` and `load_from_bytes` are opaque `FontId` values.
 - Glyph indices in paragraphs use the root-exported `GlyphId(pub u16)`.
 - `FontStore::new` takes only a device.
@@ -107,7 +108,7 @@ let curves = &glyph.curves;
 let glyph_metrics = (glyph.bbox, glyph.descent, glyph.y_offset, glyph.left_side_bearing);
 let allocation = &glyph.allocation; // position(), size(), layer() remain inspectable
 let bands = &glyph.bands;
-let face = &font.face;
+let face = font.face();
 let view = wgpu_font_renderer::internals::atlas_view(&store);
 let layers = wgpu_font_renderer::internals::atlas_layer_count(&store);
 # }
@@ -117,6 +118,15 @@ let layers = wgpu_font_renderer::internals::atlas_layer_count(&store);
 Ok(())
 }
 ```
+
+`atlas::SIZE`, `Allocator::{new, allocate}`, `Region::{position, size}`, and
+`Layer::{Empty, Busy, is_empty}` have no stable replacement; atlas allocation
+and layer bookkeeping are now private. `Resolution::{width, height}` also
+leave the stable API; pass viewport dimensions to `TextRenderer::resize`.
+
+`Font::{offset, key, as_ref}` and `Atlas::texture_format` have no stable
+replacement: identify fonts with `FontId` and pass the render target format
+to `TextRenderer::new`. `LoadingError` retains its `Display` implementation.
 
 Run tests and benchmarks with `--all-features` to enable inspection targets.
 
@@ -128,6 +138,9 @@ Run tests and benchmarks with `--all-features` to enable inspection targets.
 
 ### Changed
 
+- Fonts are read with skrifa instead of ttf-parser. swash is at 0.2 without its scaler and rasteriser.
+- Glyph 0 (`.notdef`) is never cached or drawn now. In 0.2, loading a character explicitly mapped to glyph 0 cached its outline, allowing it to draw for any character the shaper resolved to glyph 0; characters with no cmap mapping were skipped during loading.
+- Glyph IDs now follow the shaper's cmap selection: Windows symbol subtables take priority, and format 12 is preferred. In 0.2, Windows symbol subtables were skipped and each character used the first mapping found across Unicode subtables in record order; symbol-only fonts now draw, and conflicting format 4/12 mappings now agree with shaping, avoiding wrong or missing glyphs.
 - `TextRenderer::prepare` accepts any iterator of borrowed paragraphs, including slices, borrowed vectors, and chained lists.
 - `TypeWriter` implements `Default`, equivalent to `TypeWriter::new()`.
 

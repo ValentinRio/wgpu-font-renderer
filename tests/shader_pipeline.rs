@@ -1,6 +1,6 @@
 #![cfg(not(target_arch = "wasm32"))]
 
-use owned_ttf_parser::AsFaceRef;
+use skrifa::{MetadataProvider, instance::{Size, LocationRef}};
 use wgpu_font_renderer::{FontStore, TextRenderer};
 
 mod common;
@@ -61,12 +61,12 @@ fn compare_shader_pixels() {
             "igB@éABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".to_owned();
         if grow {
             let inspection_key = store.load_from_bytes(&device, &queue, bytes, "").unwrap();
-            let face = wgpu_font_renderer::internals::font(&store, inspection_key).unwrap().face.as_face_ref();
+            let face = wgpu_font_renderer::internals::font(&store, inspection_key).unwrap().face();
             let chars: Vec<_> = (0..=0xffff)
                 .filter_map(char::from_u32)
                 .filter(|&c| {
-                    face.glyph_index(c)
-                        .and_then(|id| face.glyph_bounding_box(id))
+                    face.charmap().map(c)
+                        .and_then(|id| face.glyph_metrics(Size::unscaled(), LocationRef::default()).bounds(id))
                         .is_some()
                 })
                 .take(1400)
@@ -90,8 +90,8 @@ fn compare_shader_pixels() {
         }
         let font = wgpu_font_renderer::internals::font(&store, key).unwrap();
         let wrapped = preset.chars().find(|&c| {
-            let id = font.face.as_face_ref().glyph_index(c).unwrap();
-            let glyph = &font.glyph_cache[&id];
+            let id = font.face().charmap().map(c).unwrap();
+            let glyph = &font.glyph_cache[&id.to_u32()];
             glyph.allocation.position()[0] + glyph.allocation.size() > 2048
         });
         assert!(
@@ -99,16 +99,16 @@ fn compare_shader_pixels() {
             "fixture must exercise row-crossing reads"
         );
         let old_layer_tail = preset.chars().find(|&c| {
-            let id = font.face.as_face_ref().glyph_index(c).unwrap();
+            let id = font.face().charmap().map(c).unwrap();
             font.glyph_cache
-                .get(&id)
+                .get(&id.to_u32())
                 .and_then(|g| g.bands.as_ref())
                 .is_some_and(|b| b.layer() == 1 && b.position()[1] >= 2016)
         });
         let new_layer = preset.chars().find(|&c| {
-            let id = font.face.as_face_ref().glyph_index(c).unwrap();
+            let id = font.face().charmap().map(c).unwrap();
             font.glyph_cache
-                .get(&id)
+                .get(&id.to_u32())
                 .and_then(|g| g.bands.as_ref())
                 .is_some_and(|b| b.layer() >= 3)
         });
@@ -122,8 +122,8 @@ fn compare_shader_pixels() {
             "igB@é".chars().chain(wrapped).collect()
         };
         for c in probes {
-            let id = font.face.as_face_ref().glyph_index(c).unwrap();
-            let glyph = &font.glyph_cache[&id];
+            let id = font.face().charmap().map(c).unwrap();
+            let glyph = &font.glyph_cache[&id.to_u32()];
             let a = &glyph.allocation;
             let b = glyph.bands.as_ref().unwrap();
             let input = analytic::glyph_input(
@@ -138,7 +138,7 @@ fn compare_shader_pixels() {
                 input.uv = vec2(p.x / 256. * {width}. + {bearing}., (p.y % 64.) / 64. * {height}.);
                 return vec4(0., 0., 0., analytic_coverage(input, vec3(0.)).y);
             "#,
-                upem = font.face.as_face_ref().units_per_em(),
+                upem = font.face().metrics(Size::unscaled(), LocationRef::default()).units_per_em,
                 width = glyph.bbox.width(),
                 height = glyph.bbox.height(),
                 bearing = glyph.left_side_bearing
@@ -190,7 +190,7 @@ fn analytic_inside_opaque() {
         )
         .unwrap();
     let font = wgpu_font_renderer::internals::font(&store, key).unwrap();
-    let glyph = &font.glyph_cache[&font.face.as_face_ref().glyph_index('B').unwrap()];
+    let glyph = &font.glyph_cache[&font.face().charmap().map('B').unwrap().to_u32()];
     let a = &glyph.allocation;
     let b = glyph.bands.as_ref().unwrap();
     let input = analytic::glyph_input(
