@@ -22,7 +22,7 @@ fn shape_text_preserves_glyphs_advances_and_rejects_unknown_font() {
         .load_from_bytes(
             &device,
             &queue,
-            include_bytes!("../examples/Roboto-Regular.ttf"),
+            include_bytes!("../fonts/Roboto-Regular.ttf"),
             "Hi",
         )
         .unwrap();
@@ -172,7 +172,7 @@ fn ink_bounds(pixels: &[u8], width: u32) -> [u32; 4] {
 // (Cantarell). Allow 15% variation for antialiasing across GPU backends.
 fn assert_hi_fill(pixels: &[u8], dark_band: std::ops::RangeInclusive<usize>) {
     let pixel = |x: usize, y: usize| &pixels[(y * 128 + x) * 4..(y * 128 + x) * 4 + 3];
-    // Both fixtures at [24, 48], 32 px/em: this is the centre of H's left
+    // Both fonts from fonts/ at [24, 48], 32 px/em: this is the centre of H's left
     // stem above its crossbar, and the open gap between its stems.
     assert!(
         pixel(25, 61).iter().all(|c| *c < 64),
@@ -207,7 +207,7 @@ fn prepare_and_resize_keep_ink_at_pixel_coordinates() {
         .load_from_bytes(
             &device,
             &queue,
-            include_bytes!("../examples/Roboto-Regular.ttf"),
+            include_bytes!("../fonts/Roboto-Regular.ttf"),
             "Hi",
         )
         .unwrap();
@@ -256,7 +256,7 @@ fn prepare_uses_paragraph_y_coordinate() {
         .load_from_bytes(
             &device,
             &queue,
-            include_bytes!("../examples/Roboto-Regular.ttf"),
+            include_bytes!("../fonts/Roboto-Regular.ttf"),
             "Hi",
         )
         .unwrap();
@@ -286,7 +286,7 @@ fn cantarell_cff2_loads_outlines_and_renders_ink() {
         .load_from_bytes(
             &device,
             &queue,
-            include_bytes!("fixtures/Cantarell-VF.otf"),
+            include_bytes!("../fonts/Cantarell-VF.otf"),
             "Hi",
         )
         .unwrap();

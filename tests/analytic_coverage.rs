@@ -13,8 +13,9 @@ use common::reference::reference_coverage;
 
 const CACHE_PRESET: &str =
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789,;:!ù*^$=)àç_è-('\"é&²<>+°§/.? ";
+const NOTO_PRESET: &str = "龍鬱齉直接从轮廓渲染字形文本";
 use common::centre::CentreModel;
-use common::coverage_limits::{C3_MAX_ERROR, C3_MEAN_ERRORS, READBACK_ERROR};
+use common::coverage_limits::{C3_DENSE_MEAN_ERRORS, C3_MAX_ERROR, C3_MEAN_ERRORS, READBACK_ERROR};
 
 #[test]
 fn c3_every_cached_glyph_matches_method_and_box_error_bounds() {
@@ -24,24 +25,50 @@ fn c3_every_cached_glyph_matches_method_and_box_error_bounds() {
     let mut compared = 0_usize;
     let mut method_max = 0_f32;
     let mut method_worst = String::new();
-    for (name, bytes) in [
+    for (name, bytes, preset, mean_errors) in [
         (
             "Roboto",
-            &include_bytes!("../examples/Roboto-Regular.ttf")[..],
+            &include_bytes!("../fonts/Roboto-Regular.ttf")[..],
+            CACHE_PRESET,
+            C3_MEAN_ERRORS,
         ),
         (
             "Cantarell",
-            &include_bytes!("fixtures/Cantarell-VF.otf")[..],
+            &include_bytes!("../fonts/Cantarell-VF.otf")[..],
+            CACHE_PRESET,
+            C3_MEAN_ERRORS,
+        ),
+        (
+            "Noto Serif SC",
+            &include_bytes!("../fonts/NotoSerifSC-Subset.otf")[..],
+            NOTO_PRESET,
+            C3_DENSE_MEAN_ERRORS,
         ),
     ] {
         let mut store = FontStore::new(&device, &config);
         let key = store
-            .load_from_bytes(&device, &queue, bytes, CACHE_PRESET)
+            .load_from_bytes(&device, &queue, bytes, preset)
             .unwrap();
         let font = store.get(key).unwrap();
+        if name == "Noto Serif SC" {
+            for ch in NOTO_PRESET.chars() {
+                let id = font
+                    .face
+                    .as_face_ref()
+                    .glyph_index(ch)
+                    .expect("Noto character exists");
+                assert!(
+                    font.glyph_cache
+                        .get(&id)
+                        .is_some_and(|glyph| !glyph.curves.is_empty()),
+                    "Noto {ch} (id {}): outline was not cached",
+                    id.0
+                );
+            }
+        }
         let mut glyphs: Vec<_> = font.glyph_cache.iter().collect();
         glyphs.sort_by_key(|(id, _)| id.0);
-        for (size, mean_limit) in C3_MEAN_ERRORS {
+        for (size, mean_limit) in mean_errors {
             let scale = size / font.face.as_face_ref().units_per_em() as f32;
             let (mut max, mut total, mut count) = (0_f32, 0_f64, 0_usize);
             let mut worst = String::new();
@@ -51,14 +78,23 @@ fn c3_every_cached_glyph_matches_method_and_box_error_bounds() {
                 for (tile, (_, glyph)) in batch.iter().enumerate() {
                     let a = &glyph.allocation;
                     let b = glyph.bands.as_ref().unwrap();
-                    body += &format!("if tile == {tile}u {{ {} input.uv = vec2({:?}, -1. / input.pixel_scale) + vec2(p.x, p.y - {tile}. * 256.) / input.pixel_scale; return vec4(analytic_coverage(input, vec3(0.)), 1.); }}\n",
-                        analytic::glyph_input((a.position(), a.size(), a.layer()), (b.position(), b.layer()), scale),
-                        glyph.left_side_bearing as f32 - 1. / scale);
+                    body += &format!(
+                        "if tile == {tile}u {{ {} input.uv = vec2({:?}, -1. / input.pixel_scale) + vec2(p.x, p.y - {tile}. * 256.) / input.pixel_scale; return vec4(analytic_coverage(input, vec3(0.)), 1.); }}\n",
+                        analytic::glyph_input(
+                            (a.position(), a.size(), a.layer()),
+                            (b.position(), b.layer()),
+                            scale
+                        ),
+                        glyph.left_side_bearing as f32 - 1. / scale
+                    );
                 }
                 body += "return vec4(0.);";
                 let source = analytic::source(&body);
                 let pixels = probe::probe_pixels(&device, &queue, store.atlas().view(), &source);
                 for (tile, (id, glyph)) in batch.iter().enumerate() {
+                    let ch = preset
+                        .chars()
+                        .find(|&ch| font.face.as_face_ref().glyph_index(ch) == Some(**id));
                     let width = (glyph.bbox.width() as f32 * scale).ceil() as u32 + 2;
                     let height = (glyph.bbox.height() as f32 * scale).ceil() as u32 + 2;
                     assert!(width <= 256 && height <= 256);
@@ -87,7 +123,7 @@ fn c3_every_cached_glyph_matches_method_and_box_error_bounds() {
                             if error > max {
                                 max = error;
                                 worst = format!(
-                                    "id {}, pixel {x},{y}: GPU {actual:.6}, box {:.6}",
+                                    "{ch:?}, id {}, pixel {x},{y}: GPU {actual:.6}, box {:.6}",
                                     id.0, reference[index]
                                 );
                             }
@@ -95,7 +131,10 @@ fn c3_every_cached_glyph_matches_method_and_box_error_bounds() {
                             method_size_max = method_size_max.max(difference);
                             if difference > method_max {
                                 method_max = difference;
-                                method_worst = format!("{name} {size}, id {}, pixel {x},{y}: GPU {actual:.8}, CPU {:.8}", id.0, centre[index]);
+                                method_worst = format!(
+                                    "{name} {size}, {ch:?}, id {}, pixel {x},{y}: GPU {actual:.8}, CPU {:.8}",
+                                    id.0, centre[index]
+                                );
                             }
                             total += f64::from(error);
                             count += 1;
@@ -112,11 +151,11 @@ fn c3_every_cached_glyph_matches_method_and_box_error_bounds() {
             );
             assert!(
                 mean <= mean_limit,
-                "{name} {size}: box mean {mean:.8} exceeds {mean_limit}"
+                "{name} {size}: box mean {mean:.8} exceeds {mean_limit}; worst glyph: {worst}"
             );
             assert!(
                 max <= C3_MAX_ERROR,
-                "{name} {size}: box max {max:.8}; {worst}"
+                "{name} {size}: box max {max:.8} exceeds {C3_MAX_ERROR}; {worst}"
             );
         }
     }
@@ -141,7 +180,7 @@ fn c7_dilated_quad_covers_pixels_outside_bbox_without_moving_ink() {
         .load_from_bytes(
             &device,
             &queue,
-            include_bytes!("../examples/Roboto-Regular.ttf"),
+            include_bytes!("../fonts/Roboto-Regular.ttf"),
             "I",
         )
         .unwrap();

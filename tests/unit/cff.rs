@@ -1,6 +1,31 @@
 use super::*;
 
 #[test]
+fn noto_subset_characters_have_outlines() {
+    let (face, _, _) = parse_font(include_bytes!("../../fonts/NotoSerifSC-Subset.otf"), 0)
+        .expect("Noto Serif SC subset loads");
+    let face = face.as_face_ref();
+    for ch in "龍鬱齉直接从轮廓渲染字形文本".chars() {
+        let id = face
+            .glyph_index(ch)
+            .unwrap_or_else(|| panic!("Noto {ch}: missing glyph"));
+        assert_ne!(id.0, 0, "Noto {ch}: mapped to .notdef");
+        let mut builder = BezierBuilder::new(0.);
+        assert!(
+            face.outline_glyph(id, &mut builder).is_some(),
+            "Noto {ch}, id {}: missing outline",
+            id.0
+        );
+        builder.finish();
+        assert!(
+            !builder.curves.is_empty(),
+            "Noto {ch}, id {}: empty outline",
+            id.0
+        );
+    }
+}
+
+#[test]
 fn cff_winding_matches_truetype_and_final_close_is_idempotent() {
     fn area(curves: &[f32]) -> f32 {
         curves
@@ -13,9 +38,8 @@ fn cff_winding_matches_truetype_and_final_close_is_idempotent() {
             })
             .sum()
     }
-    let (roboto, _, _) =
-        parse_font(include_bytes!("../../examples/Roboto-Regular.ttf"), 0).unwrap();
-    let (cantarell, _, _) = parse_font(include_bytes!("../fixtures/Cantarell-VF.otf"), 0).unwrap();
+    let (roboto, _, _) = parse_font(include_bytes!("../../fonts/Roboto-Regular.ttf"), 0).unwrap();
+    let (cantarell, _, _) = parse_font(include_bytes!("../../fonts/Cantarell-VF.otf"), 0).unwrap();
     let mut areas = Vec::new();
     for (face, reverse) in [
         (roboto.as_face_ref(), false),
@@ -78,12 +102,13 @@ fn cantarell_cff2_outlines_chain_inside_padded_bounds() {
             self.builder.close();
         }
     }
-    let (face, _, _) = parse_font(include_bytes!("../fixtures/Cantarell-VF.otf"), 0).unwrap();
+    let (face, _, _) = parse_font(include_bytes!("../../fonts/Cantarell-VF.otf"), 0).unwrap();
     let face = face.as_face_ref();
-    assert!(face
-        .raw_face()
-        .table(owned_ttf_parser::Tag::from_bytes(b"CFF2"))
-        .is_some());
+    assert!(
+        face.raw_face()
+            .table(owned_ttf_parser::Tag::from_bytes(b"CFF2"))
+            .is_some()
+    );
     let mut outlined = 0;
     let mut cubics = 0;
     for id in 0..face.number_of_glyphs() {

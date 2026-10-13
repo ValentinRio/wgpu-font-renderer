@@ -52,9 +52,9 @@ fn compare_shader_pixels() {
         return;
     };
     for (bytes, grow) in [
-        (&include_bytes!("../examples/Roboto-Regular.ttf")[..], false),
-        (&include_bytes!("fixtures/Cantarell-VF.otf")[..], false),
-        (&include_bytes!("fixtures/Cantarell-VF.otf")[..], true),
+        (&include_bytes!("../fonts/Roboto-Regular.ttf")[..], false),
+        (&include_bytes!("../fonts/Cantarell-VF.otf")[..], false),
+        (&include_bytes!("../fonts/Cantarell-VF.otf")[..], true),
     ] {
         let mut store = FontStore::new(&device, &config);
         let mut preset =
@@ -185,7 +185,7 @@ fn analytic_inside_opaque() {
         .load_from_bytes(
             &device,
             &queue,
-            include_bytes!("../examples/Roboto-Regular.ttf"),
+            include_bytes!("../fonts/Roboto-Regular.ttf"),
             "B",
         )
         .unwrap();

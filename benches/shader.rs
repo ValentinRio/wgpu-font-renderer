@@ -897,9 +897,9 @@ pub(crate) mod native {
                 _ => ("Cantarell cubic outlines: @&%gß§ The quick brown fox 0123456789", 48, 12, 80.),
             };
                 let bytes: &[u8] = if name == "cff_text" {
-                    include_bytes!("../tests/fixtures/Cantarell-VF.otf")
+                    include_bytes!("../fonts/Cantarell-VF.otf")
                 } else {
-                    include_bytes!("../examples/Roboto-Regular.ttf")
+                    include_bytes!("../fonts/Roboto-Regular.ttf")
                 };
                 let mut store = FontStore::new(&device, &config);
                 let key = store

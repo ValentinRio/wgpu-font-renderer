@@ -5,7 +5,7 @@
 
 GPU-centered font rendering for [wgpu](https://wgpu.rs/). Glyphs are drawn straight from their outlines in the fragment shader. No signed distance field cache of any sort.
 
-![Text rendered by the example](examples/screenshot.png)
+![The simple example drawing Roboto, Cantarell and Noto Serif SC, with a large 龍 above a line of Chinese text](examples/screenshot.png)
 
 ## Features
 
@@ -35,7 +35,7 @@ use wgpu_font_renderer::{FontStore, TextRenderer, TypeWriter};
 let mut font_store = FontStore::new(&device, &config);
 let cache_preset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789,;:!ù*^$=)àç_è-('\"é&²<>+°§/.? ";
 let font_key = font_store
-    .load(&device, &queue, "examples/Roboto-Regular.ttf", cache_preset)
+    .load(&device, &queue, "fonts/Roboto-Regular.ttf", cache_preset)
     .expect("Couldn't load the font");
 let mut text_renderer = TextRenderer::new(&device, &config, font_store.atlas());
 
@@ -131,7 +131,7 @@ Each glyph has up to 16 horizontal bands and up to 16 vertical bands. A band lis
 - [x] Optimize the curve data layout: pack each eight-float record into two RGBA32F texels, fetch the sort key before curve geometry, and derive atlas width from texture dimensions
 - [x] Subpixel (LCD) anti-aliasing
 - [x] Handle overlapping contours: coverage uses the nonzero winding rule, so overlaps fill instead of rendering as holes
-- [ ] Add a CFF1 (`.otf`) test font; only CFF2 is covered today
+- [x] Add a CFF1 (`.otf`) test font: the Noto Serif SC subset in `fonts/`
 - [ ] Let callers select variable font axes; only the default instance renders
 
 See the [open issues](https://github.com/ValentinRio/wgpu-font-renderer/issues) for a full list of proposed features (and known issues).

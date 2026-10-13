@@ -38,11 +38,11 @@ fn placement_regression(prefix: u32, band_prefix: u32, check_path: bool) {
         return;
     };
     for (c, bytes) in [
-        ('g', &include_bytes!("../examples/Roboto-Regular.ttf")[..]),
-        ('B', &include_bytes!("../examples/Roboto-Regular.ttf")[..]),
+        ('g', &include_bytes!("../fonts/Roboto-Regular.ttf")[..]),
+        ('B', &include_bytes!("../fonts/Roboto-Regular.ttf")[..]),
         (
             '@',
-            &include_bytes!("../tests/fixtures/Cantarell-VF.otf")[..],
+            &include_bytes!("../fonts/Cantarell-VF.otf")[..],
         ),
     ] {
         let mut results = Vec::new();
