@@ -78,7 +78,7 @@ fn bundled_unicode_and_presets_agree_with_swash() {
         let expected: BTreeSet<_> = glyph_ids(font, &preset)
             .filter(|&id| glyph_bounding_box(&face, id).is_some())
             .map(|id| id.to_u32()).collect();
-        
+
         let mut writer = TypeWriter::new();
         let mut shaped_characters = Vec::new();
         for &ch in &characters {
@@ -113,6 +113,9 @@ fn bundled_unicode_and_presets_agree_with_swash() {
         let key = store.load_from_bytes(&device, &queue, bytes, &preset).unwrap();
         let cached: BTreeSet<_> = store.get(key).unwrap().glyph_cache.keys().copied().collect();
         assert_eq!(cached, expected, "{name}: cached keys match loader-selected outlined glyphs");
+        if glyph_bounding_box(&SkFontRef::new(bytes).unwrap(), GlyphId::new(0)).is_some() {
+            assert!(cached.contains(&0), "{name}: outlined .notdef must be cached");
+        }
         let mut writer = TypeWriter::new();
         for (ch, id) in characters {
             let text = ch.to_string();
@@ -292,4 +295,12 @@ fn roboto_935_box_outline_and_cache_apply_standard_hmtx_placement() {
     assert_eq!(cached.left_side_bearing, 41);
     #[cfg(feature = "unstable-internals")]
     assert_eq!(cached.curves, builder.curves);
+}
+
+#[test]
+fn glyph_selection_deduplicates_before_outline_lookup() {
+    let font = FontRef::from_index(ROBOTO, 0).unwrap();
+    let ids: Vec<_> = glyph_ids(font, "HelloHello\u{ffff}\u{10ffff}").collect();
+    assert_eq!(ids.len(), ids.iter().collect::<std::collections::HashSet<_>>().len());
+    assert_eq!(ids.iter().filter(|id| id.to_u32() == 0).count(), 1);
 }

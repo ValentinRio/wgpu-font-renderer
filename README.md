@@ -88,8 +88,17 @@ Glyph zero is always cached when it has an outline, so characters the font lacks
 draw `.notdef`; an empty `.notdef` advances without drawing. Other uncached
 outlines are skipped. Loads that exhaust the atlas return `LoadingError::AtlasFull`
 with the glyph IDs that did not fit, leaving earlier fonts usable.
-TrueType outlines apply the standard `hmtx.lsb - glyf.xMin` placement shift;
-CFF outlines are unaffected.
+Glyph ink is positioned at the pen plus its shaped offset plus the cached left
+side bearing scaled to pixels. In 0.2, each glyph's ink was anchored at the pen;
+text now shifts by each glyph's bearing. TrueType outlines apply the standard
+`hmtx.lsb - glyf.xMin` shift, so their cached box and bearing follow `hmtx`.
+CFF outline coordinates are unchanged; their bearings also position the ink.
+
+Atlas-full errors arise when an outline or its bands cannot fit a layer, or
+allocation would exceed the device's `max_texture_array_layers`. The default
+512 × 2048 RGBA32Float layers use 16 MiB each, initially 32 MiB for two layers;
+a 256-layer device limit allows a 4 GiB atlas. Growth temporarily keeps both
+the old and new textures in memory.
 
 `FontStore::load` reads the font from a file path. On wasm, or to embed the font in the binary, use `FontStore::load_from_bytes`.
 

@@ -24,8 +24,15 @@
 //! Glyph zero is cached if it has an outline, so missing characters draw `.notdef`.
 //! An empty `.notdef` advances without drawing. Loads that exhaust the atlas
 //! return [`LoadingError::AtlasFull`] without adding the font or affecting earlier
-//! fonts. TrueType outlines use the standard `hmtx.lsb - glyf.xMin` placement;
-//! CFF outlines are unaffected. Both grayscale and LCD scale coverage by RGBA
+//! fonts. An outline or its bands must fit a layer, and allocation must stay
+//! within the device's `max_texture_array_layers`. The default atlas uses 16 MiB
+//! per 512 × 2048 RGBA32Float layer, initially 32 MiB; 256 layers use 4 GiB.
+//! Growth temporarily retains both old and new textures.
+//! Glyph ink is placed at the pen plus its shaped offset plus the cached left
+//! side bearing scaled to pixels. In 0.2, each glyph's ink was anchored at the
+//! pen; text now shifts by each glyph's bearing. TrueType outlines apply
+//! `hmtx.lsb - glyf.xMin`, so the cached box and bearing follow `hmtx`.
+//! CFF outline coordinates are unchanged; their bearings also position the ink. Both grayscale and LCD scale coverage by RGBA
 //! alpha; alpha zero draws nothing. In 0.2, grayscale ignored alpha.
 //!
 //! Call [`TextRenderer::resize`] before the first render and on every viewport
@@ -120,6 +127,10 @@ pub mod internals {
     /// Inspect the number of logical atlas layers.
     pub fn atlas_layer_count(store: &crate::FontStore) -> usize {
         store.atlas().layer_count()
+    }
+    /// Reserve test padding in a band layer to exercise atlas growth.
+    pub fn pad_bands(device: &wgpu::Device, queue: &wgpu::Queue, store: &mut crate::FontStore, floats: u32) {
+        store.pad_bands(device, queue, floats);
     }
     /// Inspect the number of prepared glyph instances.
     pub fn instance_count(renderer: &crate::TextRenderer) -> usize {

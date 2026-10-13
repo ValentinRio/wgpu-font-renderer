@@ -78,6 +78,14 @@ impl Atlas {
         (self.layers.len() * 2 - 1).max(self.band_layers.len() * 2)
     }
 
+    #[cfg(test)]
+    pub(crate) fn used_floats(&self) -> [u32; 2] {
+        [&self.layers, &self.band_layers].map(|layers| layers.iter().map(|layer| match layer {
+            Layer::Empty => 0,
+            Layer::Busy(allocator) => allocator.used(),
+        }).sum())
+    }
+
     pub(crate) fn checkpoint(&self) -> (Vec<Layer>, Vec<Layer>) {
         (self.layers.clone(), self.band_layers.clone())
     }

@@ -24,7 +24,7 @@ pub struct Glyph {
     pub curves: Vec<f32>,
     /// Atlas location and float-texel count for the encoded segments.
     pub allocation: Allocation,
-    /// Atlas band header, descriptors and duplicated curves; absent if it did not fit.
+    /// Atlas band header, descriptors and duplicated curves. Loaded glyphs have bands.
     pub bands: Option<Allocation>,
     /// Original font-unit bounding box, with y increasing upward.
     pub bbox: Rect,
@@ -181,9 +181,10 @@ fn face_ascender(face: &SkFontRef<'_>) -> i16 {
 
 fn glyph_ids<'a>(font: FontRef<'a>, characters: &'a str) -> impl Iterator<Item = GlyphId> + 'a {
     let charmap = font.charmap();
+    let mut seen = std::collections::HashSet::new();
     characters.chars().map(move |ch| {
         GlyphId::new(charmap.map(ch) as u32)
-    }).chain(std::iter::once(GlyphId::new(0)))
+    }).chain(std::iter::once(GlyphId::new(0))).filter(move |id| seen.insert(*id))
 }
 
 fn create_glyph_cache(
@@ -200,7 +201,6 @@ fn create_glyph_cache(
     let ascender = face_ascender(face);
 
     for glyph_id in glyph_ids {
-        if glyph_id.to_u32() == 0 && glyph_cache.contains_key(&0) { continue; }
         if let Some(bbox) = glyph_bounding_box(face, glyph_id) {
             let height = bbox.height();
             let left_side_bearing = bbox.x_min;
@@ -235,11 +235,15 @@ fn create_glyph_cache(
                     bytemuck::cast_slice(&band_data),
                     device, encoder, queue,
                 );
+                let Some(bands) = bands else {
+                    failed.push(crate::GlyphId(glyph_id.to_u32() as u16));
+                    continue;
+                };
                 let glyph = Glyph {
                     #[cfg(feature = "unstable-internals")]
                     curves: builder.curves,
                     allocation,
-                    bands,
+                    bands: Some(bands),
                     bbox,
                     descent,
                     y_offset,
@@ -249,7 +253,7 @@ fn create_glyph_cache(
                 glyph_cache.insert(glyph_id.to_u32(), glyph);
             } else {
                 let id = crate::GlyphId(glyph_id.to_u32() as u16);
-                if !failed.contains(&id) { failed.push(id); }
+                failed.push(id);
             }
         }
     }

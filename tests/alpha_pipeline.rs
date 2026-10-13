@@ -6,16 +6,22 @@ mod common;
 mod draw;
 
 fn check_alpha(device: &wgpu::Device, queue: &wgpu::Queue, order: SubpixelOrder) {
+    for ink in [[0.; 3], [1., 0., 0.]] {
+        check_ink_alpha(device, queue, order, ink);
+    }
+}
+
+fn check_ink_alpha(device: &wgpu::Device, queue: &wgpu::Queue, order: SubpixelOrder, ink: [f32; 3]) {
     let mut store = FontStore::new(device);
     let text = "HiB@";
     let key = store.load_from_bytes(device, queue, include_bytes!("../fonts/Roboto-Regular.ttf"), text).unwrap();
     let mut renderer = TextRenderer::with_subpixel_order(device, wgpu::TextureFormat::Rgba8Unorm, &store, order);
     let mut writer = TypeWriter::new();
-    // Black text on white isolates coverage from rounding of two coloured blend terms.
+    // A white background exercises every colour channel, including red ink.
     let background = wgpu::Color::WHITE;
     let mut renders = Vec::new();
     for alpha in [0., 1., 0.5] {
-        let paragraph = writer.shape_text(&store, key, [12.25, 24.5], 24., [0., 0., 0., alpha], text).unwrap();
+        let paragraph = writer.shape_text(&store, key, [12.25, 24.5], 24., [ink[0], ink[1], ink[2], alpha], text).unwrap();
         renderer.prepare(device, queue, &[paragraph], &store);
         renders.push(draw::draw_pixels(device, queue, &mut renderer, [128, 128], background));
     }

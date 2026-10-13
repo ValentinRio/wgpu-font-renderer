@@ -942,7 +942,7 @@ pub(crate) mod native {
                                     - (start - 0.5).ceil().clamp(0., limit as f32))
                                 .max(0.) as u64
                             };
-                            covered_pixels += extent(x + shaped.offset[0], glyph.bbox.width() as f32 * scale, WIDTH)
+                            covered_pixels += extent(x + shaped.offset[0] + glyph.left_side_bearing as f32 * scale, glyph.bbox.width() as f32 * scale, WIDTH)
                                 * extent(y + shaped.offset[1], glyph.bbox.height() as f32 * scale, HEIGHT);
                         }
                         x += advance;

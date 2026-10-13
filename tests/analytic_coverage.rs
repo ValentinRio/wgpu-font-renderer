@@ -65,6 +65,26 @@ fn c3_every_cached_glyph_matches_method_and_box_error_bounds() {
                 );
             }
         }
+        // The shader stays identical across batches and sizes; glyph data is
+        // uniform input so the driver compiles one pipeline per font.
+        let source = analytic::source(r#"
+            let tile = u32(p.y) / 256u;
+            let flat = probe_inputs[tile * 3u];
+            let band = probe_inputs[tile * 3u + 1u];
+            let origin = probe_inputs[tile * 3u + 2u];
+            let local = vec2(p.x, p.y - f32(tile) * 256.);
+            if flat.z == 0. || local.x >= band.w || local.y >= origin.w { return vec4(0.); }
+            var input: VertexOutput;
+            input.atlas_pos = flat.xy;
+            input.atlas_size = i32(flat.z);
+            input.layer = flat.w;
+            input.bands = vec3(band.xyz);
+            input.pixel_scale = origin.z;
+            input.uv = origin.xy + local / input.pixel_scale;
+            return vec4(analytic_coverage(input, vec3(0.)), 1.);
+        "#);
+        let source = format!("@group(0) @binding(2) var<uniform> probe_inputs: array<vec4<f32>, 9>;\n{source}");
+        let probe = probe::Probe::new(&device, wgpu_font_renderer::internals::atlas_view(&store), &source, None);
         let mut glyphs: Vec<_> = font.glyph_cache.iter().collect();
         glyphs.sort_by_key(|(id, _)| **id);
         for (size, mean_limit) in mean_errors {
@@ -73,23 +93,17 @@ fn c3_every_cached_glyph_matches_method_and_box_error_bounds() {
             let mut worst = String::new();
             let mut method_size_max = 0_f32;
             for batch in glyphs.chunks(3) {
-                let mut body = "let tile = u32(p.y) / 256u;\n".to_owned();
+                let mut inputs = [[0.; 4]; 9];
                 for (tile, (_, glyph)) in batch.iter().enumerate() {
                     let a = &glyph.allocation;
                     let b = glyph.bands.as_ref().unwrap();
-                    body += &format!(
-                        "if tile == {tile}u {{ {} input.uv = vec2({:?}, -1. / input.pixel_scale) + vec2(p.x, p.y - {tile}. * 256.) / input.pixel_scale; return vec4(analytic_coverage(input, vec3(0.)), 1.); }}\n",
-                        analytic::glyph_input(
-                            (a.position(), a.size(), a.layer()),
-                            (b.position(), b.layer()),
-                            scale
-                        ),
-                        glyph.left_side_bearing as f32 - 1. / scale
-                    );
+                    inputs[tile * 3] = [a.position()[0] as f32, a.position()[1] as f32, a.size() as f32, a.layer() as f32];
+                    inputs[tile * 3 + 1] = [b.position()[0] as f32, b.position()[1] as f32, b.layer() as f32,
+                        (glyph.bbox.width() as f32 * scale).ceil() + 2.];
+                    inputs[tile * 3 + 2] = [glyph.left_side_bearing as f32 - 1. / scale, -1. / scale, scale,
+                        (glyph.bbox.height() as f32 * scale).ceil() + 2.];
                 }
-                body += "return vec4(0.);";
-                let source = analytic::source(&body);
-                let pixels = probe::probe_pixels(&device, &queue, wgpu_font_renderer::internals::atlas_view(&store), &source);
+                let pixels = probe.pixels(&device, &queue, wgpu::Color::WHITE, Some(&inputs));
                 for (tile, (id, glyph)) in batch.iter().enumerate() {
                     let ch = preset
                         .chars()
@@ -187,11 +201,12 @@ fn c7_dilated_quad_covers_pixels_outside_bbox_without_moving_ink() {
     let id = font.face().charmap().map('I').unwrap();
     let glyph = &font.glyph_cache[&id.to_u32()];
     let scale = 48. / font.face().metrics(Size::unscaled(), LocationRef::default()).units_per_em as f32;
-    // Place the old left edge at x=20.75. Pixel x=20 has its centre outside
+    // Place the ink left edge at x=20.75, including the bearing. Pixel x=20 has its centre outside
     // that quad but intersects the stem by one quarter of a pixel.
     let top = 20.75;
+    let left = 20.75;
     let position = [
-        20.75,
+        left - glyph.left_side_bearing as f32 * scale,
         top - (glyph.y_offset as f32 + f32::from(glyph.descent).abs()) * scale,
     ];
     let mut paragraph = Paragraph::new(key, position, 48., [1.; 4]);
@@ -207,7 +222,7 @@ fn c7_dilated_quad_covers_pixels_outside_bbox_without_moving_ink() {
     );
     let reference = reference_coverage(
         &glyph.curves,
-        glyph.left_side_bearing as f32 - position[0] / scale,
+        -position[0] / scale,
         -top / scale,
         scale,
         128,
@@ -233,9 +248,9 @@ fn c7_dilated_quad_covers_pixels_outside_bbox_without_moving_ink() {
         }
     }
     let expected_bounds = [
-        position[0],
+        position[0] + glyph.left_side_bearing as f32 * scale,
         top,
-        position[0] + glyph.bbox.width() as f32 * scale,
+        position[0] + glyph.bbox.x_max as f32 * scale,
         top + glyph.bbox.height() as f32 * scale,
     ];
     for (a, e) in bounds.into_iter().zip(expected_bounds) {

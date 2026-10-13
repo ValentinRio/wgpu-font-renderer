@@ -132,7 +132,7 @@ impl TypeWriter {
     /// Retains every glyph and offset, shaping each script run independently.
     /// Common and inherited characters join the preceding run, or the following
     /// run at the start. Runs stay in logical order; bidi and line wrapping are
-    /// not implemented.
+    /// not implemented. Text with no strong script is shaped as Latin.
     /// Color is RGBA; both LCD and grayscale scale coverage by alpha.
     /// Missing cached outlines still advance the pen. Empty glyph clusters are skipped.
     pub fn shape_text(
@@ -185,7 +185,7 @@ fn script_runs(text: &str) -> Vec<(&str, Script)> {
     let initial = analyze(text.chars())
         .map(|(p, _)| p.script())
         .find(|&s| strong(s))
-        .unwrap_or(Script::Common);
+        .unwrap_or(Script::Latin);
     let mut script = initial;
     let mut start = 0;
     let mut runs = Vec::new();
@@ -218,6 +218,27 @@ mod tests {
         );
         assert_eq!(script_runs(" 直接!"), vec![(" 直接!", Script::Han)]);
         assert!(script_runs("").is_empty());
+    }
+
+    #[test]
+    fn common_only_text_matches_latin_shaping() {
+        for bytes in [
+            &include_bytes!("../fonts/Roboto-Regular.ttf")[..],
+            &include_bytes!("../fonts/Cantarell-VF.otf")[..],
+        ] {
+            let font = swash::FontRef::from_index(bytes, 0).unwrap();
+            for text in ["2026", "(1)", "  !?., ()  "] {
+                let mut context = ShapeContext::new();
+                let mut shaper = context.builder(font).script(Script::Latin).size(32.).build();
+                shaper.add_str(text);
+                let mut expected = Vec::new();
+                shaper.shape_with(|cluster| expected.extend(cluster.glyphs.iter()
+                    .map(|g| (GlyphId(g.id), g.advance))));
+                let actual: Vec<_> = TypeWriter::new().shape_glyphs(font, 32., text).iter()
+                    .map(|g| (g.glyph, g.advance)).collect();
+                assert_eq!(actual, expected);
+            }
+        }
     }
 
     #[test]

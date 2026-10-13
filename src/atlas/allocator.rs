@@ -36,6 +36,9 @@ impl Allocator {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn used(&self) -> u32 { self.offset }
+
     /// Reserve a contiguous run of `size` float slots, or return `None` if full.
     /// Failed requests leave the allocator unchanged.
     /// Panics on layer-area overflow in debug builds.

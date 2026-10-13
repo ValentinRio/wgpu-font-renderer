@@ -15,6 +15,22 @@ pub fn probe_pixels_with_blend(
     blend: Option<wgpu::BlendState>,
     background: wgpu::Color,
 ) -> Vec<u8> {
+    Probe::new(device, atlas, source, blend).pixels(device, queue, background, None)
+}
+
+/// Reuse a pipeline and readback target when only uniform probe inputs change.
+pub struct Probe {
+    pipeline: wgpu::RenderPipeline,
+    constants: wgpu::BindGroup,
+    texture_group: wgpu::BindGroup,
+    target: wgpu::Texture,
+    view: wgpu::TextureView,
+    readback: wgpu::Buffer,
+    inputs: wgpu::Buffer,
+}
+
+impl Probe {
+    pub fn new(device: &wgpu::Device, atlas: &wgpu::TextureView, source: &str, blend: Option<wgpu::BlendState>) -> Self {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Band equivalence probe"),
         source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -25,6 +41,15 @@ pub fn probe_pixels_with_blend(
             binding: 1,
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+            count: None,
+        }, wgpu::BindGroupLayoutEntry {
+            binding: 2,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
             count: None,
         }],
     });
@@ -72,12 +97,21 @@ pub fn probe_pixels_with_blend(
         cache: None,
     });
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor::default());
+    let inputs = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Probe inputs"),
+        size: 9 * 16,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
     let constants = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: None,
         layout: &pipeline.get_bind_group_layout(0),
         entries: &[wgpu::BindGroupEntry {
             binding: 1,
             resource: wgpu::BindingResource::Sampler(&sampler),
+        }, wgpu::BindGroupEntry {
+            binding: 2,
+            resource: inputs.as_entire_binding(),
         }],
     });
     let texture_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -109,11 +143,16 @@ pub fn probe_pixels_with_blend(
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
+    Self { pipeline, constants, texture_group, target, view, readback, inputs }
+    }
+
+    pub fn pixels(&self, device: &wgpu::Device, queue: &wgpu::Queue, background: wgpu::Color, inputs: Option<&[[f32; 4]; 9]>) -> Vec<u8> {
+        if let Some(inputs) = inputs { queue.write_buffer(&self.inputs, 0, bytemuck::cast_slice(inputs)); }
     let mut encoder = device.create_command_encoder(&Default::default());
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
+                view: &self.view,
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
@@ -123,36 +162,40 @@ pub fn probe_pixels_with_blend(
             })],
             ..Default::default()
         });
-        pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &constants, &[]);
-        pass.set_bind_group(1, &texture_group, &[]);
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.constants, &[]);
+        pass.set_bind_group(1, &self.texture_group, &[]);
         pass.draw(0..3, 0..1);
     }
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
-            texture: &target,
+            texture: &self.target,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
         wgpu::TexelCopyBufferInfo {
-            buffer: &readback,
+            buffer: &self.readback,
             layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(1024),
                 rows_per_image: Some(768),
             },
         },
-        target.size(),
+        self.target.size(),
     );
     queue.submit(Some(encoder.finish()));
     let (sender, receiver) = std::sync::mpsc::channel();
-    readback.map_async(wgpu::MapMode::Read, .., move |result| {
+    self.readback.map_async(wgpu::MapMode::Read, .., move |result| {
         sender.send(result).unwrap()
     });
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
     receiver.recv().unwrap().unwrap();
-    readback.get_mapped_range(..).unwrap().to_vec()
+    let pixels = self.readback.get_mapped_range(..).unwrap().to_vec();
+    self.readback.unmap();
+    pixels
+}
+
 }
 
 // Probes render black glyph coverage into alpha, in twelve 256x64 size tiles.

@@ -149,9 +149,11 @@ Run tests and benchmarks with `--all-features` to enable inspection targets.
 
 - Fonts are read with skrifa instead of ttf-parser. swash is at 0.2 without its scaler and rasteriser.
 - `.notdef` is now drawn for every character a font lacks, if glyph zero has an outline. In 0.2 it was drawn only after a loaded character had been explicitly mapped to glyph zero. An empty `.notdef` still advances without drawing.
-- TrueType outlines now apply `hmtx.lsb - glyf.xMin`; 0.2 drew raw `glyf` coordinates. The difference is visible only in fonts where the two disagree. CFF outlines are unaffected.
+- Glyph ink is now positioned at the pen plus shaped offset plus its scaled left side bearing. In 0.2, each glyph's ink was anchored at the pen; text now shifts by each glyph's bearing. TrueType outlines apply `hmtx.lsb - glyf.xMin`, so the cached box and bearing follow `hmtx`, while 0.2 cached raw `glyf` coordinates. CFF outline coordinates are unchanged; their bearings also position the ink.
 - Shaping keeps every glyph of each cluster with its advance and offsets, and shapes script runs under their own script. Runs remain in logical order; bidi reordering and line wrapping are not implemented.
-- Atlas exhaustion fails the load with `LoadingError::AtlasFull(Vec<GlyphId>)`, naming every outlined glyph that did not fit. Earlier fonts remain usable and no half-loaded font is added.
+- Repeated characters select and upload each glyph only once per load, including an empty `.notdef`.
+- Text with no strong script retains Latin shaping; common and inherited characters otherwise join neighbouring script runs.
+- Atlas exhaustion of either curves or bands fails the load with `LoadingError::AtlasFull(Vec<GlyphId>)`, naming every outlined glyph that did not fit. Earlier fonts remain usable and no half-loaded font is added. Exhaustion means an allocation cannot fit one layer or would exceed the device texture array layer limit: default layers use 16 MiB each (32 MiB initially; 4 GiB at 256 layers).
 - Glyph IDs now follow the shaper's cmap selection: Windows symbol subtables take priority, and format 12 is preferred. In 0.2, Windows symbol subtables were skipped and each character used the first mapping found across Unicode subtables in record order; symbol-only fonts now draw, and conflicting format 4/12 mappings now agree with shaping, avoiding wrong or missing glyphs.
 - `TextRenderer::prepare` accepts any iterator of borrowed paragraphs, including slices, borrowed vectors, and chained lists.
 - `TypeWriter` implements `Default`, equivalent to `TypeWriter::new()`.

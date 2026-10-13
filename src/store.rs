@@ -52,7 +52,10 @@ impl FontStore {
     /// Returns a fresh font key, or [`LoadingError::InvalidFont`] for invalid data.
     /// Glyph zero is always cached if it has an outline, so missing characters
     /// draw `.notdef`. Glyphs without outlines still advance without drawing.
-    /// Returns [`LoadingError::AtlasFull`] if any outline cannot fit; previous
+    /// Returns [`LoadingError::AtlasFull`] if an outline or its bands cannot fit
+    /// one layer or allocation exceeds the device texture array layer limit.
+    /// Each default layer uses 16 MiB (initially 32 MiB; 4 GiB at 256 layers).
+    /// Growth temporarily retains both old and new textures. Previous
     /// fonts remain usable and the failed font is not added.
     /// Device and queue must belong together; GPU failures follow wgpu validation.
     /// Outline coordinates in the atlas are font units, not screen pixels.
@@ -74,6 +77,13 @@ impl FontStore {
         self.cache.insert(cache_key, font);
 
         Ok(cache_key)
+    }
+
+    #[cfg(feature = "unstable-internals")]
+    pub(crate) fn pad_bands(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, floats: u32) {
+        let mut encoder = device.create_command_encoder(&Default::default());
+        self.atlas.upload_bands(floats, &vec![0; floats as usize * 4], device, &mut encoder, queue).expect("test padding fits");
+        queue.submit(Some(encoder.finish()));
     }
 
     /// Borrow the shared GPU outline atlas for renderer construction.

@@ -75,9 +75,12 @@ fn compare_shader_pixels() {
                 chars.len() > 1000,
                 "growth fixture must load over 1000 outlined characters"
             );
-            // Consecutive repeats retain each character's last upload. Subsequent
-            // glyphs can fill old-layer holes after growth, exposing copy ordering.
-            preset.extend(chars.into_iter().flat_map(|c| std::iter::repeat_n(c, 8)));
+            // Fill most of the first band layer so unique glyphs trigger growth
+            // during the load, including later writes into old-layer holes.
+            let used: u32 = wgpu_font_renderer::internals::font(&store, inspection_key).unwrap()
+                .glyph_cache.values().filter_map(|g| g.bands.as_ref()).map(|b| b.size()).sum();
+            wgpu_font_renderer::internals::pad_bands(&device, &queue, &mut store, 2048 * 2048 - used - 4096);
+            preset.extend(chars);
         }
         let key = store
             .load_from_bytes(&device, &queue, bytes, &preset)

@@ -208,19 +208,19 @@ fn ink_bounds(pixels: &[u8], width: u32) -> [u32; 4] {
 
 // The correct llvmpipe renders contain 220 dark pixels (Roboto) and 175
 // (Cantarell). Allow 15% variation for antialiasing across GPU backends.
-fn assert_hi_fill(pixels: &[u8], dark_band: std::ops::RangeInclusive<usize>) {
+fn assert_hi_fill(pixels: &[u8], dark_band: std::ops::RangeInclusive<usize>, h_bearing: f32) {
     let pixel = |x: usize, y: usize| &pixels[(y * 128 + x) * 4..(y * 128 + x) * 4 + 3];
     // Both fonts from fonts/ at [24, 48], 32 px/em: this is the centre of H's left
     // stem above its crossbar, and the open gap between its stems.
     assert!(
-        pixel(25, 61).iter().all(|c| *c < 64),
+        pixel((25. + h_bearing).floor() as usize, 61).iter().all(|c| *c < 64),
         "H stem must be dark: {:?}",
-        pixel(25, 61)
+        pixel((25. + h_bearing).floor() as usize, 61)
     );
     assert!(
-        pixel(32, 61).iter().all(|c| *c > 240),
+        pixel((32. + h_bearing).floor() as usize, 61).iter().all(|c| *c > 240),
         "H gap must be white: {:?}",
-        pixel(32, 61)
+        pixel((32. + h_bearing).floor() as usize, 61)
     );
     let count = pixels
         .as_chunks::<4>()
@@ -255,10 +255,13 @@ fn prepare_and_resize_keep_ink_at_pixel_coordinates() {
     let mut renderer = TextRenderer::new(&device, config.format, &store);
     renderer.prepare(&device, &queue, &[paragraph], &store);
     let pixels = draw_pixels(&device, &queue, &mut renderer, [128, 128]);
-    assert_hi_fill(&pixels, 187..=253);
+    let font = wgpu_font_renderer::internals::font(&store, key).unwrap();
+    let scale = 32. / font.face().metrics(Size::unscaled(), LocationRef::default()).units_per_em as f32;
+    let bearing = |ch| font.glyph_cache[&font.face().charmap().map(ch).unwrap().to_u32()].left_side_bearing as f32 * scale;
+    assert_hi_fill(&pixels, 187..=253, bearing('H'));
     let before = ink_bounds(&pixels, 128);
     assert!(
-        before[0] >= 24 && before[1] >= 48 && before[2] < 80 && before[3] < 96,
+        before[0] >= (24. + bearing('H')).floor() as u32 && before[1] >= 48 && before[2] < (80. + bearing('i')).ceil() as u32 && before[3] < 96,
         "all ink must be within the expected box: {before:?}"
     );
     for size in [[256, 192], [128, 128]] {
@@ -354,10 +357,13 @@ fn cantarell_cff2_loads_outlines_and_renders_ink() {
     let mut renderer = TextRenderer::new(&device, config.format, &store);
     renderer.prepare(&device, &queue, &[paragraph], &store);
     let pixels = draw_pixels(&device, &queue, &mut renderer, [128, 128]);
-    assert_hi_fill(&pixels, 149..=201);
+    let font = wgpu_font_renderer::internals::font(&store, key).unwrap();
+    let scale = 32. / font.face().metrics(Size::unscaled(), LocationRef::default()).units_per_em as f32;
+    let bearing = |ch| font.glyph_cache[&font.face().charmap().map(ch).unwrap().to_u32()].left_side_bearing as f32 * scale;
+    assert_hi_fill(&pixels, 149..=201, bearing('H'));
     let bounds = ink_bounds(&pixels, 128);
     assert!(
-        bounds[0] >= 24 && bounds[1] >= 48 && bounds[2] < 80 && bounds[3] < 96,
+        bounds[0] >= (24. + bearing('H')).floor() as u32 && bounds[1] >= 48 && bounds[2] < (80. + bearing('i')).ceil() as u32 && bounds[3] < 96,
         "CFF2 ink must be within the expected box: {bounds:?}"
     );
     assert!(pollster::block_on(scope.pop()).is_none());
@@ -403,14 +409,17 @@ fn unknown_font_and_empty_batches_draw_nothing_and_instances_are_reused() {
 fn fonts_loaded_after_renderer_construction_refresh_the_atlas() {
     let Some((device, queue, config)) = gpu() else { return; };
     let mut store = FontStore::new(&device);
-    store.load_from_bytes(&device, &queue,
+    let initial = store.load_from_bytes(&device, &queue,
         include_bytes!("../fonts/Roboto-Regular.ttf"), "Hi").unwrap();
     let mut renderer = TextRenderer::new(&device, config.format, &store);
     let layers = wgpu_font_renderer::internals::atlas_layer_count(&store);
-    // Repeated uploads force growth; the final Hi outlines reside in new layers.
-    let preset = "@".repeat(12000) + "Hi";
+    // Exhaust the first band layer so the next load replaces the atlas view.
+    let used: u32 = wgpu_font_renderer::internals::font(&store, initial).unwrap()
+        .glyph_cache.values().filter_map(|g| g.bands.as_ref()).map(|b| b.size()).sum();
+    wgpu_font_renderer::internals::pad_bands(&device, &queue, &mut store, 2048 * 2048 - used);
+    let preset = "@Hi";
     let font = store.load_from_bytes(&device, &queue,
-        include_bytes!("../fonts/Cantarell-VF.otf"), &preset).unwrap();
+        include_bytes!("../fonts/Cantarell-VF.otf"), preset).unwrap();
     assert!(wgpu_font_renderer::internals::atlas_layer_count(&store) > layers);
     let paragraph = TypeWriter::new().shape_text(&store, font,
         [24., 24.], 32., [0., 0., 0., 1.], "Hi").unwrap();
