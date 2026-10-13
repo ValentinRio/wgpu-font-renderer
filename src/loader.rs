@@ -185,8 +185,8 @@ fn create_glyph_cache(
                         allocation,
                         bands,
                         bbox,
-                        descent: descent,
-                        y_offset: y_offset,
+                        descent,
+                        y_offset,
                         left_side_bearing,
                     };
         

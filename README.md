@@ -2,6 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/wgpu-font-renderer.svg?label=wgpu-font-renderer)](https://crates.io/crates/wgpu-font-renderer)
 [![docs.rs](https://docs.rs/wgpu-font-renderer/badge.svg)](https://docs.rs/wgpu-font-renderer)
+[![CI](https://github.com/ValentinRio/wgpu-font-renderer/actions/workflows/ci.yml/badge.svg)](https://github.com/ValentinRio/wgpu-font-renderer/actions/workflows/ci.yml)
 
 GPU-centered font rendering for [wgpu](https://wgpu.rs/). Glyphs are drawn straight from their outlines in the fragment shader. No signed distance field cache of any sort.
 
@@ -103,7 +104,8 @@ coverage:
 REQUIRE_GPU=1 cargo test --offline
 ```
 
-A software adapter such as Mesa lavapipe is sufficient. GPU tests are disabled on
+CI runs the suite on Mesa lavapipe with `REQUIRE_GPU=1`. A software adapter
+such as lavapipe is sufficient. GPU tests are disabled on
 wasm32. No tests are marked ignored.
 
 ## Benchmarking

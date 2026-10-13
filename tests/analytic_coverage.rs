@@ -198,7 +198,7 @@ fn c7_dilated_quad_covers_pixels_outside_bbox_without_moving_ink() {
     let mut paragraph = Paragraph::new(position, 48, [1.; 4], key);
     paragraph.append(id, 0.);
     let mut renderer = TextRenderer::new(&device, &config, store.atlas());
-    renderer.prepare(&device, &vec![paragraph], &store);
+    renderer.prepare(&device, &[paragraph], &store);
     let pixels = draw::draw_pixels(
         &device,
         &queue,

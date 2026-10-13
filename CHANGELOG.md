@@ -5,6 +5,18 @@ All notable changes to this crate are listed here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While the version is
 below 1.0, a minor bump (0.x) may break the API.
 
+## [Unreleased]
+
+### Added
+
+- CI checks for GPU tests on Mesa lavapipe, lint warnings, documentation, MSRV,
+  wasm builds, packaged tests and semantic versioning.
+
+### Changed
+
+- `TextRenderer::prepare` accepts `&[Paragraph]`, including borrowed vectors.
+- `TypeWriter` implements `Default`, equivalent to `TypeWriter::new()`.
+
 ## [0.2.1] - 2026-10-13
 
 No API or rendering changes.
@@ -75,6 +87,7 @@ No API or rendering changes.
 
 Initial release.
 
+[Unreleased]: https://github.com/ValentinRio/wgpu-font-renderer/compare/v0.2.1...HEAD
 [0.2.1]: https://github.com/ValentinRio/wgpu-font-renderer/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ValentinRio/wgpu-font-renderer/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ValentinRio/wgpu-font-renderer/releases/tag/v0.1.0

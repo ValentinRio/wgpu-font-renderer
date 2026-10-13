@@ -100,7 +100,7 @@ impl Atlas {
         let allocation = self.allocate(size)?;
         self.grow(device, queue);
 
-        self.upload_allocation(&data, &allocation, queue);
+        self.upload_allocation(data, &allocation, queue);
 
         Some(allocation)
     }
@@ -225,7 +225,7 @@ impl Atlas {
                     origin: wgpu::Origin3d {
                         x: 0,
                         y: 0,
-                        z: i as u32,
+                        z: i,
                     },
                     aspect: wgpu::TextureAspect::default()
                 },
@@ -235,7 +235,7 @@ impl Atlas {
                     origin: wgpu::Origin3d {
                         x: 0,
                         y: 0,
-                        z: i as u32,
+                        z: i,
                     },
                     aspect: wgpu::TextureAspect::default()
                 },

@@ -215,7 +215,7 @@ fn prepare_and_resize_keep_ink_at_pixel_coordinates() {
         .shape_text(&store, key, [24., 48.], 32, [0., 0., 0., 1.], "Hi")
         .unwrap();
     let mut renderer = TextRenderer::new(&device, &config, store.atlas());
-    renderer.prepare(&device, &vec![paragraph], &store);
+    renderer.prepare(&device, &[paragraph], &store);
     let pixels = draw_pixels(&device, &queue, &mut renderer, [128, 128]);
     assert_hi_fill(&pixels, 187..=253);
     let before = ink_bounds(&pixels, 128);
@@ -234,7 +234,7 @@ fn prepare_and_resize_keep_ink_at_pixel_coordinates() {
             "resizing must preserve physical pixel placement within 1 px: {before:?} -> {after:?}"
         );
     }
-    renderer.prepare(&device, &vec![], &store);
+    renderer.prepare(&device, &[], &store);
     assert!(
         draw_pixels(&device, &queue, &mut renderer, [128, 128])
             .as_chunks::<4>()
@@ -264,7 +264,7 @@ fn prepare_uses_paragraph_y_coordinate() {
         .shape_text(&store, key, [24., 64.], 32, [0., 0., 0., 1.], "Hi")
         .unwrap();
     let mut renderer = TextRenderer::new(&device, &config, store.atlas());
-    renderer.prepare(&device, &vec![paragraph], &store);
+    renderer.prepare(&device, &[paragraph], &store);
     let bounds = ink_bounds(
         &draw_pixels(&device, &queue, &mut renderer, [128, 128]),
         128,
@@ -314,7 +314,7 @@ fn cantarell_cff2_loads_outlines_and_renders_ink() {
         .shape_text(&store, key, [24., 48.], 32, [0., 0., 0., 1.], "Hi")
         .unwrap();
     let mut renderer = TextRenderer::new(&device, &config, store.atlas());
-    renderer.prepare(&device, &vec![paragraph], &store);
+    renderer.prepare(&device, &[paragraph], &store);
     let pixels = draw_pixels(&device, &queue, &mut renderer, [128, 128]);
     assert_hi_fill(&pixels, 149..=201);
     let bounds = ink_bounds(&pixels, 128);
