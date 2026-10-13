@@ -436,9 +436,8 @@ fn prepared_ranges_draw_layers_in_one_submit_and_preserve_indices() {
     // Borrow two separate vectors without cloning their paragraphs.
     renderer.prepare(&device, &queue, first.iter().chain(last.iter()), &store);
     assert_eq!(wgpu_font_renderer::internals::instance_count(&renderer), 2);
-    let mut pixels = draw_targets(&device, &queue, &renderer, [128, 128],
-        &[Some(0..1), Some(1..2), None, Some(0..2)]);
-    pixels.push(draw_range_targets(&device, &queue, &renderer, [128, 128], &[Some(..)]).remove(0));
+    let pixels = draw_targets(&device, &queue, &renderer, [128, 128],
+        &[Some(0..1), Some(1..2), None, Some(0..2), Some(0..usize::MAX)]);
     for (target, area) in pixels[..2].iter().zip([[16, 16, 48, 64], [80, 80, 112, 128]]) {
         ink_bounds(target, 128); // Each target must contain ink.
         for (i, pixel) in target.as_chunks::<4>().0.iter().enumerate() {
@@ -480,9 +479,6 @@ fn prepared_ranges_draw_layers_in_one_submit_and_preserve_indices() {
         &[Some(2..3), Some(1..2)]);
     assert_eq!(pixels[1], after_skip[0], "skipping a paragraph must preserve later indices");
     assert!(after_skip[1].iter().all(|&b| b == 255));
-    renderer.prepare(&device, &queue, &first, &store);
-    let stale = draw_targets(&device, &queue, &renderer, [128, 128], &[Some(1..2)]);
-    assert!(stale[0].iter().all(|&b| b == 255), "a shorter prepare must clear stale offsets");
     assert!(pollster::block_on(scope.pop()).is_none());
 }
 
@@ -496,10 +492,11 @@ fn invalid_ranges_and_sizes_draw_nothing_and_zero_resize_keeps_viewport() {
     let mut renderer = TextRenderer::new(&device, config.format, &store);
     renderer.resize(&queue, [128, 128]);
     let inverted = std::ops::Range { start: 2, end: 1 };
-    let ranges = [Some(5..10), Some(1..1), Some(inverted.clone()), None];
+    let ranges = [Some(0..usize::MAX), Some(5..10), Some(1..1), Some(inverted.clone()), None];
     let mut before_prepare = draw_targets(&device, &queue, &renderer, [128, 128], &ranges);
-    before_prepare.push(draw_range_targets(&device, &queue, &renderer, [128, 128], &[Some(..)]).remove(0));
     assert!(before_prepare.iter().all(|target| target.iter().all(|&b| b == 255)));
+    before_prepare.push(draw_range_targets(&device, &queue, &renderer, [128, 128], &[Some(..)]).remove(0));
+    assert!(before_prepare.last().unwrap().iter().all(|&b| b == 255));
 
     let paragraph = TypeWriter::new().shape_text(&store, font,
         [24., 48.], 32., [0., 0., 0., 1.], "Hi").unwrap();
@@ -528,19 +525,44 @@ fn invalid_ranges_and_sizes_draw_nothing_and_zero_resize_keeps_viewport() {
 }
 
 #[test]
-fn rendering_without_a_valid_resize_preserves_clear_colour() {
+fn shorter_prepare_clears_stale_paragraph_offsets() {
     let Some((device, queue, config)) = gpu() else { return; };
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut store = FontStore::new(&device);
+    let font = store.load_from_bytes(&device, &queue,
+        include_bytes!("../fonts/Roboto-Regular.ttf"), "AB").unwrap();
+    let mut writer = TypeWriter::new();
+    let first = writer.shape_text(&store, font, [16., 16.], 32., [0., 0., 0., 1.], "A").unwrap();
+    let middle = writer.shape_text(&store, font, [80., 80.], 32., [0., 0., 0., 1.], "B").unwrap();
+    let mut renderer = TextRenderer::new(&device, config.format, &store);
+    renderer.resize(&queue, [128, 128]);
+    renderer.prepare(&device, &queue, [&first, &middle, &first], &store);
+    let before = draw_targets(&device, &queue, &renderer, [128, 128], &[Some(1..2)]);
+    ink_bounds(&before[0], 128);
+    renderer.prepare(&device, &queue, [&first], &store);
+    let stale = draw_targets(&device, &queue, &renderer, [128, 128], &[Some(1..2)]);
+    assert!(stale[0].iter().all(|&b| b == 255), "a shorter prepare must clear stale offsets");
+    assert!(pollster::block_on(scope.pop()).is_none());
+}
+
+#[test]
+fn rendering_without_a_valid_resize_preserves_clear_colour() {
+    let Some((device, queue, _config)) = gpu() else { return; };
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let mut store = FontStore::new(&device);
     let font = store.load_from_bytes(&device, &queue,
         include_bytes!("../fonts/Roboto-Regular.ttf"), "Hi").unwrap();
     let paragraph = TypeWriter::new().shape_text(&store, font,
         [24., 48.], 32., [0., 0., 0., 1.], "Hi").unwrap();
-    let mut renderer = TextRenderer::new(&device, config.format, &store);
+    // Any attempted draw must fail validation against the helper's Rgba8Unorm targets.
+    let mut renderer = TextRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm, &store);
     renderer.prepare(&device, &queue, &[paragraph], &store);
     assert!(wgpu_font_renderer::internals::instance_count(&renderer) > 0);
     let assert_clear = |renderer: &TextRenderer| {
+        let draw_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let targets = draw_targets(&device, &queue, renderer, [128, 128], &[None, Some(0..1)]);
+        assert!(pollster::block_on(draw_scope.pop()).is_none(),
+            "render and render_range must not set an incompatible pipeline before a valid resize");
         assert!(targets.iter().all(|target| target.iter().all(|&b| b == 255)),
             "render and render_range must preserve the clear colour before a valid resize");
     };
