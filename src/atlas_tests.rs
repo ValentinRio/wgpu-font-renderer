@@ -6,7 +6,7 @@ pub(crate) mod probe;
 use probe::{assert_ink_tiles, probe_pixels};
 
 #[test]
-fn roboto_935_cached_left_edge_matches_raw_glyf_bounds() {
+fn roboto_935_cached_left_edge_matches_hmtx_bearing() {
     use skrifa::{raw::TableProvider, MetadataProvider};
     let bytes = include_bytes!("../fonts/Roboto-Regular.ttf");
     let face = skrifa::FontRef::new(bytes).unwrap();
@@ -16,9 +16,9 @@ fn roboto_935_cached_left_edge_matches_raw_glyf_bounds() {
         .expect("glyph 935 has a character mapping");
     let glyf = face.glyf().unwrap();
     let raw = face.loca(None).unwrap().get_glyf(id, &glyf).unwrap().unwrap();
-    let expected = raw.x_min();
-    assert_eq!(expected, 90);
-    assert_ne!(face.hmtx().unwrap().side_bearing(id).unwrap(), expected);
+    let expected = face.hmtx().unwrap().side_bearing(id).unwrap();
+    assert_eq!(raw.x_min(), 90);
+    assert_ne!(expected, raw.x_min());
     let Some((device, queue, _config)) = common::gpu() else {
         return;
     };

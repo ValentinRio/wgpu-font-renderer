@@ -1,4 +1,4 @@
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 /// Append-only row-major allocator for a square float-slot layer.
 pub struct Allocator {
     offset: u32,
@@ -6,7 +6,7 @@ pub struct Allocator {
     allocations: usize,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 /// Contiguous linear run of float slots, potentially spanning several rows.
 pub struct Region {
     position: [u32; 2],

@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt};
 use skrifa::{
     instance::{LocationRef, Size},
-    outline::{pen::{PathStyle, ControlBoundsPen, PathElement}, DrawSettings, OutlinePen},
+    outline::{pen::{PathStyle, ControlBoundsPen}, DrawSettings, OutlinePen},
     raw::TableProvider,
     FontRef as SkFontRef, GlyphId, MetadataProvider,
 };
@@ -53,13 +53,15 @@ pub struct Font {
 type Result<T> = std::result::Result<T, LoadingError>;
 
 #[derive(Debug)]
-/// Failure to read or parse a font. GPU errors are handled by wgpu instead.
+/// Failure to read, parse or cache a font. GPU errors are handled by wgpu instead.
 #[non_exhaustive]
 pub enum LoadingError {
     /// The file could not be read, including permission and other I/O failures.
     Io(std::io::Error),
     /// Invalid font bytes or a face index absent from the font collection.
     InvalidFont,
+    /// Outlined glyphs that could not fit in the atlas. The font was not loaded.
+    AtlasFull(Vec<crate::GlyphId>),
 }
 
 impl fmt::Display for LoadingError {
@@ -67,6 +69,7 @@ impl fmt::Display for LoadingError {
         match self {
             Self::Io(error) => write!(f, "Could not read font: {error}"),
             Self::InvalidFont => write!(f, "Invalid font data"),
+            Self::AtlasFull(glyphs) => write!(f, "Glyphs did not fit in the atlas: {glyphs:?}"),
         }
     }
 }
@@ -75,7 +78,7 @@ impl std::error::Error for LoadingError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
-            Self::InvalidFont => None,
+            Self::InvalidFont | Self::AtlasFull(_) => None,
         }
     }
 }
@@ -83,9 +86,9 @@ impl std::error::Error for LoadingError {
 impl Font {
     /// Parse owned font bytes at a zero-based face index and upload preset outlines.
     /// Variable fonts use the default variation instance.
-    /// Returns `InvalidFont` for invalid data or an absent face. Unsupported
-    /// characters and outlines without bounding boxes are skipped. A glyph is
-    /// also silently skipped if `atlas.upload` returns `None`. Submit the encoder
+    /// Returns `InvalidFont` for invalid data or an absent face. Glyph zero is always selected;
+    /// outlines without bounding boxes are skipped. Atlas exhaustion returns
+    /// `AtlasFull` and restores allocation bookkeeping. Submit the encoder
     /// afterward; device, queue, and atlas must match. GPU failures follow wgpu validation.
     pub(crate) fn from_bytes(
         device: &wgpu::Device,
@@ -100,8 +103,13 @@ impl Font {
 
         // Generate glyph cache for each glyph present in the font file
         let font = FontRef { data: &data, offset, key };
+        let checkpoint = atlas.checkpoint();
         let glyph_cache = create_glyph_cache(device, encoder, queue, &face,
             glyph_ids(font, cache_preset), atlas);
+        let glyph_cache = match glyph_cache {
+            Ok(cache) => cache,
+            Err(error) => { atlas.restore(checkpoint); return Err(error); }
+        };
 
         Ok(Self { data, index: index as u32, offset, key, glyph_cache })
     }
@@ -172,13 +180,10 @@ fn face_ascender(face: &SkFontRef<'_>) -> i16 {
 }
 
 fn glyph_ids<'a>(font: FontRef<'a>, characters: &'a str) -> impl Iterator<Item = GlyphId> + 'a {
-    // Use the shaper's Unicode/symbol cmap selection. Deliberately skip glyph
-    // zero, including explicit .notdef mappings; 0.2 could cache its outline.
     let charmap = font.charmap();
-    characters.chars().filter_map(move |ch| {
-        let id = charmap.map(ch);
-        (id != 0).then_some(GlyphId::new(id as u32))
-    })
+    characters.chars().map(move |ch| {
+        GlyphId::new(charmap.map(ch) as u32)
+    }).chain(std::iter::once(GlyphId::new(0)))
 }
 
 fn create_glyph_cache(
@@ -188,12 +193,14 @@ fn create_glyph_cache(
     face: &SkFontRef<'_>,
     glyph_ids: impl Iterator<Item = GlyphId>,
     atlas: &mut Atlas
-) -> HashMap<u32, Glyph> {
+) -> Result<HashMap<u32, Glyph>> {
     let mut glyph_cache = HashMap::new();
+    let mut failed = Vec::new();
 
     let ascender = face_ascender(face);
 
     for glyph_id in glyph_ids {
+        if glyph_id.to_u32() == 0 && glyph_cache.contains_key(&0) { continue; }
         if let Some(bbox) = glyph_bounding_box(face, glyph_id) {
             let height = bbox.height();
             let left_side_bearing = bbox.x_min;
@@ -240,11 +247,14 @@ fn create_glyph_cache(
                 };
         
                 glyph_cache.insert(glyph_id.to_u32(), glyph);
+            } else {
+                let id = crate::GlyphId(glyph_id.to_u32() as u16);
+                if !failed.contains(&id) { failed.push(id); }
             }
         }
     }
 
-    glyph_cache
+    if failed.is_empty() { Ok(glyph_cache) } else { Err(LoadingError::AtlasFull(failed)) }
 }
 
 const SLUG_BAND_EPSILON: f32 = 0.05;
@@ -274,22 +284,8 @@ fn draw_settings() -> DrawSettings<'static> {
         .with_path_style(PathStyle::HarfBuzz)
 }
 
-// Restore raw TrueType coordinates using the actual phantom-point shift,
-// including USE_MY_METRICS on composite glyphs. CFF outlines have no shift.
 fn draw_glyph(face: &SkFontRef<'_>, id: GlyphId, pen: &mut impl OutlinePen) -> Option<()> {
-    let mut path = Vec::new();
-    let metrics = face.outline_glyphs().get(id)?.draw(draw_settings(), &mut path).ok()?;
-    let shift = metrics.lsb.unwrap_or(0.);
-    for element in path {
-        match element {
-            PathElement::MoveTo { x, y } => pen.move_to(x + shift, y),
-            PathElement::LineTo { x, y } => pen.line_to(x + shift, y),
-            PathElement::QuadTo { cx0, cy0, x, y } => pen.quad_to(cx0 + shift, cy0, x + shift, y),
-            PathElement::CurveTo { cx0, cy0, cx1, cy1, x, y } =>
-                pen.curve_to(cx0 + shift, cy0, cx1 + shift, cy1, x + shift, y),
-            PathElement::Close => pen.close(),
-        }
-    }
+    face.outline_glyphs().get(id)?.draw(draw_settings(), pen).ok()?;
     Some(())
 }
 
@@ -661,8 +657,10 @@ mod tests {
         let mut builder = BezierBuilder::new(height);
         assert_eq!(outline_glyph(&face, id, &mut builder), Some(bbox));
         let bounds = face.glyph_metrics(Size::unscaled(), LocationRef::default()).bounds(id).unwrap();
+        let bearing = face.hmtx().unwrap().side_bearing(id).unwrap() as f32;
+        let shift = bearing - bounds.x_min;
         assert_eq!(
-            [bounds.x_min, bounds.y_min, bounds.x_max, bounds.y_max],
+            [bearing, bounds.y_min, bounds.x_max + shift, bounds.y_max],
             [bbox.x_min, bbox.y_min, bbox.x_max, bbox.y_max].map(f32::from),
         );
         assert!(!builder.curves.is_empty());

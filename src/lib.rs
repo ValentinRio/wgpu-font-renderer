@@ -2,8 +2,8 @@
 //! Render scalable font outlines with wgpu on native platforms and WebGPU.
 //!
 //! [`FontStore`] loads a font and writes the selected glyph outlines into a float
-//! atlas. [`TypeWriter`] shapes Latin text into paragraphs containing glyph IDs
-//! and pixel advances. [`TextRenderer`] prepares glyph instances and draws them
+//! atlas. [`TypeWriter`] shapes text by script into paragraphs containing glyph IDs
+//! and pixel advances and offsets. [`TextRenderer`] prepares glyph instances and draws them
 //! with shader-computed coverage, without rasterizing glyphs on the CPU.
 //! Cubic outlines are approximated by quadratics within 0.25 font units, with a
 //! depth cap of 10 for pathological inputs that may exceed this tolerance.
@@ -18,8 +18,15 @@
 //! Screen coordinates are physical pixels, with the origin at the top left,
 //! x increasing rightward and y downward. Font sizes are pixels per em. Outline
 //! coordinates remain in font units until drawing. Paragraph positions anchor
-//! both x and y. Shaping retains only the first glyph of each cluster,
-//! and glyphs absent from the cache selected by `chars` are skipped during drawing.
+//! both x and y. Shaping retains every glyph and its offsets in logical run order
+//! without bidi reordering. Glyphs absent from the cache selected by `chars` are skipped during drawing.
+//!
+//! Glyph zero is cached if it has an outline, so missing characters draw `.notdef`.
+//! An empty `.notdef` advances without drawing. Loads that exhaust the atlas
+//! return [`LoadingError::AtlasFull`] without adding the font or affecting earlier
+//! fonts. TrueType outlines use the standard `hmtx.lsb - glyf.xMin` placement;
+//! CFF outlines are unaffected. Both grayscale and LCD scale coverage by RGBA
+//! alpha; alpha zero draws nothing. In 0.2, grayscale ignored alpha.
 //!
 //! Call [`TextRenderer::resize`] before the first render and on every viewport
 //! change. Later font loads are picked up by [`TextRenderer::prepare`].
@@ -63,6 +70,7 @@
 //! fn public_types(
 //!     _: Option<wgpu_font_renderer::FontId>,
 //!     _: wgpu_font_renderer::GlyphId,
+//!     _: Option<wgpu_font_renderer::ShapedGlyph>,
 //!     _: Option<wgpu_font_renderer::FontStore>,
 //!     _: Option<wgpu_font_renderer::LoadingError>,
 //!     _: Option<wgpu_font_renderer::Paragraph>,
@@ -71,10 +79,13 @@
 //!     _: Option<wgpu_font_renderer::TextRenderer>,
 //!     _: Option<wgpu::TextureFormat>,
 //! ) {}
-//! public_types(None, wgpu_font_renderer::GlyphId(0), None, None, None,
+//! public_types(None, wgpu_font_renderer::GlyphId(0), None, None, None, None,
 //!     wgpu_font_renderer::TypeWriter::default(),
 //!     wgpu_font_renderer::SubpixelOrder::None, None, None);
 //! ```
+
+#[cfg(test)]
+extern crate self as wgpu_font_renderer;
 
 mod loader;
 mod store;
@@ -86,7 +97,7 @@ pub use renderer::{SubpixelOrder, TextRenderer};
 pub use store::{FontId, FontStore};
 pub use loader::LoadingError;
 pub use typewriter::TypeWriter;
-pub use typewriter::{GlyphId, Paragraph};
+pub use typewriter::{GlyphId, Paragraph, ShapedGlyph};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod atlas_tests;

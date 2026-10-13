@@ -21,6 +21,7 @@ pub struct Atlas {
     texture_view: wgpu::TextureView,
     layers: Vec<Layer>,
     band_layers: Vec<Layer>,
+    pub(crate) max_layers: usize,
 }
 
 /// Float slots per row and rows per layer. The texture is SIZE/4 by SIZE
@@ -62,6 +63,7 @@ impl Atlas {
             texture_view,
             layers: vec![Layer::Empty],
             band_layers: vec![Layer::Empty],
+            max_layers: device.limits().max_texture_array_layers as usize,
             version: NEXT_VERSION.fetch_add(1, Ordering::Relaxed),
         }
     }
@@ -76,16 +78,25 @@ impl Atlas {
         (self.layers.len() * 2 - 1).max(self.band_layers.len() * 2)
     }
 
+    pub(crate) fn checkpoint(&self) -> (Vec<Layer>, Vec<Layer>) {
+        (self.layers.clone(), self.band_layers.clone())
+    }
+
+    pub(crate) fn restore(&mut self, checkpoint: (Vec<Layer>, Vec<Layer>)) {
+        (self.layers, self.band_layers) = checkpoint;
+    }
+
     fn allocate(&mut self, width: u32) -> Option<Allocation> {
-        let mut allocation = allocate_layer(&mut self.layers, width)?;
+        let mut allocation = allocate_layer(&mut self.layers, width, self.max_layers.div_ceil(2))?;
         allocation.layer *= 2;
         Some(allocation)
     }
 
     /// Reserve `size` floats (a multiple of four) and upload their native-endian bytes.
-    /// Returns `None` if a single layer cannot hold the allocation. During growth,
+    /// Returns `None` if a single layer cannot hold the allocation or the
+    /// device array-layer limit would be exceeded. During growth,
     /// existing layers are copied and submitted before subsequent queue writes.
-    /// Device and queue must match the atlas; layer limits cause GPU errors.
+    /// Device and queue must match the atlas.
     ///
     /// # Panics
     /// Panics if `size` is not a multiple of four or `data` contains fewer
@@ -118,7 +129,7 @@ impl Atlas {
         queue: &wgpu::Queue,
     ) -> Option<Allocation> {
         assert_eq!(size % 4, 0, "atlas uploads must contain whole RGBA texels");
-        let mut allocation = allocate_layer(&mut self.band_layers, size)?;
+        let mut allocation = allocate_layer(&mut self.band_layers, size, self.max_layers / 2)?;
         allocation.layer = allocation.layer * 2 + 1;
         self.grow(device, queue);
         self.upload_allocation(data, &allocation, queue);
@@ -261,7 +272,7 @@ impl Atlas {
     }
 }
 // Keep layer selection independent of GPU resources; texture growth follows allocation.
-fn allocate_layer(layers: &mut Vec<Layer>, width: u32) -> Option<Allocation> {
+fn allocate_layer(layers: &mut Vec<Layer>, width: u32, max_layers: usize) -> Option<Allocation> {
     for (i, layer) in layers.iter_mut().enumerate() {
         match layer {
             Layer::Empty => {
@@ -287,6 +298,7 @@ fn allocate_layer(layers: &mut Vec<Layer>, width: u32) -> Option<Allocation> {
         }
     }
 
+    if layers.len() >= max_layers { return None; }
     let mut allocator = Allocator::new(SIZE);
 
     if let Some(region) = allocator.allocate(width) {
@@ -308,9 +320,9 @@ mod tests {
     #[test]
     fn allocation_fills_layer_then_starts_next() {
         let mut layers = vec![Layer::Empty];
-        let first = allocate_layer(&mut layers, SIZE * SIZE - 8).unwrap();
-        let tail = allocate_layer(&mut layers, 8).unwrap();
-        let next = allocate_layer(&mut layers, 8).unwrap();
+        let first = allocate_layer(&mut layers, SIZE * SIZE - 8, 2).unwrap();
+        let tail = allocate_layer(&mut layers, 8, 2).unwrap();
+        let next = allocate_layer(&mut layers, 8, 2).unwrap();
         assert_eq!(
             [
                 (first.layer(), first.position(), first.size()),
@@ -330,7 +342,7 @@ mod tests {
     #[test]
     fn oversized_allocation_leaves_empty_layer() {
         let mut layers = vec![Layer::Empty];
-        assert!(allocate_layer(&mut layers, SIZE * SIZE + 1).is_none());
+        assert!(allocate_layer(&mut layers, SIZE * SIZE + 1, 2).is_none());
         assert!(layers.len() == 1 && layers[0].is_empty());
     }
 }

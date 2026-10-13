@@ -50,7 +50,10 @@ impl FontStore {
     /// Load face zero from font bytes and upload outlines for `chars`.
     ///
     /// Returns a fresh font key, or [`LoadingError::InvalidFont`] for invalid data.
-    /// Unsupported characters and glyphs without bounding boxes are not cached.
+    /// Glyph zero is always cached if it has an outline, so missing characters
+    /// draw `.notdef`. Glyphs without outlines still advance without drawing.
+    /// Returns [`LoadingError::AtlasFull`] if any outline cannot fit; previous
+    /// fonts remain usable and the failed font is not added.
     /// Device and queue must belong together; GPU failures follow wgpu validation.
     /// Outline coordinates in the atlas are font units, not screen pixels.
     pub fn load_from_bytes(
@@ -83,3 +86,7 @@ impl FontStore {
         self.cache.get(&font_key)
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "../tests/unit/store_behaviour.rs"]
+mod behaviour_tests;

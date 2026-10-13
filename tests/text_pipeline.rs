@@ -37,7 +37,7 @@ fn shape_text_preserves_glyphs_advances_and_rejects_unknown_font() {
     assert_eq!(
         paragraph.glyphs()
             .iter()
-            .map(|(id, _)| skrifa::GlyphId::new(id.0 as u32))
+            .map(|glyph| skrifa::GlyphId::new(glyph.glyph.0 as u32))
             .collect::<Vec<_>>(),
         expected
     );
@@ -50,8 +50,8 @@ fn shape_text_preserves_glyphs_advances_and_rejects_unknown_font() {
         "shaped advances must scale font units into pixels"
     );
     let mut pen = paragraph.position()[0];
-    for (_, advance) in paragraph.glyphs() {
-        let next = pen + advance;
+    for glyph in paragraph.glyphs() {
+        let next = pen + glyph.advance;
         assert!(
             next > pen,
             "every glyph, including the uncached space, advances the pen"
@@ -515,7 +515,7 @@ fn invalid_ranges_and_sizes_draw_nothing_and_zero_resize_keeps_viewport() {
     // accidentally pass because the paragraph is empty or the glyph is uncached.
     for size in [0.0, -1.0, f32::NAN, f32::INFINITY] {
         let mut invalid = wgpu_font_renderer::Paragraph::new(font, [24., 48.], size, [1.; 4]);
-        invalid.push(paragraph.glyphs()[0].0, 12.);
+        invalid.push(paragraph.glyphs()[0].glyph, 12.);
         renderer.prepare(&device, &queue, &[invalid], &store);
         assert_eq!(wgpu_font_renderer::internals::instance_count(&renderer), 0);
         assert!(draw_targets(&device, &queue, &renderer, [128, 128], &[None])[0]

@@ -336,8 +336,8 @@ impl TextRenderer {
 
             let mut glyph_x = paragraph.position()[0];
 
-            paragraph.glyphs().iter().for_each(|(glyph_id, left)| {
-                if let Some(glyph) = font.glyph_cache.get(&(glyph_id.0 as u32)) {
+            paragraph.glyphs().iter().for_each(|shaped| {
+                if let Some(glyph) = font.glyph_cache.get(&(shaped.glyph.0 as u32)) {
                     let glyph_y = paragraph.position()[1] + (glyph.y_offset as f32 / units_per_em * paragraph.size()) + (f32::abs(glyph.descent as f32) / units_per_em * paragraph.size());
 
                     let size = [
@@ -346,7 +346,7 @@ impl TextRenderer {
                     ];
 
                     let instance = Instance {
-                        _position: [glyph_x, glyph_y],
+                        _position: [glyph_x + shaped.offset[0], glyph_y + shaped.offset[1]],
                         _left_side_bearing: glyph.left_side_bearing as f32,
                         _font_size: paragraph.size(),
                         _size: size,
@@ -367,7 +367,7 @@ impl TextRenderer {
                     self.instances.push(instance);
                 }
                 
-                glyph_x += left;
+                glyph_x += shaped.advance;
             })
         });
 
