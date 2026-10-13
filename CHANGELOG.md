@@ -5,6 +5,24 @@ All notable changes to this crate are listed here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While the version is
 below 1.0, a minor bump (0.x) may break the API.
 
+## [0.2.1] - 2026-10-13
+
+No API or rendering changes.
+
+### Added
+
+- A CFF (CFF1) test font: a 14-character subset of Noto Serif SC. The coverage
+  tests now cover dense CJK glyphs, with their own frozen error bounds.
+- The `simple` example draws three fonts: Roboto (TrueType), Cantarell (CFF2)
+  and Noto Serif SC (CFF).
+
+### Changed
+
+- Every font used by the examples, tests and benchmark now lives in `fonts/`,
+  which ships in the package with each font's license.
+- The README is shorter, with a new screenshot. The benchmarking guide moved to
+  `benches/README.md`.
+
 ## [0.2.0] - 2026-10-13
 
 ### Breaking
@@ -57,5 +75,6 @@ below 1.0, a minor bump (0.x) may break the API.
 
 Initial release.
 
+[0.2.1]: https://github.com/ValentinRio/wgpu-font-renderer/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ValentinRio/wgpu-font-renderer/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ValentinRio/wgpu-font-renderer/releases/tag/v0.1.0
