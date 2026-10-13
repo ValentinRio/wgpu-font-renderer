@@ -99,7 +99,9 @@ impl Font {
         let (face, offset, key) = parse_font(&data, index)?;
 
         // Generate glyph cache for each glyph present in the font file
-        let glyph_cache = create_glyph_cache(device, encoder, queue, &face, cache_preset, atlas);
+        let font = FontRef { data: &data, offset, key };
+        let glyph_cache = create_glyph_cache(device, encoder, queue, &face,
+            glyph_ids(font, cache_preset), atlas);
 
         Ok(Self { data, index: index as u32, offset, key, glyph_cache })
     }
@@ -127,76 +129,107 @@ fn parse_font(data: &[u8], index: usize) -> Result<(SkFontRef<'_>, u32, CacheKey
     let (offset, key) = (font.offset, font.key);
     let face = SkFontRef::from_index(data, face_index).map_err(|_| LoadingError::InvalidFont)?;
     // Require the same core face tables as the shaping parser.
-    face.head().map_err(|_| LoadingError::InvalidFont)?;
+    let head = face.head().map_err(|_| LoadingError::InvalidFont)?;
+    if !(16..=16384).contains(&head.units_per_em()) {
+        return Err(LoadingError::InvalidFont);
+    }
     face.hhea().map_err(|_| LoadingError::InvalidFont)?;
     face.maxp().map_err(|_| LoadingError::InvalidFont)?;
     Ok((face, offset, key))
 }
 
+// Default-instance selection from the 0.21 parser: only OS/2 v4+ can request
+// typo metrics, and hhea's ascender alone controls the fallback.
+fn select_ascender(hhea: i16, os2: Option<(u16, bool, i16, i16)>) -> i16 {
+    if let Some((version, use_typo, typo, windows)) = os2 {
+        if version >= 4 && use_typo {
+            return typo;
+        }
+        if hhea == 0 {
+            return if typo != 0 { typo } else { windows };
+        }
+    }
+    hhea
+}
+
+fn face_ascender(face: &SkFontRef<'_>) -> i16 {
+    use skrifa::raw::tables::os2::SelectionFlags;
+    // The old parser ignored OS/2 versions it did not recognize.
+    let os2 = face.os2().ok().filter(|table| table.version() <= 5).map(|table| (
+        table.version(), table.fs_selection().contains(SelectionFlags::USE_TYPO_METRICS),
+        table.s_typo_ascender(), table.us_win_ascent() as i16,
+    ));
+    select_ascender(face.hhea().expect("validated hhea table").ascender().to_i16(), os2)
+}
+
+fn glyph_ids<'a>(font: FontRef<'a>, characters: &'a str) -> impl Iterator<Item = GlyphId> + 'a {
+    // Use the shaper's Unicode/symbol cmap selection; glyph zero is unmapped.
+    let charmap = font.charmap();
+    characters.chars().filter_map(move |ch| {
+        let id = charmap.map(ch);
+        (id != 0).then_some(GlyphId::new(id as u32))
+    })
+}
 
 fn create_glyph_cache(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
     queue: &wgpu::Queue,
     face: &SkFontRef<'_>,
-    cache_preset: &str,
+    glyph_ids: impl Iterator<Item = GlyphId>,
     atlas: &mut Atlas
 ) -> HashMap<u32, Glyph> {
     let mut glyph_cache = HashMap::new();
 
-    let ascender = face.metrics(Size::unscaled(), LocationRef::default()).ascent as i16;
-    // Read cmap directly so an explicit mapping to glyph zero is retained.
-    let charmap = face.cmap().ok();
+    let ascender = face_ascender(face);
 
-    for code_point in cache_preset.chars() { 
-        if let Some(glyph_id) = charmap.as_ref().and_then(|map| map.map_codepoint(code_point)) {
-            if let Some(bbox) = glyph_bounding_box(face, glyph_id) {
-                let height = bbox.height();
-                let left_side_bearing = bbox.x_min;
+    for glyph_id in glyph_ids {
+        if let Some(bbox) = glyph_bounding_box(face, glyph_id) {
+            let height = bbox.height();
+            let left_side_bearing = bbox.x_min;
     
-                let (descent, distance_from_baseline) = if bbox.y_min <= 0 {
-                    (bbox.y_min, 0)
-                } else {
-                    (0, bbox.y_min)
+            let (descent, distance_from_baseline) = if bbox.y_min <= 0 {
+                (bbox.y_min, 0)
+            } else {
+                (0, bbox.y_min)
+            };
+    
+            let total_height = height + descent + distance_from_baseline;
+            let y_offset = ascender - distance_from_baseline - height;
+    
+            let mut builder = BezierBuilder::new(total_height as f32);
+    
+            outline_glyph(face, glyph_id, &mut builder);
+            // Close the final contour before winding normalization.
+            builder.finish();
+
+            // Each eight-float segment occupies two RGBA32F texels, including
+            // the original index and sort-key padding slots.
+            let curves_count = builder.curves.len() as u32;
+    
+            let bytes = unsafe {
+                std::slice::from_raw_parts(builder.curves.as_ptr() as *const u8, builder.curves.len() * 4)
+            };
+
+            if let Some(allocation) = atlas.upload(curves_count, bytes, device, encoder, queue) {
+                let band_data = build_slug_bands(&builder.curves);
+                let bands = atlas.upload_bands(
+                    band_data.len() as u32,
+                    bytemuck::cast_slice(&band_data),
+                    device, encoder, queue,
+                );
+                let glyph = Glyph {
+                    #[cfg(feature = "unstable-internals")]
+                    curves: builder.curves,
+                    allocation,
+                    bands,
+                    bbox,
+                    descent,
+                    y_offset,
+                    left_side_bearing,
                 };
-    
-                let total_height = height + descent + distance_from_baseline;
-                let y_offset = ascender - distance_from_baseline - height;
-    
-                let mut builder = BezierBuilder::new(total_height as f32);
-    
-                outline_glyph(face, glyph_id, &mut builder);
-                // Close the final contour before winding normalization.
-                builder.finish();
-
-                // Each eight-float segment occupies two RGBA32F texels, including
-                // the original index and sort-key padding slots.
-                let curves_count = builder.curves.len() as u32;
-    
-                let bytes = unsafe {
-                    std::slice::from_raw_parts(builder.curves.as_ptr() as *const u8, builder.curves.len() * 4)
-                };
-
-                if let Some(allocation) = atlas.upload(curves_count, bytes, device, encoder, queue) {
-                    let band_data = build_slug_bands(&builder.curves);
-                    let bands = atlas.upload_bands(
-                        band_data.len() as u32,
-                        bytemuck::cast_slice(&band_data),
-                        device, encoder, queue,
-                    );
-                    let glyph = Glyph {
-                        #[cfg(feature = "unstable-internals")]
-                        curves: builder.curves,
-                        allocation,
-                        bands,
-                        bbox,
-                        descent,
-                        y_offset,
-                        left_side_bearing,
-                    };
         
-                    glyph_cache.insert(glyph_id.to_u32(), glyph);
-                }
+                glyph_cache.insert(glyph_id.to_u32(), glyph);
             }
         }
     }
@@ -598,9 +631,14 @@ mod tests {
         let height = bbox.y_max as f32;
         let mut builder = BezierBuilder::new(height);
         assert_eq!(outline_glyph(&face, id, &mut builder), Some(bbox));
+        // GlyphMetrics::bounds reads the raw glyf box. Drawing shifts it by
+        // hmtx.lsb - glyf.xMin; the cached box must equal that placed box.
         let bounds = face.glyph_metrics(Size::unscaled(), LocationRef::default()).bounds(id).unwrap();
+        let glyf = face.glyf().unwrap();
+        let glyph = face.loca(None).unwrap().get_glyf(id, &glyf).unwrap().unwrap();
+        let shift = (face.hmtx().unwrap().side_bearing(id).unwrap() - glyph.x_min()) as f32;
         assert_eq!(
-            [bounds.x_min, bounds.y_min, bounds.x_max, bounds.y_max],
+            [bounds.x_min + shift, bounds.y_min, bounds.x_max + shift, bounds.y_max],
             [bbox.x_min, bbox.y_min, bbox.x_max, bbox.y_max].map(f32::from),
         );
         assert!(!builder.curves.is_empty());
@@ -669,3 +707,7 @@ mod analytic_regressions;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "../tests/unit/ray_review.rs"]
 mod ray_review;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "../tests/unit/font_loading.rs"]
+mod font_loading_tests;

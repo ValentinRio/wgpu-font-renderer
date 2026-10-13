@@ -119,6 +119,15 @@ Ok(())
 }
 ```
 
+`atlas::SIZE`, `Allocator::{new, allocate}`, `Region::{position, size}`, and
+`Layer::{Empty, Busy, is_empty}` have no stable replacement; atlas allocation
+and layer bookkeeping are now private. `Resolution::{width, height}` also
+leave the stable API; pass viewport dimensions to `TextRenderer::resize`.
+
+`Font::{offset, key, as_ref}` and `Atlas::texture_format` have no stable
+replacement: identify fonts with `FontId` and pass the render target format
+to `TextRenderer::new`. `LoadingError` retains its `Display` implementation.
+
 Run tests and benchmarks with `--all-features` to enable inspection targets.
 
 ### Added
@@ -129,8 +138,8 @@ Run tests and benchmarks with `--all-features` to enable inspection targets.
 
 ### Changed
 
-- Fonts are read with skrifa; ttf-parser is gone. swash is at 0.2 without its scaler and rasteriser.
-- TrueType glyphs whose outline does not start at their left side bearing are now placed at the bearing, as FreeType places them; in 0.2 they were drawn from the raw outline coordinates.
+- Fonts are read with skrifa instead of ttf-parser. swash is at 0.2 without its scaler and rasteriser.
+- TrueType outlines now apply `hmtx.lsb - glyf.xMin`, as FreeType does; in 0.2 they were drawn from the raw `glyf` coordinates.
 - `TextRenderer::prepare` accepts any iterator of borrowed paragraphs, including slices, borrowed vectors, and chained lists.
 - `TypeWriter` implements `Default`, equivalent to `TypeWriter::new()`.
 
