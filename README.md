@@ -234,6 +234,15 @@ preparation and image readback are outside the measured interval. Each frame is
 submitted and completed separately. The GPU interval includes attachment clear
 and store operations as well as drawing.
 
+A draw that finishes in a fraction of a millisecond leaves the GPU idle most of
+the time, and an idle GPU may drop to a lower clock. So each timed pass draws the
+scene **R** times, and every reported timing is the pass time divided by R
+(clear and store costs are amortized over the R draws). On the first round,
+warm-up picks R per scene so that a pass takes about 4 ms, up to 1024 draws;
+a scene that already takes longer keeps `R=1`. Calibration may add discarded
+warm-up passes, saved as `calibration_retries`. `BENCH_REPEAT` (1 to 1024) forces
+R. Pixel readback and checksums always use a single-draw frame.
+
 Save a baseline on main and compare the branch on the same adapter and driver.
 If main already contains the harness:
 
@@ -283,6 +292,44 @@ A shift exceeding that threshold is **faster** or **slower**; otherwise it is
 **within noise**, which does not mean equal. This is a robust detection heuristic,
 not a significance test. More frames stabilize each p25, while more rounds
 capture drift; neither can recover drift between processes that was never sampled.
+
+Some machines run a benchmark in one of two **clock states** about 2× apart, and
+may switch between them mid-run. The harness pools the frame samples of all
+rounds and classifies each scene, printed in its summary line with R:
+
+- **`states=1`**: one mode. Isolated spikes, a single slow round, a smooth tail
+  and a shoulder all count as one state.
+- **`states=2`**: one clean split into two clusters. Each holds at least 10% of
+  the frames and at least 10 frames, the slow one appears in at least 2 rounds,
+  the medians are at least 1.4× apart, and an empty gap spans at least half
+  that separation. The summary adds both medians and the fast-state share.
+- **`states=unresolved`**: the samples have two density peaks with a clear
+  valley between them but no clean gap, or more than one split qualifies.
+
+A comparison then compares like with like, and marks the row **weaker**
+whenever states were involved:
+
+- Both sides two states: the delta and verdict use both **fast-state medians**.
+- One side two states, the other one: the single side is matched to the nearer
+  of the two states, and its median is compared with that state's median. The
+  row says which state was matched, prints both medians of the other side
+  with their frame shares, and ends with `repeat run`. The two runs saw a
+  different mix of states, so a **within noise** here
+  cannot rule out a real change in the unmatched state.
+- A single side that is 1.4× or more from both states matches neither. The row
+  compares against the nearer one and adds a clock-state caution.
+- Either side unresolved: the row says so and the verdict is not reliable.
+
+When both sides have one state but their medians are 1.4× or more apart, in
+either direction, the row carries the
+same caution: each run may have sat wholly in a different state, which no single
+run can detect. The harness does not know whether the rendering changed, so the
+caution appears either way. Repeat the run before believing it.
+
+Comparisons reuse the baseline's R per scene. A forced `BENCH_REPEAT` that
+differs from the baseline's, or an append onto a file saved with a different R,
+is refused before rendering. A saved scene without a `repeat` field means
+`R=1`, so older schema 2 baselines stay usable.
 
 To include run-level drift, pool several separate invocations of the **same code**
 into the baseline before comparing. For Mesa lavapipe, an explicit thread limit
