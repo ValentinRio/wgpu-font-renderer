@@ -536,7 +536,7 @@ mod tests {
 
     #[test]
     fn roboto_bytes_produce_padded_y_down_outline() {
-        let (face, _, _) = parse_font(include_bytes!("../examples/Roboto-Regular.ttf"), 0)
+        let (face, _, _) = parse_font(include_bytes!("../fonts/Roboto-Regular.ttf"), 0)
             .expect("bundled font parses");
         let face = face.as_face_ref();
         let id = face.glyph_index('g').unwrap();
@@ -573,7 +573,7 @@ mod tests {
         for bytes in [
             &[][..],
             &b"not a font"[..],
-            &include_bytes!("../examples/Roboto-Regular.ttf")[..32],
+            &include_bytes!("../fonts/Roboto-Regular.ttf")[..32],
         ] {
             assert!(matches!(
                 parse_font(bytes, 0),
@@ -581,7 +581,7 @@ mod tests {
             ));
         }
         assert!(matches!(
-            parse_font(include_bytes!("../examples/Roboto-Regular.ttf"), 1),
+            parse_font(include_bytes!("../fonts/Roboto-Regular.ttf"), 1),
             Err(LoadingError::InvalidFile)
         ));
     }

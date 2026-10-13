@@ -298,7 +298,7 @@ fn c5_public_renderer_blends_per_channel() {
         .load_from_bytes(
             &device,
             &queue,
-            include_bytes!("../examples/Roboto-Regular.ttf"),
+            include_bytes!("../fonts/Roboto-Regular.ttf"),
             "HiB@",
         )
         .unwrap();
@@ -368,8 +368,8 @@ fn c6_lcd_bands_match_full_list_and_are_taken() {
         return;
     };
     for bytes in [
-        &include_bytes!("../examples/Roboto-Regular.ttf")[..],
-        &include_bytes!("fixtures/Cantarell-VF.otf")[..],
+        &include_bytes!("../fonts/Roboto-Regular.ttf")[..],
+        &include_bytes!("../fonts/Cantarell-VF.otf")[..],
     ] {
         let mut store = FontStore::new(&device, &config);
         let key = store
@@ -461,7 +461,7 @@ fn c7_device_without_feature_falls_back_byte_identically() {
         .load_from_bytes(
             &device,
             &queue,
-            include_bytes!("../examples/Roboto-Regular.ttf"),
+            include_bytes!("../fonts/Roboto-Regular.ttf"),
             "HiB@",
         )
         .unwrap();
@@ -515,7 +515,7 @@ fn c9_write_roboto_lcd_comparison_png() {
         .load_from_bytes(
             &device,
             &queue,
-            include_bytes!("../examples/Roboto-Regular.ttf"),
+            include_bytes!("../fonts/Roboto-Regular.ttf"),
             text,
         )
         .unwrap();

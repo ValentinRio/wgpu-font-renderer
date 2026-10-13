@@ -134,8 +134,8 @@ fn deterministic_random_outlines() {
 #[test]
 fn every_bundled_font_outline() {
     for bytes in [
-        &include_bytes!("../../examples/Roboto-Regular.ttf")[..],
-        &include_bytes!("../fixtures/Cantarell-VF.otf")[..],
+        &include_bytes!("../../fonts/Roboto-Regular.ttf")[..],
+        &include_bytes!("../../fonts/Cantarell-VF.otf")[..],
     ] {
         let face = Face::parse(bytes, 0).unwrap();
         let mut outlined = 0;

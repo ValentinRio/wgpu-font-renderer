@@ -88,27 +88,59 @@ impl State {
             ..config.clone()
         };
         let mut font_store = FontStore::new(&device, &renderer_config);
-        let cache_preset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789,;:!ù*^$=)àç_è-('\"é&²<>+°§/.? ";
-        let font_key = font_store
+        let roboto_text = "Salut, c'est cool!";
+        let cantarell_text = "Cantarell draws cubic outlines.";
+        let noto_preset = "龍鬱齉直接从轮廓渲染字形文本";
+        let roboto = font_store
             .load_from_bytes(
                 &device,
                 &queue,
-                include_bytes!("Roboto-Regular.ttf"),
-                cache_preset,
+                include_bytes!("../fonts/Roboto-Regular.ttf"),
+                roboto_text,
             )
-            .expect("Couldn't load the font");
+            .expect("Couldn't load Roboto");
+        let cantarell = font_store
+            .load_from_bytes(
+                &device,
+                &queue,
+                include_bytes!("../fonts/Cantarell-VF.otf"),
+                cantarell_text,
+            )
+            .expect("Couldn't load Cantarell");
+        let noto = font_store
+            .load_from_bytes(
+                &device,
+                &queue,
+                include_bytes!("../fonts/NotoSerifSC-Subset.otf"),
+                noto_preset,
+            )
+            .expect("Couldn't load Noto Serif SC");
 
         let mut paragraphs = Vec::new();
         let mut type_writer = TypeWriter::new();
-        if let Some(paragraph) = type_writer.shape_text(
-            &font_store,
-            font_key,
-            [100., 100.],
-            72,
-            [0.68, 0.5, 0.12, 1.],
-            "Salut, c'est cool!",
-        ) {
-            paragraphs.push(paragraph);
+        for (font, position, size, color, text) in [
+            (roboto, [40., 30.], 72, [0.68, 0.5, 0.12, 1.], roboto_text),
+            (
+                cantarell,
+                [40., 140.],
+                32,
+                [0.15, 0.35, 0.55, 1.],
+                cantarell_text,
+            ),
+            (noto, [40., 210.], 200, [0.2, 0.2, 0.2, 1.], "龍"),
+            (
+                noto,
+                [40., 490.],
+                40,
+                [0.2, 0.2, 0.2, 1.],
+                "直接从轮廓渲染字形",
+            ),
+        ] {
+            paragraphs.push(
+                type_writer
+                    .shape_text(&font_store, font, position, size, color, text)
+                    .expect("Font is loaded"),
+            );
         }
         let mut text_renderer = TextRenderer::new(&device, &renderer_config, font_store.atlas());
         text_renderer.prepare(&device, &paragraphs, &font_store);

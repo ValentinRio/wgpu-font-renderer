@@ -11,8 +11,8 @@
 //! variation instance; the loading API does not select variation axis values.
 //! Contours are explicitly closed. Glyphs with negative total signed area in
 //! y-down coordinates have all contours reversed to match the shader's winding.
-//! CFF1 (.otf with a CFF table) uses the same path but has no fixture and is
-//! untested. Coverage uses the nonzero winding rule, including overlapping
+//! CFF1 outlines use the same path, tested with fonts/NotoSerifSC-Subset.otf.
+//! Coverage uses the nonzero winding rule, including overlapping
 //! contours and opposite-direction holes.
 //!
 //! Screen coordinates are physical pixels, with the origin at the top left,
@@ -33,7 +33,7 @@
 //! # -> Result<(), wgpu_font_renderer::LoadingError> {
 //! let mut fonts = FontStore::new(device, config);
 //! // On wasm, embed bytes with include_bytes! rather than reading a file.
-//! let bytes = std::fs::read("Roboto-Regular.ttf").expect("read font");
+//! let bytes = std::fs::read("fonts/Roboto-Regular.ttf").expect("read font");
 //! let key = fonts.load_from_bytes(device, queue, &bytes, "Hello")?;
 //! let paragraph = TypeWriter::new()
 //!     .shape_text(&fonts, key, [24.0, 24.0], 32, [0.0, 0.0, 0.0, 1.0], "Hello")

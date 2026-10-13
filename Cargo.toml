@@ -3,7 +3,6 @@ name = "wgpu-font-renderer"
 version = "0.2.0"
 edition = "2021"
 rust-version = "1.88"
-exclude = ["tests/fixtures"]
 description = "GPU-Centered Font Rendering crate"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ValentinRio/wgpu-font-renderer"
