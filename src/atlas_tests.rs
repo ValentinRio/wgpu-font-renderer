@@ -6,6 +6,27 @@ pub(crate) mod probe;
 use probe::{assert_ink_tiles, probe_pixels};
 
 #[test]
+fn roboto_935_cached_left_edge_matches_hmtx_bearing() {
+    use skrifa::{raw::TableProvider, MetadataProvider};
+    let Some((device, queue, _config)) = common::gpu() else {
+        return;
+    };
+    let bytes = include_bytes!("../fonts/Roboto-Regular.ttf");
+    let face = skrifa::FontRef::new(bytes).unwrap();
+    let id = skrifa::GlyphId::new(935);
+    let character = face.charmap().mappings()
+        .find_map(|(codepoint, mapped)| (mapped == id).then(|| char::from_u32(codepoint)).flatten())
+        .expect("glyph 935 has a character mapping");
+    let mut store = crate::FontStore::new(&device);
+    let key = store.load_from_bytes(&device, &queue, bytes, &character.to_string()).unwrap();
+    let font = store.get(key).unwrap();
+    let glyph = &font.glyph_cache[&id.to_u32()];
+    let expected = face.hmtx().unwrap().side_bearing(id).unwrap();
+    assert_eq!(glyph.bbox.x_min, expected);
+    assert_eq!(glyph.left_side_bearing, expected);
+}
+
+#[test]
 fn nonzero_layer_pixels_match_layer_zero() {
     placement_regression(atlas::SIZE * atlas::SIZE, 0, false);
 }
@@ -33,7 +54,7 @@ fn row_wrapped_band_data_matches_unwrapped_and_uses_bands_at_400() {
 }
 
 fn placement_regression(prefix: u32, band_prefix: u32, check_path: bool) {
-    use owned_ttf_parser::AsFaceRef;
+    use skrifa::MetadataProvider;
     let Some((device, queue, _config)) = common::gpu() else {
         return;
     };
@@ -82,7 +103,7 @@ fn placement_regression(prefix: u32, band_prefix: u32, check_path: bool) {
             )
             .unwrap();
             queue.submit(Some(encoder.finish()));
-            let glyph = &font.glyph_cache[&font.face.as_face_ref().glyph_index(c).unwrap()];
+            let glyph = &font.glyph_cache[&font.face().charmap().map(c).unwrap().to_u32()];
             let [x, y] = glyph.allocation.position();
             let layer = glyph.allocation.layer();
             if padding == atlas::SIZE * atlas::SIZE {

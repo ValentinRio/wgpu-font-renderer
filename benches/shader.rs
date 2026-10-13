@@ -11,7 +11,7 @@ fn main() {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod native {
-    use owned_ttf_parser::AsFaceRef;
+    use skrifa::{MetadataProvider, instance::{Size, LocationRef}};
     use serde_json::{json, Value};
     use std::{
         collections::HashMap,
@@ -925,11 +925,11 @@ pub(crate) mod native {
                 let mut instances = 0u32;
                 // Count rasterized glyph-quad pixel centres, including overdraw, not just ink.
                 let mut covered_pixels = 0u64;
-                let units = font.face.as_face_ref().units_per_em() as f32;
+                let units = font.face().metrics(Size::unscaled(), LocationRef::default()).units_per_em as f32;
                 for paragraph in &paragraphs {
                     let mut x = paragraph.position()[0];
                     for (id, advance) in paragraph.glyphs() {
-                        if let Some(glyph) = font.glyph_cache.get(&owned_ttf_parser::GlyphId(id.0)) {
+                        if let Some(glyph) = font.glyph_cache.get(&(id.0 as u32)) {
                             instances += 1;
                             curves += glyph.curves.len() / 8;
                             let scale = paragraph.size() / units;

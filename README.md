@@ -26,6 +26,8 @@ Not there yet: variable fonts render their default instance only, and LCD mode h
 wgpu-font-renderer = "0.2"
 ```
 
+Enable the backends you want on your own `wgpu` dependency; a plain `wgpu = "30"` enables the defaults.
+
 ## Usage
 
 These examples target the upcoming 1.0 API. For changes from the published 0.2

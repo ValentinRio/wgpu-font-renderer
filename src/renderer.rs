@@ -1,7 +1,7 @@
 use std::{mem, ops::{Bound, RangeBounds}};
 
 use bytemuck::{Pod, Zeroable};
-use owned_ttf_parser::AsFaceRef;
+use skrifa::{MetadataProvider, instance::{Size, LocationRef}};
 use wgpu::{
     util::{self, BufferInitDescriptor, DeviceExt}, vertex_attr_array, BindGroup, BindGroupDescriptor,
     BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, 
@@ -332,12 +332,12 @@ impl TextRenderer {
             }
             let Some(font) = store.get(paragraph.font()) else { return; };
 
-            let units_per_em = font.face.as_face_ref().units_per_em() as f32;
+            let units_per_em = font.face().metrics(Size::unscaled(), LocationRef::default()).units_per_em as f32;
 
             let mut glyph_x = paragraph.position()[0];
 
             paragraph.glyphs().iter().for_each(|(glyph_id, left)| {
-                if let Some(glyph) = font.glyph_cache.get(&owned_ttf_parser::GlyphId(glyph_id.0)) {
+                if let Some(glyph) = font.glyph_cache.get(&(glyph_id.0 as u32)) {
                     let glyph_y = paragraph.position()[1] + (glyph.y_offset as f32 / units_per_em * paragraph.size()) + (f32::abs(glyph.descent as f32) / units_per_em * paragraph.size());
 
                     let size = [

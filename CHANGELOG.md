@@ -9,6 +9,7 @@ below 1.0, a minor bump (0.x) may break the API.
 
 ### Breaking
 
+- The library no longer enables any `wgpu` backend. Applications must enable the backends they want on their own `wgpu` dependency; a plain `wgpu = "30"` enables the defaults.
 - Font handles returned by `load` and `load_from_bytes` are opaque `FontId` values.
 - Glyph indices in paragraphs use the root-exported `GlyphId(pub u16)`.
 - `FontStore::new` takes only a device.
@@ -107,7 +108,7 @@ let curves = &glyph.curves;
 let glyph_metrics = (glyph.bbox, glyph.descent, glyph.y_offset, glyph.left_side_bearing);
 let allocation = &glyph.allocation; // position(), size(), layer() remain inspectable
 let bands = &glyph.bands;
-let face = &font.face;
+let face = font.face();
 let view = wgpu_font_renderer::internals::atlas_view(&store);
 let layers = wgpu_font_renderer::internals::atlas_layer_count(&store);
 # }
@@ -128,6 +129,8 @@ Run tests and benchmarks with `--all-features` to enable inspection targets.
 
 ### Changed
 
+- Fonts are read with skrifa; ttf-parser is gone. swash is at 0.2 without its scaler and rasteriser.
+- TrueType glyphs whose outline does not start at their left side bearing are now placed at the bearing, as FreeType places them; in 0.2 they were drawn from the raw outline coordinates.
 - `TextRenderer::prepare` accepts any iterator of borrowed paragraphs, including slices, borrowed vectors, and chained lists.
 - `TypeWriter` implements `Default`, equivalent to `TypeWriter::new()`.
 

@@ -1,5 +1,5 @@
 use super::{build_slug_bands, BezierBuilder};
-use owned_ttf_parser::{Face, GlyphId, OutlineBuilder};
+use super::{parse_font, outline_glyph, GlyphId, OutlinePen, MetadataProvider, Size, LocationRef};
 
 fn check_bands(curves: &[f32]) {
     let data = build_slug_bands(curves);
@@ -137,11 +137,11 @@ fn every_bundled_font_outline() {
         &include_bytes!("../../fonts/Roboto-Regular.ttf")[..],
         &include_bytes!("../../fonts/Cantarell-VF.otf")[..],
     ] {
-        let face = Face::parse(bytes, 0).unwrap();
+        let face = parse_font(bytes, 0).unwrap().0;
         let mut outlined = 0;
-        for id in 0..face.number_of_glyphs() {
+        for id in 0..face.glyph_metrics(Size::unscaled(), LocationRef::default()).glyph_count() {
             let mut builder = BezierBuilder::new(0.);
-            if face.outline_glyph(GlyphId(id), &mut builder).is_some() {
+            if outline_glyph(&face, GlyphId::new(id), &mut builder).is_some() {
                 builder.finish();
                 check_bands(&builder.curves);
                 outlined += 1;

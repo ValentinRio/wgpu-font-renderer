@@ -14,16 +14,21 @@ categories = ["graphics", "rendering"]
 unstable-internals = []
 
 [dependencies]
-wgpu = { version = "30", default-features = true }
-owned_ttf_parser = { version = "0.21.0", default-features = false, features = ["variable-fonts"] }
-swash = "0.1.15"
-bytemuck = { version = "1.16.0", features = ["derive"] }
+# Only the shader front end. The application picks the backends on its own `wgpu` dependency.
+wgpu = { version = "30", default-features = false, features = ["wgsl"] }
+# Capped by swash, which accepts skrifa up to 0.44; a newer skrifa would put two copies in the tree.
+skrifa = { version = "0.44", default-features = false, features = ["std"] }
+# Shaping and text analysis only; `scale` and `render` are unused.
+swash = { version = "0.2.10", default-features = false, features = ["std"] }
+bytemuck = { version = "1.25", features = ["derive"] }
 
 [dev-dependencies]
 winit = "0.30"
+# Backends for the tests, the benchmark and the example.
+wgpu = { version = "30" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-pollster = "0.4"
+pollster = "1.0"
 serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
