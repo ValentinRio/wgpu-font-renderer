@@ -80,18 +80,29 @@ fn bundled_unicode_and_presets_agree_with_swash() {
             .map(|id| id.to_u32()).collect();
         assert!(!expected.contains(&0), "{name}: glyph zero is deliberately skipped");
         let mut writer = TypeWriter::new();
-        // U+00AD SOFT HYPHEN produces an empty cluster in Roboto and Cantarell;
-        // there is no first shaped glyph to compare. Keep its cache coverage.
-        let shaped_characters: Vec<_> = characters.iter().copied()
-            .filter(|&ch| ch != '\u{00ad}').collect();
-        for &ch in &shaped_characters {
-            let id = charmap.map(ch) as u32;
+        let mut shaped_characters = Vec::new();
+        for &ch in &characters {
+            let text = ch.to_string();
+            let id = charmap.map(ch);
+            let mapped = (id != 0).then_some(id as u32);
+            let actual = glyph_ids(font, &text).next().map(|id| id.to_u32());
+            assert_eq!(actual, mapped,
+                "{name} U+{:04X}: loader and charmap IDs", ch as u32);
+            // U+00AD SOFT HYPHEN produces an empty cluster in Roboto and Cantarell;
+            // there is no first shaped glyph to compare. Keep its ID/cache coverage.
+            if ch == '\u{00ad}' { continue; }
+            let Some(id) = actual else { continue; };
             if !expected.contains(&id) { continue; }
-            let shaped = writer.shape_glyphs(font, 32., &ch.to_string());
+            let shaped = writer.shape_glyphs(font, 32., &text);
             let first = shaped.first().unwrap_or_else(||
                 panic!("{name} U+{:04X}: outlined character shapes a glyph", ch as u32)).0.0 as u32;
+            if shaped.len() == 1 {
+                assert_eq!(first, id,
+                    "{name} U+{:04X}: shaped and loader IDs for this character", ch as u32);
+            }
             assert!(expected.contains(&first),
                 "{name} U+{:04X}: first shaped glyph {first} must have a cached outline", ch as u32);
+            shaped_characters.push((ch, id));
         }
         eprintln!("{name}: {} characters checked, no cap", characters.len());
         cases.push((name, bytes, shaped_characters, preset, expected));
@@ -103,12 +114,14 @@ fn bundled_unicode_and_presets_agree_with_swash() {
         let cached: BTreeSet<_> = store.get(key).unwrap().glyph_cache.keys().copied().collect();
         assert_eq!(cached, expected, "{name}: cached keys match loader-selected outlined glyphs");
         let mut writer = TypeWriter::new();
-        for ch in characters {
+        for (ch, id) in characters {
             let text = ch.to_string();
-            let Some(id) = glyph_ids(FontRef::from_index(bytes, 0).unwrap(), &text).next() else { continue; };
-            if !expected.contains(&id.to_u32()) { continue; }
             let paragraph = writer.shape_text(&store, key, [0.; 2], 32., [1.; 4], &text).unwrap();
             let first = paragraph.glyphs().first().unwrap().0.0 as u32;
+            if paragraph.glyphs().len() == 1 {
+                assert_eq!(first, id,
+                    "{name} U+{:04X}: shaped and loader IDs for this character", ch as u32);
+            }
             assert!(cached.contains(&first),
                 "{name} U+{:04X}: first shaped glyph {first} must be in the font cache", ch as u32);
         }
@@ -122,17 +135,21 @@ fn macintosh_cmap_before_unicode_still_caches_the_shaped_glyph() {
     let font = FontRef::from_index(&bytes, 0).unwrap();
     let unicode = font.charmap().map('A') as u32;
     let macintosh = face.cmap().unwrap().map_codepoint('A').unwrap().to_u32();
+    let original = FontRef::from_index(ROBOTO, 0).unwrap().charmap();
+    assert_eq!(unicode, original.map('A') as u32);
+    assert_eq!(macintosh, original.map('B') as u32);
     assert_ne!(macintosh, unicode, "fixture must expose the first-record lookup bug");
+    let loaded = glyph_ids(font, "A").next().unwrap().to_u32();
+    assert_eq!(loaded, unicode);
     let shaped = TypeWriter::new().shape_glyphs(font, 32., "A");
     assert_eq!(shaped.len(), 1);
-    assert_eq!(shaped[0].0.0 as u32, unicode);
-    assert_eq!(glyph_ids(font, "A").next().unwrap().to_u32(), unicode);
+    assert_eq!(shaped[0].0.0 as u32, loaded);
     let Some((device, queue, _)) = common::gpu() else { return; };
     let mut store = FontStore::new(&device);
     let key = store.load_from_bytes(&device, &queue, &bytes, "A").unwrap();
     let paragraph = TypeWriter::new().shape_text(&store, key, [0.; 2], 32., [1.; 4], "A").unwrap();
     assert_eq!(paragraph.glyphs().len(), 1);
-    assert_eq!(paragraph.glyphs()[0].0.0 as u32, unicode);
+    assert_eq!(paragraph.glyphs()[0].0.0 as u32, loaded);
     let cached: BTreeSet<_> = store.get(key).unwrap().glyph_cache.keys().copied().collect();
     assert_eq!(cached, BTreeSet::from([unicode]), "loader must cache the Unicode glyph swash shaped");
 }

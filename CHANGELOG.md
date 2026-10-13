@@ -139,8 +139,8 @@ Run tests and benchmarks with `--all-features` to enable inspection targets.
 ### Changed
 
 - Fonts are read with skrifa instead of ttf-parser. swash is at 0.2 without its scaler and rasteriser.
-- Characters that map to glyph 0 (unmapped characters or an explicit mapping to `.notdef`) are no longer cached or drawn. In 0.2, they drew `.notdef` if it had an outline.
-- Glyph IDs now use the shaper's cmap selection, which prioritizes Windows symbol subtables and prefers format 12. In 0.2, ttf-parser skipped Windows symbol subtables and used the first Unicode subtable in record order. Symbol-only fonts now draw, and fonts with conflicting format 4 and format 12 mappings now load the same glyphs the shaper selects, avoiding the wrong or missing glyphs possible in 0.2.
+- Glyph 0 (`.notdef`) is never cached or drawn now. In 0.2, loading a character explicitly mapped to glyph 0 cached its outline, allowing it to draw for any character the shaper resolved to glyph 0; characters with no cmap mapping were skipped during loading.
+- Glyph IDs now follow the shaper's cmap selection: Windows symbol subtables take priority, and format 12 is preferred. In 0.2, Windows symbol subtables were skipped and each character used the first mapping found across Unicode subtables in record order; symbol-only fonts now draw, and conflicting format 4/12 mappings now agree with shaping, avoiding wrong or missing glyphs.
 - `TextRenderer::prepare` accepts any iterator of borrowed paragraphs, including slices, borrowed vectors, and chained lists.
 - `TypeWriter` implements `Default`, equivalent to `TypeWriter::new()`.
 
