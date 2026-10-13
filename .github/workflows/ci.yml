@@ -56,7 +56,7 @@ jobs:
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-targets
+      - run: cargo check --all-targets --all-features
 
   wasm:
     runs-on: ubuntu-latest

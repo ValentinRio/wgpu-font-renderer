@@ -6,6 +6,9 @@ use std::collections::HashMap;
 use crate::{atlas::Atlas, loader::Font, LoadingError};
 
 /// Opaque handle to a font loaded into a particular store.
+/// IDs from different stores are never equal. With an ID from another store,
+/// [`crate::TextRenderer::prepare`] skips the paragraph and
+/// [`crate::TypeWriter::shape_text`] returns `None`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct FontId(CacheKey);
 
@@ -26,7 +29,7 @@ impl FontStore {
         }
     }
 
-    /// Read face zero from a font file and cache outlines for `cache_preset`.
+    /// Read face zero from a font file and cache outlines for `chars`.
     ///
     /// Returns [`LoadingError::Io`] for any file read failure, or
     /// [`LoadingError::InvalidFont`] for invalid font data. On wasm, use
@@ -36,15 +39,15 @@ impl FontStore {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        font_file_path: impl AsRef<std::path::Path>,
-        cache_preset: &str
+        path: impl AsRef<std::path::Path>,
+        chars: &str
     ) -> Result<FontId, LoadingError>{
 
-        let data = std::fs::read(font_file_path).map_err(LoadingError::Io)?;
-        self.load_from_bytes(device, queue, &data, cache_preset)
+        let data = std::fs::read(path).map_err(LoadingError::Io)?;
+        self.load_from_bytes(device, queue, &data, chars)
     }
 
-    /// Load face zero from font bytes and upload outlines for `cache_preset`.
+    /// Load face zero from font bytes and upload outlines for `chars`.
     ///
     /// Returns a fresh font key, or [`LoadingError::InvalidFont`] for invalid data.
     /// Unsupported characters and glyphs without bounding boxes are not cached.
@@ -55,11 +58,11 @@ impl FontStore {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         data: &[u8],
-        cache_preset: &str
+        chars: &str
     ) -> Result<FontId, LoadingError> {
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
 
-        let font = Font::from_bytes(device, &mut encoder, queue, data.to_vec(), 0, cache_preset, &mut self.atlas)?;
+        let font = Font::from_bytes(device, &mut encoder, queue, data.to_vec(), 0, chars, &mut self.atlas)?;
 
         queue.submit(Some(encoder.finish()));
 

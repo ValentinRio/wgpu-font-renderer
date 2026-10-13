@@ -62,6 +62,10 @@ fn shape_text_preserves_glyphs_advances_and_rejects_unknown_font() {
     let mut other_store = FontStore::new(&device);
     let unknown = other_store.load_from_bytes(&device, &queue,
         include_bytes!("../fonts/Roboto-Regular.ttf"), "Hi").unwrap();
+    assert_ne!(key, unknown, "font IDs from different stores must differ");
+    for size in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+        assert!(writer.shape_text(&store, key, [0., 0.], size, [1.; 4], "Hi").is_none());
+    }
     assert!(writer
         .shape_text(
             &store,
@@ -82,74 +86,96 @@ fn draw_pixels(
     size: [u32; 2],
 ) -> Vec<u8> {
     renderer.resize(queue, size);
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("Text test target"),
-        size: wgpu::Extent3d {
-            width: size[0],
-            height: size[1],
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&Default::default());
-    let stride = (size[0] * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
-        * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Text test readback"),
-        size: u64::from(stride) * u64::from(size[1]),
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
+    draw_targets(device, queue, renderer, size, &[None]).remove(0)
+}
+
+// Each entry draws to its own target, using one encoder and one submit.
+// None exercises render; Some exercises render_range. Does not change the viewport.
+fn draw_targets(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    renderer: &TextRenderer,
+    size: [u32; 2],
+    draws: &[Option<std::ops::Range<usize>>],
+) -> Vec<Vec<u8>> {
     let mut encoder = device.create_command_encoder(&Default::default());
-    {
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            ..Default::default()
-        });
-        renderer.render(&mut pass);
-    }
-    encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::TexelCopyBufferInfo {
-            buffer: &buffer,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(stride),
-                rows_per_image: Some(size[1]),
+    let mut buffers = Vec::new();
+    for range in draws {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Text test target"),
+            size: wgpu::Extent3d {
+                width: size[0],
+                height: size[1],
+                depth_or_array_layers: 1,
             },
-        },
-        texture.size(),
-    );
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let stride = (size[0] * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Text test readback"),
+            size: u64::from(stride) * u64::from(size[1]),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            if let Some(range) = range {
+                renderer.render_range(&mut pass, range.clone());
+            } else {
+                renderer.render(&mut pass);
+            }
+        }
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(stride),
+                    rows_per_image: Some(size[1]),
+                },
+            },
+            texture.size(),
+        );
+        buffers.push((buffer, stride));
+    }
     queue.submit(Some(encoder.finish()));
-    let (sender, receiver) = std::sync::mpsc::channel();
-    buffer.map_async(wgpu::MapMode::Read, .., move |result| {
-        sender.send(result).unwrap()
-    });
-    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-    receiver.recv().unwrap().unwrap();
-    let mapped = buffer.get_mapped_range(..).unwrap();
-    mapped
-        .chunks_exact(stride as usize)
-        .flat_map(|row| row[..size[0] as usize * 4].iter().copied())
-        .collect()
+    buffers.into_iter().map(|(buffer, stride)| {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        buffer.map_async(wgpu::MapMode::Read, .., move |result| {
+            sender.send(result).unwrap()
+        });
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        receiver.recv().unwrap().unwrap();
+        let mapped = buffer.get_mapped_range(..).unwrap();
+        mapped
+            .chunks_exact(stride as usize)
+            .flat_map(|row| row[..size[0] as usize * 4].iter().copied())
+            .collect()
+    }).collect()
 }
 
 fn ink_bounds(pixels: &[u8], width: u32) -> [u32; 4] {
@@ -381,4 +407,89 @@ fn fonts_loaded_after_renderer_construction_refresh_the_atlas() {
     renderer.prepare(&device, &queue, &[paragraph], &store);
     let pixels = draw_pixels(&device, &queue, &mut renderer, [128, 128]);
     assert!(pixels.as_chunks::<4>().0.iter().any(|p| p[..3] != [255; 3]));
+}
+
+
+#[test]
+fn prepared_ranges_draw_layers_in_one_submit_and_preserve_indices() {
+    let Some((device, queue, config)) = gpu() else { return; };
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut store = FontStore::new(&device);
+    let bytes = include_bytes!("../fonts/Roboto-Regular.ttf");
+    let font = store.load_from_bytes(&device, &queue, bytes, "AB").unwrap();
+    let mut writer = TypeWriter::new();
+    let first = Vec::from([writer.shape_text(&store, font, [16., 16.], 32., [0., 0., 0., 1.], "A").unwrap()]);
+    let last = Vec::from([writer.shape_text(&store, font, [80., 80.], 32., [0., 0., 0., 1.], "B").unwrap()]);
+    let mut renderer = TextRenderer::new(&device, config.format, &store);
+    renderer.resize(&queue, [128, 128]);
+
+    // Borrow two separate vectors without cloning their paragraphs.
+    renderer.prepare(&device, &queue, first.iter().chain(last.iter()), &store);
+    assert_eq!(wgpu_font_renderer::internals::instance_count(&renderer), 2);
+    let pixels = draw_targets(&device, &queue, &renderer, [128, 128],
+        &[Some(0..1), Some(1..2), None, Some(0..2), Some(0..usize::MAX)]);
+    for (target, area) in pixels[..2].iter().zip([[16, 16, 48, 64], [80, 80, 112, 128]]) {
+        ink_bounds(target, 128); // Each target must contain ink.
+        for (i, pixel) in target.as_chunks::<4>().0.iter().enumerate() {
+            let x = i as u32 % 128;
+            let y = i as u32 / 128;
+            if x < area[0] || y < area[1] || x >= area[2] || y >= area[3] {
+                assert_eq!(*pixel, [255; 4], "ink outside this paragraph's area at {x},{y}");
+            }
+        }
+    }
+    assert_eq!(pixels[2], pixels[3], "render and full render_range must match");
+    assert_eq!(pixels[2], pixels[4], "range end must be clamped");
+
+    let mut other = FontStore::new(&device);
+    let foreign_font = other.load_from_bytes(&device, &queue, bytes, "A").unwrap();
+    let foreign = writer.shape_text(&other, foreign_font, [48., 48.], 32., [1.; 4], "A").unwrap();
+    renderer.prepare(&device, &queue,
+        first.iter().chain(std::iter::once(&foreign)).chain(last.iter()), &store);
+    assert_eq!(wgpu_font_renderer::internals::instance_count(&renderer), 2);
+    let after_skip = draw_targets(&device, &queue, &renderer, [128, 128],
+        &[Some(2..3), Some(1..2)]);
+    assert_eq!(pixels[1], after_skip[0], "skipping a paragraph must preserve later indices");
+    assert!(after_skip[1].iter().all(|&b| b == 255));
+    assert!(pollster::block_on(scope.pop()).is_none());
+}
+
+#[test]
+fn invalid_ranges_and_sizes_draw_nothing_and_zero_resize_keeps_viewport() {
+    let Some((device, queue, config)) = gpu() else { return; };
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut store = FontStore::new(&device);
+    let font = store.load_from_bytes(&device, &queue,
+        include_bytes!("../fonts/Roboto-Regular.ttf"), "Hi").unwrap();
+    let mut renderer = TextRenderer::new(&device, config.format, &store);
+    renderer.resize(&queue, [128, 128]);
+    let inverted = std::ops::Range { start: 2, end: 1 };
+    let ranges = [Some(0..usize::MAX), Some(5..10), Some(1..1), Some(inverted.clone()), None];
+    let before_prepare = draw_targets(&device, &queue, &renderer, [128, 128], &ranges);
+    assert!(before_prepare.iter().all(|target| target.iter().all(|&b| b == 255)));
+
+    let paragraph = TypeWriter::new().shape_text(&store, font,
+        [24., 48.], 32., [0., 0., 0., 1.], "Hi").unwrap();
+    renderer.prepare(&device, &queue, std::slice::from_ref(&paragraph), &store);
+    let empty = draw_targets(&device, &queue, &renderer, [128, 128],
+        &[Some(5..10), Some(1..1), Some(inverted), Some(usize::MAX..usize::MAX)]);
+    assert!(empty.iter().all(|target| target.iter().all(|&b| b == 255)));
+    let expected = draw_targets(&device, &queue, &renderer, [128, 128], &[None]).remove(0);
+    ink_bounds(&expected, 128);
+    for size in [[0, 600], [800, 0]] {
+        renderer.resize(&queue, size);
+        assert_eq!(expected, draw_targets(&device, &queue, &renderer, [128, 128], &[None])[0]);
+    }
+
+    // Build invalid paragraphs by hand with a cached glyph so skipping cannot
+    // accidentally pass because the paragraph is empty or the glyph is uncached.
+    for size in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+        let mut invalid = wgpu_font_renderer::Paragraph::new(font, [24., 48.], size, [1.; 4]);
+        invalid.push(paragraph.glyphs()[0].0, 12.);
+        renderer.prepare(&device, &queue, &[invalid], &store);
+        assert_eq!(wgpu_font_renderer::internals::instance_count(&renderer), 0);
+        assert!(draw_targets(&device, &queue, &renderer, [128, 128], &[None])[0]
+            .iter().all(|&b| b == 255));
+    }
+    assert!(pollster::block_on(scope.pop()).is_none());
 }

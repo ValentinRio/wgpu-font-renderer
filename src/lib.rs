@@ -110,8 +110,17 @@ pub mod internals {
     pub fn atlas_layer_count(store: &crate::FontStore) -> usize {
         store.atlas().layer_count()
     }
+    /// Inspect the number of prepared glyph instances.
+    pub fn instance_count(renderer: &crate::TextRenderer) -> usize {
+        renderer.instance_count()
+    }
     /// Inspect the buffer identity to check instance allocation reuse.
     pub fn instance_buffer(renderer: &crate::TextRenderer) -> Option<&wgpu::Buffer> {
         renderer.instance_buffer()
     }
 }
+
+// Compile the migration example without adding the changelog to public rustdoc.
+#[cfg(doctest)]
+#[doc = include_str!("../CHANGELOG.md")]
+mod migration {}

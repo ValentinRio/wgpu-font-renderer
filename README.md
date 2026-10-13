@@ -45,17 +45,33 @@ let mut text_renderer = TextRenderer::new(&device, config.format, &font_store);
 // Before the first render and on every viewport change.
 text_renderer.resize(&queue, [config.width, config.height]);
 
-// Whenever the text changes: shape paragraphs and hand them to the renderer.
+// Whenever the text changes: shape paragraphs.
 // Arguments: font, position on screen, font size, linear RGBA color, text.
 let mut type_writer = TypeWriter::new();
 let mut paragraphs = Vec::new();
 if let Some(paragraph) = type_writer.shape_text(&font_store, font_key, [100., 100.], 72., [0.68, 0.5, 0.12, 1.], "Salut, c'est cool!") {
     paragraphs.push(paragraph);
 }
+// Once per queue submit, prepare every paragraph of the frame.
 text_renderer.prepare(&device, &queue, &paragraphs, &font_store);
 
-// Every frame, inside an existing render pass.
+// Inside an existing render pass.
 text_renderer.render(&mut pass);
+```
+
+Call `prepare` once per queue submit with every paragraph of the frame. A second
+`prepare` before the submit changes what earlier `render` calls of that submit
+draw. For layers, prepare both lists together and draw ranges at different points
+of a pass (or in different passes):
+
+```rust
+text_renderer.prepare(
+    &device, &queue, body.iter().chain(overlay.iter()), &font_store,
+);
+text_renderer.render_range(&mut pass, 0..body.len()); // Text below.
+// Draw something else into the same pass here.
+text_renderer.render_range(&mut pass, body.len()..body.len() + overlay.len()); // Text on top.
+// End the pass, then submit the encoder once.
 ```
 
 Font sizes are `f32` physical pixels per em. Fonts loaded after renderer construction

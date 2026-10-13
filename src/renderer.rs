@@ -39,6 +39,7 @@ pub struct TextRenderer {
     indices: Buffer,
     instances_buffer: Option<Buffer>,
     instances: Vec<Instance>,
+    paragraph_offsets: Vec<u32>,
     constants: BindGroup,
     texture: BindGroup,
     texture_version: usize,
@@ -277,6 +278,7 @@ impl TextRenderer {
             indices,
             instances_buffer: None,
             instances: Vec::new(),
+            paragraph_offsets: Vec::new(),
             constants: constant_bind_group,
             texture,
             texture_version: atlas.version,
@@ -289,10 +291,23 @@ impl TextRenderer {
         self.subpixel_order != SubpixelOrder::None
     }
 
-    /// Replace prepared instances, skipping unknown fonts and uncached glyphs.
+    /// Replace prepared instances, skipping unknown fonts, uncached glyphs, and
+    /// paragraphs whose size is not finite or is <= 0.0. Skipped paragraphs keep
+    /// their index in the input sequence. An empty sequence clears the draw batch.
     /// Refresh the atlas binding after loading fonts and reuse the instance buffer
-    /// when its capacity suffices. An empty slice clears the draw batch.
-    pub fn prepare(&mut self, device: &Device, queue: &wgpu::Queue, paragraphs: &[Paragraph], store: &FontStore) {
+    /// when its capacity suffices.
+    ///
+    /// Call `prepare` once per queue submit with every paragraph of the frame.
+    /// A second `prepare` before the submit changes what earlier `render` calls
+    /// of that submit draw. Use [`Self::render_range`] to draw subsets at different
+    /// points of a pass or in different passes.
+    pub fn prepare<'a>(
+        &mut self,
+        device: &Device,
+        queue: &wgpu::Queue,
+        paragraphs: impl IntoIterator<Item = &'a Paragraph>,
+        store: &FontStore,
+    ) {
         let atlas = store.atlas();
         if self.texture_version != atlas.version {
             self.texture = device.create_bind_group(&BindGroupDescriptor {
@@ -306,10 +321,13 @@ impl TextRenderer {
             self.texture_version = atlas.version;
         }
         self.instances.clear();
+        self.paragraph_offsets.clear();
 
-
-        paragraphs.iter().for_each(|paragraph| {
-
+        paragraphs.into_iter().for_each(|paragraph| {
+            self.paragraph_offsets.push(self.instances.len() as u32);
+            if !paragraph.size().is_finite() || paragraph.size() <= 0.0 {
+                return;
+            }
             let Some(font) = store.get(paragraph.font()) else { return; };
 
             let units_per_em = font.face.as_face_ref().units_per_em() as f32;
@@ -351,6 +369,8 @@ impl TextRenderer {
             })
         });
 
+        self.paragraph_offsets.push(self.instances.len() as u32);
+
         let bytes = bytemuck::cast_slice(&self.instances);
         if !bytes.is_empty() {
             if let Some(buffer) = self.instances_buffer.as_ref().filter(|buffer| buffer.size() >= bytes.len() as u64) {
@@ -366,6 +386,11 @@ impl TextRenderer {
     }
 
     #[cfg(feature = "unstable-internals")]
+    pub(crate) fn instance_count(&self) -> usize {
+        self.instances.len()
+    }
+
+    #[cfg(feature = "unstable-internals")]
     pub(crate) fn instance_buffer(&self) -> Option<&Buffer> {
         self.instances_buffer.as_ref()
     }
@@ -373,35 +398,62 @@ impl TextRenderer {
     /// Set the nonzero viewport dimensions in physical pixels.
     /// Must be called before the first [`Self::render`] and on every viewport
     /// change. Writes the existing uniform buffer using the renderer's queue.
-    pub fn resize(&mut self, queue: &wgpu::Queue, screen_size: [u32; 2]) {
+    /// If either dimension is zero, returns without changing the previous size.
+    pub fn resize(&mut self, queue: &wgpu::Queue, size: [u32; 2]) {
+        if size[0] == 0 || size[1] == 0 {
+            return;
+        }
         queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&Params {
-            screen_resolution: Resolution { width: screen_size[0], height: screen_size[1] },
+            screen_resolution: Resolution { width: size[0], height: size[1] },
             _pad: [0, 0],
-            transform: orthographic_projection_matrix(0., screen_size[0] as f32, screen_size[1] as f32, 0.),
+            transform: orthographic_projection_matrix(0., size[0] as f32, size[1] as f32, 0.),
         }));
     }
 
-    /// Draw prepared glyphs into a pass with the configured target format.
-    /// An empty batch does nothing. Call [`Self::resize`] before the first render
-    /// and on every viewport change. The pass's scissor rectangle is preserved.
-    pub fn render(&self, render_pass: &mut RenderPass<'_>) {
+    /// Draw all prepared paragraphs into a pass with the configured target format.
+    /// Equivalent to [`Self::render_range`] with `0..count`, where `count` is the
+    /// number of paragraphs in the last preparation. An empty batch does nothing.
+    /// Call [`Self::resize`] before the first render and on every viewport change.
+    /// The pass's scissor rectangle is preserved.
+    ///
+    /// Call `prepare` once per queue submit with every paragraph of the frame.
+    /// A second `prepare` before the submit changes what earlier `render` calls
+    /// of that submit draw. Use [`Self::render_range`] to draw subsets at different
+    /// points of a pass or in different passes.
+    pub fn render(&self, pass: &mut RenderPass<'_>) {
+        self.render_range(pass, 0..self.paragraph_offsets.len().saturating_sub(1));
+    }
 
-        if self.instances.is_empty() {
+    /// Draw paragraphs by their position in the sequence given to the last
+    /// [`Self::prepare`]. Skipped paragraphs keep their index and draw nothing.
+    /// The end is clamped to the paragraph count; empty or inverted ranges and
+    /// calls before any preparation draw nothing. The pass's scissor is preserved.
+    /// Call [`Self::resize`] before the first render and on every viewport change.
+    ///
+    /// Call `prepare` once per queue submit with every paragraph of the frame.
+    /// A second `prepare` before the submit changes what earlier `render` calls
+    /// of that submit draw. Use `render_range` to draw subsets at different points
+    /// of a pass or in different passes.
+    pub fn render_range(&self, pass: &mut RenderPass<'_>, paragraphs: std::ops::Range<usize>) {
+        let end = paragraphs.end.min(self.paragraph_offsets.len().saturating_sub(1));
+        if paragraphs.start >= end {
             return;
         }
+        let instances = self.paragraph_offsets[paragraphs.start]..self.paragraph_offsets[end];
+        if instances.is_empty() {
+            return;
+        }
+        let Some(buffer) = self.instances_buffer.as_ref() else { return; };
 
-        render_pass.set_pipeline(&self.pipeline);
-        render_pass.set_bind_group(0, &self.constants, &[]);
-        render_pass.set_bind_group(1, &self.texture, &[]);
-        render_pass.set_index_buffer(
-            self.indices.slice(..),
-            wgpu::IndexFormat::Uint16,
-        );
-        render_pass.set_vertex_buffer(0, self.vertices.slice(..));
-        render_pass.set_vertex_buffer(1, self.instances_buffer.as_ref().unwrap().slice(..));
-
-        render_pass.draw_indexed(0..INDICES.len() as u32, 0, 0..self.instances.len() as u32);
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.constants, &[]);
+        pass.set_bind_group(1, &self.texture, &[]);
+        pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint16);
+        pass.set_vertex_buffer(0, self.vertices.slice(..));
+        pass.set_vertex_buffer(1, buffer.slice(..));
+        pass.draw_indexed(0..INDICES.len() as u32, 0, instances);
     }
+
 }
 
 #[repr(C)]

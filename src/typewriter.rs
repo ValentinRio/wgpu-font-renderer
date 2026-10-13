@@ -32,22 +32,22 @@ pub struct Paragraph {
 impl Paragraph {
     /// Create an empty run at a pixel anchor with a pixel-per-em size.
     /// Color is RGBA; no input validation is performed.
-    pub fn new(font_key: FontId, position: [f32; 2], size: f32, color: [f32; 4]) -> Self {
+    pub fn new(font: FontId, position: [f32; 2], size: f32, color: [f32; 4]) -> Self {
         Self {
             glyphs: Vec::new(),
             position,
             width: 0.,
             size,
-            font_key,
+            font_key: font,
             color,
         }
     }
 
     /// Append a glyph and add its horizontal pixel advance to the run width.
     /// The glyph must belong to this run's font; no validation is performed.
-    pub fn push(&mut self, glyph_id: GlyphId, left: f32) {
-        self.width += left;
-        self.glyphs.push((glyph_id, left));
+    pub fn push(&mut self, glyph: GlyphId, advance: f32) {
+        self.width += advance;
+        self.glyphs.push((glyph, advance));
     }
     /// Font used by this run.
     pub fn font(&self) -> FontId { self.font_key }
@@ -90,25 +90,27 @@ impl TypeWriter {
 
     /// Shape Latin text at a top-left pixel anchor, with size in pixels per em.
     ///
-    /// Returns `None` for an unknown font key. Keeps only the first glyph of each
-    /// shaping cluster, ignores cluster offsets, and does not implement line wrapping.
+    /// Returns `None` for an unknown font or a size that is not finite or is <= 0.0.
+    /// Keeps only the first glyph of each shaping cluster, ignores cluster offsets,
+    /// and does not implement line wrapping.
     /// Color is RGBA; LCD scales coverage by alpha, while grayscale ignores it.
-    /// Missing cached outlines still advance the pen. Panics if the shaper emits
-    /// an empty glyph cluster.
-    pub fn shape_text(&mut self, font_store: &FontStore, font_key: FontId, position: [f32; 2], size: f32, color: [f32; 4], text: &str) -> Option<Paragraph> {
-        if let Some(font) = font_store.get(font_key) {
+    /// Missing cached outlines still advance the pen. Empty glyph clusters are skipped.
+    pub fn shape_text(&mut self, store: &FontStore, font: FontId, position: [f32; 2], size: f32, color: [f32; 4], text: &str) -> Option<Paragraph> {
+        if !size.is_finite() || size <= 0.0 {
+            return None;
+        }
+        let mut paragraph = Paragraph::new(font, position, size, color);
+        if let Some(font) = store.get(font) {
             let mut shaper = self.context.builder(font.as_ref())
                 .script(Script::Latin)
                 .size(size)
                 .build();
 
-
-            let mut paragraph = Paragraph::new(font_key, position, size, color);
-
             shaper.add_str(text);
             shaper.shape_with(|cluster| {
-                let glyph_id = GlyphId(cluster.glyphs[0].id);
-                paragraph.push(glyph_id, cluster.glyphs[0].advance)
+                if let Some(glyph) = cluster.glyphs.first() {
+                    paragraph.push(GlyphId(glyph.id), glyph.advance);
+                }
             });
 
             Some(paragraph)

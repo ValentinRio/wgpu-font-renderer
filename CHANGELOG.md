@@ -23,7 +23,7 @@ below 1.0, a minor bump (0.x) may break the API.
 - `TextRenderer::new` takes a texture format and `&FontStore` instead of a surface configuration and atlas.
 - `TextRenderer::new_with_subpixel_order` becomes `with_subpixel_order`, with the same format/store change.
 - `TextRenderer::update_uniforms` becomes `resize`, takes a queue, and must be called before the first render and on every viewport change.
-- `TextRenderer::prepare` also takes a queue, skips unknown fonts, refreshes the atlas binding, and reuses instance buffers.
+- `TextRenderer::prepare` also takes a queue, skips unknown fonts and invalid sizes, refreshes the atlas binding, and reuses instance buffers. Call it once per queue submit with every paragraph of the frame: a second preparation before submit changes what earlier render calls draw. Use `render_range` for layered or multi-pass drawing.
 - `TextRenderer::render` takes `&self` and a render pass without a size argument or lifetime tie to the renderer, and preserves the pass scissor rectangle.
 - `Font`, `Glyph`, `Atlas`, `Allocation`, `Resolution`, `Params`, `FontStore::get`, and `FontStore::atlas` leave the stable API; limited inspection is available only through the hidden, semver-exempt `internals` module with `unstable-internals`.
 
@@ -64,11 +64,16 @@ let allocation = &glyph.allocation; // Allocation: position(), size(), layer(), 
 // Resolution and Params described the renderer's GPU uniform layout.
 ```
 
-After:
+After (compiled as a doctest):
 
-```rust,ignore
+```rust,no_run
 use wgpu_font_renderer::{FontId, GlyphId, FontStore, LoadingError,
     Paragraph, SubpixelOrder, TextRenderer, TypeWriter};
+fn migrate(
+    device: &wgpu::Device, queue: &wgpu::Queue,
+    config: &wgpu::SurfaceConfiguration, bytes: &[u8],
+    error: LoadingError, pass: &mut wgpu::RenderPass<'_>,
+) -> Result<(), LoadingError> {
 let mut store = FontStore::new(device);
 let font: FontId = store.load(device, queue, "font.otf", "Hi")?;
 let memory_font = store.load_from_bytes(device, queue, bytes, "Hi")?;
@@ -94,6 +99,8 @@ match error {
     _ => {},
 }
 // Tests/benchmarks only, with unstable-internals enabled:
+# #[cfg(feature = "unstable-internals")]
+# {
 let font = wgpu_font_renderer::internals::font(&store, font).unwrap();
 let glyph = font.glyph_cache.values().next().unwrap();
 let curves = &glyph.curves;
@@ -103,21 +110,25 @@ let bands = &glyph.bands;
 let face = &font.face;
 let view = wgpu_font_renderer::internals::atlas_view(&store);
 let layers = wgpu_font_renderer::internals::atlas_layer_count(&store);
+# }
 // Direct Font/Atlas construction, uploading, parser references, allocation mutation,
 // and Resolution/Params have no stable replacement: load through FontStore,
 // use Paragraph for placement, and resize for the uniform viewport dimensions.
+Ok(())
+}
 ```
 
 Run tests and benchmarks with `--all-features` to enable inspection targets.
 
 ### Added
 
+- `TextRenderer::render_range` draws subsets of the prepared paragraphs with stable indices.
 - CI checks for GPU tests on Mesa lavapipe, lint warnings, documentation, MSRV,
   wasm builds, packaged tests and semantic versioning.
 
 ### Changed
 
-- `TextRenderer::prepare` accepts `&[Paragraph]`, including borrowed vectors.
+- `TextRenderer::prepare` accepts any iterator of borrowed paragraphs, including slices, borrowed vectors, and chained lists.
 - `TypeWriter` implements `Default`, equivalent to `TypeWriter::new()`.
 
 ## [0.2.1] - 2026-10-13
