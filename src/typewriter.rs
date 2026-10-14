@@ -1,6 +1,6 @@
 use swash::{
     shape::ShapeContext,
-    text::{analyze, cluster::{Boundary, CharCluster, Parser, Token}, Script},
+    text::{analyze, cluster::{Boundary, CharCluster, Parser, Token}, Codepoint, LineBreak, Script},
 };
 
 use crate::{FontId, FontStore};
@@ -89,8 +89,8 @@ impl Paragraph {
     pub fn color(&self) -> [f32; 4] {
         self.color
     }
-    /// Horizontal width in physical pixels. Layout excludes hanging whitespace
-    /// at soft breaks; otherwise this is the sum of glyph advances.
+    /// Horizontal width in physical pixels. Layout excludes hanging breakable spaces
+    /// at every line end; otherwise this is the sum of glyph advances.
     pub fn width(&self) -> f32 {
         self.width
     }
@@ -168,6 +168,7 @@ impl TextLayout {
 #[derive(Clone, Debug)]
 pub struct TextBlock {
     lines: Vec<Paragraph>,
+    offsets: Vec<[f32; 2]>,
     position: [f32; 2],
     size: [f32; 2],
 }
@@ -177,15 +178,10 @@ impl TextBlock {
     pub fn lines(&self) -> &[Paragraph] {
         &self.lines
     }
-    /// Move every line by the same delta.
+    /// Place each line at the block anchor plus its original layout offset.
     pub fn set_position(&mut self, position: [f32; 2]) {
-        let delta = [
-            position[0] - self.position[0],
-            position[1] - self.position[1],
-        ];
-        for line in &mut self.lines {
-            line.position[0] += delta[0];
-            line.position[1] += delta[1];
+        for (line, offset) in self.lines.iter_mut().zip(&self.offsets) {
+            line.position = [position[0] + offset[0], position[1] + offset[1]];
         }
         self.position = position;
     }
@@ -255,8 +251,9 @@ impl TypeWriter {
     /// Roboto's soft hyphen), as HarfBuzz does by default. This existing behaviour
     /// is retained from 0.2.
     /// Common and inherited characters join the preceding run, or the following
-    /// run at the start. Runs stay in logical order; bidi and line wrapping are
-    /// not implemented. Text with no strong script is shaped as Latin.
+    /// run at the start. Runs stay in logical order without bidi reordering.
+    /// This method stays single-line; use [`Self::layout_text`] for wrapping.
+    /// Text with no strong script is shaped as Latin.
     /// Color is RGBA; both LCD and grayscale scale coverage by alpha.
     /// Missing cached outlines still advance the pen. Empty glyph clusters are skipped.
     pub fn shape_text(
@@ -287,15 +284,16 @@ impl TypeWriter {
     ///
     /// Breaks fall between clusters; words wider than the box overflow intact.
     /// Hard breaks draw nothing, CRLF counts as one break, and a final hard
-    /// break adds no extra line. Trailing whitespace hangs at soft breaks:
-    /// its glyphs remain, but it contributes no width or alignment offset.
+    /// break adds no extra line. Trailing breakable spaces hang at every line
+    /// end: their glyphs remain, but contribute no width or alignment offset.
+    /// No-break spaces retain their width. Reordered source spans stay intact.
     /// Without a maximum width the box is as wide as its widest line.
     /// Baselines use the same font ascent as [`Self::shape_text`]. Bidi
     /// reordering is not performed. Empty text produces zero lines.
     ///
     /// Returns `None` in the same cases as [`Self::shape_text`], or for a
     /// non-finite or negative maximum width or a non-finite/nonpositive
-    /// `Scale` or `Pixels` line height.
+    /// `Scale` or `Pixels` line height, or a non-finite line width or origin.
     #[allow(clippy::too_many_arguments)]
     pub fn layout_text(
         &mut self,
@@ -330,100 +328,39 @@ impl TypeWriter {
             size,
             text,
         );
-        let mut lines = Vec::new();
-        let mut line = Paragraph::new(font, position, size, color);
-        let mut trimmed_width = 0.;
-        let mut has_unit = false;
-        let mut cursor = 0;
-        let mut unit_start = 0;
-        // Boundaries from analysis mean a break BEFORE the character. The
-        // shaper's character properties do not carry these boundaries.
-        let mut events = Vec::new();
-        let mut chars = text.char_indices().zip(analyze(text.chars())).peekable();
-        while let Some(((offset, ch), (_, info))) = chars.next() {
-            if is_hard_break(ch) {
-                let mut end = offset + ch.len_utf8();
-                if ch == '\r' && chars.peek().is_some_and(|((_, c), _)| *c == '\n') {
-                    let ((i, c), _) = chars.next().unwrap();
-                    end = i + c.len_utf8();
-                }
-                events.push((offset, end, true));
-            } else if offset > 0 && matches!(info, Boundary::Line | Boundary::Mandatory) {
-                events.push((offset, offset, false));
-            }
-        }
-        events.push((text.len(), text.len(), false));
-        for (offset, end, hard) in events {
-            while cursor < clusters.len() && clusters[cursor].source.end <= offset {
-                cursor += 1;
-            }
-            // Ignore opportunities inside a shaped cluster (including ligatures).
-            if !hard
-                && clusters
-                    .get(cursor)
-                    .is_some_and(|c| c.source.start < offset && c.source.end > offset)
-            {
-                continue;
-            }
-            let unit = &clusters[unit_start..cursor];
-            unit_start = cursor;
-            let mut unit_trimmed = 0.;
-            let mut pen = 0.;
-            for cluster in unit {
-                pen += cluster.glyphs.iter().map(|g| g.advance).sum::<f32>();
-                if !text[cluster.source.clone()]
-                    .chars()
-                    .all(char::is_whitespace)
-                {
-                    unit_trimmed = pen;
-                }
-            }
-            let soft = !hard && offset < text.len();
-            let measured = if soft { unit_trimmed } else { pen };
-            if !unit.is_empty() {
-                if has_unit && layout.max_width.is_some_and(|w| line.width + measured > w) {
-                    line.width = trimmed_width;
-                    lines.push(line);
-                    line = Paragraph::new(font, position, size, color);
-                    trimmed_width = 0.;
-                }
-                if unit_trimmed > 0. {
-                    trimmed_width = line.width + unit_trimmed;
-                }
-                for glyph in unit.iter().flat_map(|c| &c.glyphs) {
-                    line.push_at(glyph.glyph, glyph.advance, glyph.offset);
-                }
-                has_unit = true;
-            }
-            if hard {
-                // Discard output by source, even when a control has a real cmap glyph.
-                while cursor < clusters.len() && clusters[cursor].source.start < end {
-                    cursor += 1;
-                }
-                unit_start = cursor;
-                lines.push(line);
-                line = Paragraph::new(font, position, size, color);
-                trimmed_width = 0.;
-                has_unit = false;
-            }
-        }
-        if has_unit {
-            lines.push(line);
+        let mut lines: Vec<_> = break_lines(text, &clusters, layout.max_width)
+            .into_iter()
+            .map(|line| {
+                let mut paragraph = Paragraph::new(font, position, size, color);
+                paragraph.glyphs = line.glyphs;
+                paragraph.width = line.width;
+                paragraph
+            })
+            .collect();
+        if lines.iter().any(|line| !line.width.is_finite()) {
+            return None;
         }
         let width = layout
             .max_width
             .unwrap_or_else(|| lines.iter().map(Paragraph::width).fold(0., f32::max));
+        let mut offsets = Vec::with_capacity(lines.len());
         for (n, line) in lines.iter_mut().enumerate() {
             let shift = match layout.align {
                 Align::Left => 0.,
                 Align::Center => (width - line.width) / 2.,
                 Align::Right => width - line.width,
             };
-            line.position = [position[0] + shift, position[1] + n as f32 * line_height];
+            let offset = [shift, n as f32 * line_height];
+            line.position = [position[0] + offset[0], position[1] + offset[1]];
+            if line.position.iter().any(|value| !value.is_finite()) {
+                return None;
+            }
+            offsets.push(offset);
         }
         let height = lines.len() as f32 * line_height;
         Some(TextBlock {
             lines,
+            offsets,
             position,
             size: [width, height],
         })
@@ -515,6 +452,124 @@ impl TypeWriter {
             shaper.shape_with(|cluster| emit(run_offset, cluster));
         }
     }
+}
+
+#[derive(Default)]
+struct LayoutLine {
+    glyphs: Vec<ShapedGlyph>,
+    width: f32,
+}
+
+fn break_lines(text: &str, clusters: &[ShapedCluster], max_width: Option<f32>) -> Vec<LayoutLine> {
+    let mut opportunities = Vec::new();
+    let mut sections = Vec::new();
+    let mut start = 0;
+    let mut chars = text.char_indices().zip(analyze(text.chars())).peekable();
+    while let Some(((offset, ch), (_, boundary))) = chars.next() {
+        if is_hard_break(ch) {
+            sections.push((start..offset, true));
+            start = offset + ch.len_utf8();
+            if ch == '\r' && chars.peek().is_some_and(|((_, c), _)| *c == '\n') {
+                let ((i, c), _) = chars.next().unwrap();
+                start = i + c.len_utf8();
+            }
+        } else if matches!(boundary, Boundary::Line | Boundary::Mandatory) {
+            opportunities.push(offset);
+        }
+    }
+    sections.push((start..text.len(), false));
+
+    // Source order is used only for membership. Glyph order remains the
+    // shaper's order, including reordering within Indic/Myanmar syllables.
+    let mut by_source: Vec<_> = (0..clusters.len()).collect();
+    by_source.sort_unstable_by_key(|&i| (clusters[i].source.start, i));
+    let mut lines = Vec::new();
+    for (section, hard) in sections {
+        let first = by_source.partition_point(|&i| clusters[i].source.start < section.start);
+        let last = by_source.partition_point(|&i| clusters[i].source.start < section.end);
+        let mut members: Vec<_> = by_source[first..last]
+            .iter()
+            .copied()
+            // Hard-break output is excluded by source containment, regardless
+            // of its glyph ID or its position in the shaper's output.
+            .filter(|&i| clusters[i].source.end <= section.end)
+            .collect();
+        members.sort_unstable();
+        let mut spans: Vec<std::ops::Range<usize>> = Vec::new();
+        for &i in &members {
+            let mut span = clusters[i].source.clone();
+            // Coalesce overlaps and inversions into an unbreakable source span.
+            // Merging backwards also covers non-adjacent inversions.
+            while spans
+                .last()
+                .is_some_and(|previous| previous.end > span.start)
+            {
+                let previous = spans.pop().unwrap();
+                span.start = span.start.min(previous.start);
+                span.end = span.end.max(previous.end);
+            }
+            spans.push(span);
+        }
+        let first = opportunities.partition_point(|&offset| offset <= section.start);
+        let last = opportunities.partition_point(|&offset| offset < section.end);
+        let ends = opportunities[first..last]
+            .iter()
+            .copied()
+            .filter(|&offset| {
+                let i = spans.partition_point(|span| span.end <= offset);
+                !spans.get(i).is_some_and(|span| span.start < offset)
+            })
+            .chain(std::iter::once(section.end));
+        let mut line = LayoutLine::default();
+        let mut raw_width = 0.;
+        let mut has_unit = false;
+        let mut unit_start = section.start;
+        for end in ends {
+            let trimmed_end = unit_start
+                + text[unit_start..end]
+                    .trim_end_matches(is_hanging_space)
+                    .len();
+            let first = by_source.partition_point(|&i| clusters[i].source.start < unit_start);
+            let last = by_source.partition_point(|&i| clusters[i].source.start < end);
+            let mut unit: Vec<_> = by_source[first..last]
+                .iter()
+                .copied()
+                .filter(|&i| clusters[i].source.end <= end)
+                .collect();
+            unit.sort_unstable();
+            let mut raw = 0.;
+            let mut trimmed = 0.;
+            for &i in &unit {
+                let width: f32 = clusters[i].glyphs.iter().map(|g| g.advance).sum();
+                raw += width;
+                if clusters[i].source.start < trimmed_end {
+                    trimmed += width;
+                }
+            }
+            let has_content = trimmed_end > unit_start;
+            if has_unit && has_content && max_width.is_some_and(|w| raw_width + trimmed > w) {
+                lines.push(line);
+                line = LayoutLine::default();
+                raw_width = 0.;
+            }
+            if has_content {
+                line.width = raw_width + trimmed;
+            }
+            raw_width += raw;
+            line.glyphs
+                .extend(unit.iter().flat_map(|&i| &clusters[i].glyphs).copied());
+            has_unit |= end > unit_start;
+            unit_start = end;
+        }
+        if has_unit || hard {
+            lines.push(line);
+        }
+    }
+    lines
+}
+
+fn is_hanging_space(ch: char) -> bool {
+    ch.is_whitespace() && matches!(ch.properties().line_break(), LineBreak::BA | LineBreak::SP)
 }
 
 fn shaped_glyphs(
@@ -682,6 +737,35 @@ mod layout_tests {
     use crate::atlas_tests::common;
 
     const ROBOTO: &[u8] = include_bytes!("../fonts/Roboto-Regular.ttf");
+
+    // Take expected glyphs from the single-line public API. The shaper is
+    // consulted only for byte ranges, never for the layout's filtering rules.
+    fn whole_with_sources(
+        writer: &mut TypeWriter,
+        store: &FontStore,
+        font: FontId,
+        text: &str,
+    ) -> (Paragraph, Vec<std::ops::Range<usize>>) {
+        let whole = writer
+            .shape_text(store, font, [0.; 2], 32., [1.; 4], text)
+            .unwrap();
+        let instance = store.get(font).unwrap();
+        let mut sources = Vec::new();
+        writer.shape_with_at(
+            instance.as_ref(),
+            std::iter::empty(),
+            32.,
+            text,
+            |offset, cluster| {
+                sources.extend(std::iter::repeat_n(
+                    offset + cluster.source.start as usize..offset + cluster.source.end as usize,
+                    cluster.glyphs.len(),
+                ));
+            },
+        );
+        assert_eq!(sources.len(), whole.glyphs().len());
+        (whole, sources)
+    }
 
     #[test]
     fn wrapping_alignment_hanging_space_and_block_edits() {
@@ -887,27 +971,51 @@ mod layout_tests {
             for (n, line) in block.lines().iter().enumerate() {
                 assert_eq!(line.position()[1], n as f32 * pitch);
             }
-            let expected = writer
-                .shape_text(&store, font, [0.; 2], 32., [1.; 4], "Hi")
-                .unwrap();
-            for line in block.lines() {
-                assert!(
-                    line.glyphs().is_empty() || line.glyphs() == expected.glyphs(),
-                    "{text:?}: {line:?}"
-                );
+            let (whole, sources) = whole_with_sources(&mut writer, &store, font, text);
+            let mut ranges = Vec::new();
+            let mut start = 0;
+            let mut previous_cr = false;
+            for (offset, ch) in text.char_indices() {
+                if ch == '\n' && previous_cr {
+                    start = offset + 1;
+                } else if matches!(
+                    ch,
+                    '\n' | '\r' | '\u{b}' | '\u{c}' | '\u{85}' | '\u{2028}' | '\u{2029}'
+                ) {
+                    ranges.push(start..offset);
+                    start = offset + ch.len_utf8();
+                }
+                previous_cr = ch == '\r';
+            }
+            if start < text.len() {
+                ranges.push(start..text.len());
+            }
+            assert_eq!(ranges.len(), count);
+            for (line, range) in block.lines().iter().zip(ranges) {
+                let expected: Vec<_> = whole
+                    .glyphs()
+                    .iter()
+                    .zip(&sources)
+                    .filter(|(_, source)| source.start >= range.start && source.end <= range.end)
+                    .map(|(glyph, _)| *glyph)
+                    .collect();
+                assert_eq!(line.glyphs(), expected, "{text:?}: {range:?}");
             }
         }
         // Offsets, substitutions, ligatures and multiple script-run byte offsets
         // must survive slicing a single shaping operation.
         for text in ["AV é\u{301} office\r\nHi", "Hi 中文\nAV", "e\u{301} Hi Hi"] {
-            let instance = store.get(font).unwrap();
-            let clusters =
-                writer.shape_clusters_at(instance.as_ref(), std::iter::empty(), 32., text);
-            let expected: Vec<_> = clusters
+            let (whole, sources) = whole_with_sources(&mut writer, &store, font, text);
+            let expected: Vec<_> = whole
+                .glyphs()
                 .iter()
-                .filter(|c| !text[c.source.clone()].chars().any(is_hard_break))
-                .flat_map(|c| &c.glyphs)
-                .copied()
+                .zip(&sources)
+                .filter(|(_, source)| {
+                    !text[(*source).clone()]
+                        .chars()
+                        .any(|ch| matches!(ch, '\n' | '\r'))
+                })
+                .map(|(glyph, _)| *glyph)
                 .collect();
             let block = writer
                 .layout_text(
@@ -1128,5 +1236,251 @@ mod layout_tests {
                 .collect::<Vec<_>>(),
             whole.glyphs()
         );
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod round2_tests {
+    use super::*;
+    use crate::atlas_tests::common;
+    const ROBOTO: &[u8] = include_bytes!("../fonts/Roboto-Regular.ttf");
+
+    #[test]
+    fn round2_hanging_at_hard_and_final_ends() {
+        let Some((device, queue, _)) = common::gpu() else {
+            return;
+        };
+        let mut store = FontStore::new(&device);
+        let font = store
+            .load_from_bytes(&device, &queue, ROBOTO, "ab cdefx")
+            .unwrap();
+        let mut writer = TypeWriter::new();
+        let width = writer
+            .shape_text(&store, font, [0.; 2], 32., [1.; 4], "ab cdef")
+            .unwrap()
+            .width();
+        let whole = writer
+            .shape_text(&store, font, [0.; 2], 32., [1.; 4], "ab cdef   ")
+            .unwrap();
+        let block = writer
+            .layout_text(
+                &store,
+                font,
+                [0.; 2],
+                32.,
+                [1.; 4],
+                "ab cdef   ",
+                &TextLayout::default().with_max_width(width),
+            )
+            .unwrap();
+        assert_eq!(block.line_count(), 1);
+        assert_eq!(block.lines()[0].width(), width);
+        assert_eq!(block.lines()[0].glyphs(), whole.glyphs());
+        let ab = writer
+            .shape_text(&store, font, [0.; 2], 32., [1.; 4], "ab")
+            .unwrap()
+            .width();
+        for text in ["ab   ", "ab   \nx", "ab   \r\nx"] {
+            let block = writer
+                .layout_text(
+                    &store,
+                    font,
+                    [10., 20.],
+                    32.,
+                    [1.; 4],
+                    text,
+                    &TextLayout::default()
+                        .with_max_width(100.)
+                        .with_align(Align::Right),
+                )
+                .unwrap();
+            assert_eq!(block.lines()[0].width(), ab, "{text:?}");
+            assert_eq!(block.lines()[0].position()[0], 110. - ab, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn round2_no_break_spaces_keep_width() {
+        let Some((device, queue, _)) = common::gpu() else {
+            return;
+        };
+        let mut store = FontStore::new(&device);
+        let font = store
+            .load_from_bytes(&device, &queue, ROBOTO, "ab cd")
+            .unwrap();
+        let mut writer = TypeWriter::new();
+        for space in ['\u{a0}', '\u{2007}', '\u{202f}'] {
+            let prefix = format!("ab{space}");
+            let expected = writer
+                .shape_text(&store, font, [0.; 2], 32., [1.; 4], &prefix)
+                .unwrap()
+                .width();
+            let text = format!("{prefix} cd");
+            let block = writer
+                .layout_text(
+                    &store,
+                    font,
+                    [0.; 2],
+                    32.,
+                    [1.; 4],
+                    &text,
+                    &TextLayout::default().with_max_width(expected),
+                )
+                .unwrap();
+            assert_eq!(block.line_count(), 2);
+            assert_eq!(block.lines()[0].width(), expected, "{space:?}");
+        }
+    }
+
+    #[test]
+    fn round2_position_round_trip_preserves_offsets() {
+        let Some((device, queue, _)) = common::gpu() else {
+            return;
+        };
+        let mut store = FontStore::new(&device);
+        let font = store
+            .load_from_bytes(&device, &queue, ROBOTO, "abc")
+            .unwrap();
+        let mut block = TypeWriter::new()
+            .layout_text(
+                &store,
+                font,
+                [0.; 2],
+                32.,
+                [1.; 4],
+                "a\nb\nc",
+                &TextLayout::default().with_line_height(LineHeight::Pixels(1.)),
+            )
+            .unwrap();
+        block.set_position([0., 1e8]);
+        block.set_position([0.; 2]);
+        assert_eq!(
+            block
+                .lines()
+                .iter()
+                .map(|p| p.position()[1])
+                .collect::<Vec<_>>(),
+            [0., 1., 2.]
+        );
+    }
+
+    #[test]
+    fn round2_reordered_sources_stay_together_and_remove_hard_glyphs() {
+        let glyph = |id| ShapedGlyph {
+            glyph: GlyphId(id),
+            advance: 1.,
+            offset: [0.; 2],
+        };
+        let soft: Vec<_> = [(0..1, 1), (2..3, 3), (1..2, 2), (3..4, 4)]
+            .into_iter()
+            .map(|(source, id)| ShapedCluster {
+                source,
+                glyphs: vec![glyph(id)],
+            })
+            .collect();
+        let lines = break_lines("a bZ", &soft, Some(0.));
+        assert_eq!(lines.len(), 1, "the decreasing-source span is unbreakable");
+        assert_eq!(lines[0].glyphs, [glyph(1), glyph(3), glyph(2), glyph(4)]);
+        let ba = [
+            ShapedCluster {
+                source: 0..1,
+                glyphs: vec![glyph(1)],
+            },
+            ShapedCluster {
+                source: 1..2,
+                glyphs: vec![glyph(2)],
+            },
+        ];
+        let hung = break_lines("a\t", &ba, None);
+        assert_eq!(hung[0].width, 1.);
+        assert_eq!(hung[0].glyphs, [glyph(1), glyph(2)]);
+        // A reordered syllable spans a space opportunity; CR output occurs
+        // before clusters with smaller source offsets in shaping order.
+        let clusters: Vec<_> = [
+            (0..1, 1),
+            (4..5, 4),
+            (2..3, 2),
+            (3..4, 3),
+            (1..2, 9),
+            (5..6, 5),
+        ]
+        .into_iter()
+        .map(|(source, id)| ShapedCluster {
+            source,
+            glyphs: vec![glyph(id)],
+        })
+        .collect();
+        let lines = break_lines("a\rb cZ", &clusters, Some(0.));
+        let actual: Vec<Vec<_>> = lines
+            .iter()
+            .map(|line| line.glyphs.iter().map(|g| g.glyph.0).collect())
+            .collect();
+        assert_eq!(actual, [vec![1], vec![4, 2, 3, 5]]);
+        let reversed = [
+            ShapedCluster {
+                source: 2..3,
+                glyphs: vec![glyph(3)],
+            },
+            ShapedCluster {
+                source: 1..2,
+                glyphs: vec![glyph(9)],
+            },
+            ShapedCluster {
+                source: 0..1,
+                glyphs: vec![glyph(1)],
+            },
+        ];
+        let lines = break_lines("a\rb", &reversed, None);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].glyphs, [glyph(1)]);
+        assert_eq!(lines[1].glyphs, [glyph(3)]);
+    }
+
+    #[test]
+    fn round2_nonfinite_widths_and_origins_are_rejected() {
+        let Some((device, queue, _)) = common::gpu() else {
+            return;
+        };
+        let mut store = FontStore::new(&device);
+        let font = store.load_from_bytes(&device, &queue, ROBOTO, "W").unwrap();
+        let mut writer = TypeWriter::new();
+        for align in [Align::Left, Align::Center, Align::Right] {
+            assert!(
+                writer
+                    .layout_text(
+                        &store,
+                        font,
+                        [0.; 2],
+                        f32::MAX,
+                        [1.; 4],
+                        "WWWW",
+                        &TextLayout::default().with_align(align)
+                    )
+                    .is_none(),
+                "{align:?}"
+            );
+        }
+        assert!(writer
+            .layout_text(
+                &store,
+                font,
+                [f32::NAN, 0.],
+                32.,
+                [1.; 4],
+                "W",
+                &TextLayout::default()
+            )
+            .is_none());
+        assert!(writer
+            .layout_text(
+                &store,
+                font,
+                [0., f32::MAX],
+                32.,
+                [1.; 4],
+                "W\nW",
+                &TextLayout::default().with_line_height(LineHeight::Pixels(f32::MAX))
+            )
+            .is_none());
     }
 }

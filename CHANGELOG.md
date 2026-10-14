@@ -18,6 +18,8 @@ below 1.0, a minor bump (0.x) may break the API.
 
 ### Changed
 
+- Text layout hangs trailing breakable spaces at soft breaks, hard breaks and the end of text, preserving no-break space widths and all glyphs. Reordered cluster spans stay unbroken, block moves preserve line offsets, and non-finite line widths or origins return `None`.
+
 - Variable fonts shape at their normalized location even when all coordinates are zero. Unlike 0.2, FeatureVariations whose condition ranges cover the default location now apply there.
 - Output glyph zero (`.notdef`) is omitted from `Paragraph::glyphs()` only when its source is a Cc control or default-ignorable character, contributing no advance or ink. Nonzero output glyphs, including substitutions and ligatures with such a source, retain swash’s glyphs and positioning. Mapped Cc controls enter ordinary glyph shaping to retain their font glyphs; swash’s control handling would otherwise hide them before output. Missing letters and symbols still draw `.notdef` when it has an outline. Swash’s existing hiding of mapped default-ignorables (for example Roboto’s U+00AD), like HarfBuzz’s default, is retained from 0.2.
 

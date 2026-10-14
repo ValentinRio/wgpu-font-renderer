@@ -98,7 +98,8 @@ text_renderer.prepare(&device, &queue, &block, &font_store);
 
 Layout shapes once and keeps words and clusters intact, allowing long words to
 overflow. Hard breaks draw nothing; a final hard break adds no extra line.
-Trailing spaces hang at soft breaks without affecting width or alignment.
+Trailing breakable spaces hang at every line end without affecting width or
+alignment; no-break spaces retain their width.
 `LineHeight::Font` uses ascent + descent + line gap, falling back to one em when
 that sum is invalid; `Scale` multiplies it and `Pixels` sets an explicit pitch.
 `block.size()` reports the alignment box width and line count times pitch.

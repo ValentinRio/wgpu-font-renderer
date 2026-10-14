@@ -637,7 +637,15 @@ fn centred_text_block_has_three_ink_bands_at_the_line_pitch() {
         }
     }
     assert_eq!(bands.len(), 3, "{bands:?}");
+    let face = skrifa::FontRef::new(include_bytes!("../fonts/Roboto-Regular.ttf")).unwrap();
+    let h = face.charmap().map('H').unwrap();
+    let bounds = face.glyph_metrics(Size::new(32.), LocationRef::default()).bounds(h).unwrap();
+    let ink_offset = store.metrics(font, 32.).unwrap().ascent - bounds.y_max;
     for (n, band) in bands.iter().enumerate() {
+        let expected_top = 8. + n as f32 * 48. + ink_offset;
+        assert!((band[1] as f32 + 0.5 - expected_top).abs() <= 1.,
+            "absolute ink top must follow the paragraph anchor: {band:?}, expected {expected_top}");
+        assert!((block.lines()[n].position()[1] - (8. + n as f32 * 48.)).abs() <= 1.);
         assert_eq!(band[1], bands[0][1] + n as u32 * 48);
         assert_eq!(band[3], bands[0][3] + n as u32 * 48);
         let centre = (band[0] + band[2] + 1) as f32 / 2.;
