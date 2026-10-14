@@ -80,9 +80,14 @@ impl FontStore {
     }
 
     #[cfg(feature = "unstable-internals")]
-    pub(crate) fn pad_bands(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, floats: u32) {
+    pub(crate) fn pad_atlas(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, floats: [u32; 2]) {
         let mut encoder = device.create_command_encoder(&Default::default());
-        self.atlas.upload_bands(floats, &vec![0; floats as usize * 4], device, &mut encoder, queue).expect("test padding fits");
+        if floats[0] > 0 {
+            self.atlas.upload(floats[0], &vec![0; floats[0] as usize * 4], device, &mut encoder, queue).expect("curve padding fits");
+        }
+        if floats[1] > 0 {
+            self.atlas.upload_bands(floats[1], &vec![0; floats[1] as usize * 4], device, &mut encoder, queue).expect("band padding fits");
+        }
         queue.submit(Some(encoder.finish()));
     }
 

@@ -203,42 +203,48 @@ fn dark_bounds(pixels: &[u8]) -> [u32; 4] {
     bounds
 }
 
+#[cfg(feature = "unstable-internals")]
 #[test]
-fn bearings_position_ink_and_preserve_whole_pixel_translation() {
+fn bearing_positions_match_cpu_coverage_and_advance_spacing() {
     use skrifa::{MetadataProvider, instance::{Size, LocationRef}};
     let Some((device, queue, _)) = common::gpu() else { return; };
     let mut store = FontStore::new(&device);
     let key = store.load_from_bytes(&device, &queue, ROBOTO, "gI").unwrap();
     let font = store.get(key).unwrap();
     let face = font.face();
+    let scale = 64. / face.metrics(Size::unscaled(), LocationRef::default()).units_per_em as f32;
     let g = face.charmap().map('g').unwrap();
     let i = face.charmap().map('I').unwrap();
-    let scale = 32. / face.metrics(Size::unscaled(), LocationRef::default()).units_per_em as f32;
-    let bearing = |id: skrifa::GlyphId| font.glyph_cache[&id.to_u32()].left_side_bearing as f32 * scale;
-    assert_ne!(bearing(g), bearing(i));
     let advance = face.glyph_metrics(Size::unscaled(), LocationRef::default()).advance_width(g).unwrap() * scale;
-    let mut first = Paragraph::new(key, [24.; 2], 32., [0., 0., 0., 1.]);
-    first.push(GlyphId(g.to_u32() as u16), advance);
-    let mut second = Paragraph::new(key, [24. + advance, 24.], 32., [0., 0., 0., 1.]);
-    second.push(GlyphId(i.to_u32() as u16), 0.);
-    let g_left = dark_bounds(&pixels(&device, &queue, &store, &first))[0] as f32;
-    let i_left = dark_bounds(&pixels(&device, &queue, &store, &second))[0] as f32;
-    assert!((g_left - (24. + bearing(g))).abs() <= 1.);
-    assert!((i_left - g_left - (advance + bearing(i) - bearing(g))).abs() <= 1.);
-
-    // At 64 px/em, Roboto g's 96-unit bearing is exactly three pixels.
-    let shift = font.glyph_cache[&g.to_u32()].left_side_bearing as f32 * scale * 2.;
-    assert_eq!(shift, 3.);
-    let mut positioned = Paragraph::new(key, [24.; 2], 64., [0., 0., 0., 1.]);
-    positioned.push(GlyphId(g.to_u32() as u16), 0.);
-    let mut old_anchor = Paragraph::new(key, [24.; 2], 64., [0., 0., 0., 1.]);
-    old_anchor.push_at(GlyphId(g.to_u32() as u16), 0., [-shift, 0.]);
-    let before = pixels(&device, &queue, &store, &old_anchor);
-    let after = pixels(&device, &queue, &store, &positioned);
-    for y in 0..128 {
-        for x in 0..128 {
-            let expected = if x < 3 { &[255; 4][..] } else { &before[(y * 128 + x - 3) * 4..(y * 128 + x - 3) * 4 + 4] };
-            assert_eq!(&after[(y * 128 + x) * 4..(y * 128 + x) * 4 + 4], expected);
+    let mut left_edges = Vec::new();
+    let mut bearings = Vec::new();
+    for (id, pen) in [(g, 24.), (i, 24. + advance)] {
+        let glyph = &font.glyph_cache[&id.to_u32()];
+        let bearing = glyph.left_side_bearing as f32 * scale;
+        assert!(bearing >= 3.);
+        bearings.push(bearing);
+        let mut paragraph = Paragraph::new(key, [pen, 24.], 64., [0., 0., 0., 1.]);
+        paragraph.push(GlyphId(id.to_u32() as u16), 0.);
+        let actual = pixels(&device, &queue, &store, &paragraph);
+        left_edges.push(dark_bounds(&actual)[0] as f32);
+        let top = 24. + (glyph.y_offset as f32 + f32::from(glyph.descent).abs()) * scale;
+        // The CPU reference's screen origin depends on the pen, independently
+        // of the renderer's instance origin or bearing handling.
+        let reference = common::reference::reference_coverage(&glyph.curves,
+            -pen / scale, -top / scale, scale, 128, 128);
+        // Check a stripe around the CPU-predicted left edge. Straight I edges
+        // and g's middle left stem obey the same 1/255 tolerance as c7.
+        let edge = (pen + bearing).floor() as usize;
+        let y = (top + glyph.bbox.height() as f32 * scale * 0.5) as usize;
+        assert!(reference[y * 128 + edge + 1] > 0.5, "reference stripe must contain ink");
+        for x in edge - 2..=edge + 2 {
+            for channel in 0..3 {
+                let coverage = 1. - f32::from(actual[(y * 128 + x) * 4 + channel]) / 255.;
+                assert!((coverage - reference[y * 128 + x]).abs() <= 1. / 255.,
+                    "bearing coverage for glyph {} at {x},{y}: GPU {coverage}, CPU {}", id.to_u32(), reference[y * 128 + x]);
+            }
         }
     }
+    assert_ne!(bearings[0], bearings[1]);
+    assert!((left_edges[1] - left_edges[0] - (advance + bearings[1] - bearings[0])).abs() <= 1.);
 }

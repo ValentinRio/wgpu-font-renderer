@@ -27,12 +27,14 @@
 //! fonts. An outline or its bands must fit a layer, and allocation must stay
 //! within the device's `max_texture_array_layers`. The default atlas uses 16 MiB
 //! per 512 × 2048 RGBA32Float layer, initially 32 MiB; 256 layers use 4 GiB.
-//! Growth temporarily retains both old and new textures.
+//! Growth temporarily retains both old and new textures. A load that grows the
+//! atlas and then fails restores allocations but keeps the larger texture.
 //! Glyph ink is placed at the pen plus its shaped offset plus the cached left
 //! side bearing scaled to pixels. In 0.2, each glyph's ink was anchored at the
 //! pen; text now shifts by each glyph's bearing. TrueType outlines apply
 //! `hmtx.lsb - glyf.xMin`, so the cached box and bearing follow `hmtx`.
-//! CFF outline coordinates are unchanged; their bearings also position the ink. Both grayscale and LCD scale coverage by RGBA
+//! CFF outline coordinates are unchanged; their bearings also position the ink.
+//! Both grayscale and LCD scale coverage by RGBA
 //! alpha; alpha zero draws nothing. In 0.2, grayscale ignored alpha.
 //!
 //! Call [`TextRenderer::resize`] before the first render and on every viewport
@@ -128,9 +130,9 @@ pub mod internals {
     pub fn atlas_layer_count(store: &crate::FontStore) -> usize {
         store.atlas().layer_count()
     }
-    /// Reserve test padding in a band layer to exercise atlas growth.
-    pub fn pad_bands(device: &wgpu::Device, queue: &wgpu::Queue, store: &mut crate::FontStore, floats: u32) {
-        store.pad_bands(device, queue, floats);
+    /// Reserve test padding in curve and band layers to exercise atlas growth.
+    pub fn pad_atlas(device: &wgpu::Device, queue: &wgpu::Queue, store: &mut crate::FontStore, floats: [u32; 2]) {
+        store.pad_atlas(device, queue, floats);
     }
     /// Inspect the number of prepared glyph instances.
     pub fn instance_count(renderer: &crate::TextRenderer) -> usize {

@@ -98,7 +98,8 @@ Atlas-full errors arise when an outline or its bands cannot fit a layer, or
 allocation would exceed the device's `max_texture_array_layers`. The default
 512 × 2048 RGBA32Float layers use 16 MiB each, initially 32 MiB for two layers;
 a 256-layer device limit allows a 4 GiB atlas. Growth temporarily keeps both
-the old and new textures in memory.
+the old and new textures in memory. A load that grows the atlas and then fails
+restores allocation bookkeeping but keeps the larger texture.
 
 `FontStore::load` reads the font from a file path. On wasm, or to embed the font in the binary, use `FontStore::load_from_bytes`.
 

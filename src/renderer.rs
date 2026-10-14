@@ -355,13 +355,11 @@ impl TextRenderer {
                         _units_per_em: units_per_em,
                         _layer: glyph.allocation.layer() as u32,
                         _color: paragraph.color(),
-                        _bands: glyph.bands.as_ref().map_or([0., 0., -1.], |bands| {
-                            [
-                                bands.position()[0] as f32,
-                                bands.position()[1] as f32,
-                                bands.layer() as f32,
-                            ]
-                        }),
+                        _bands: [
+                            glyph.bands.position()[0] as f32,
+                            glyph.bands.position()[1] as f32,
+                            glyph.bands.layer() as f32,
+                        ],
                     };
 
                     self.instances.push(instance);

@@ -96,7 +96,8 @@ fn c3_every_cached_glyph_matches_method_and_box_error_bounds() {
                 let mut inputs = [[0.; 4]; 9];
                 for (tile, (_, glyph)) in batch.iter().enumerate() {
                     let a = &glyph.allocation;
-                    let b = glyph.bands.as_ref().unwrap();
+                    assert!(a.size() > 0, "cached glyphs must not become empty probe tiles");
+                    let b = &glyph.bands;
                     inputs[tile * 3] = [a.position()[0] as f32, a.position()[1] as f32, a.size() as f32, a.layer() as f32];
                     inputs[tile * 3 + 1] = [b.position()[0] as f32, b.position()[1] as f32, b.layer() as f32,
                         (glyph.bbox.width() as f32 * scale).ceil() + 2.];

@@ -75,11 +75,14 @@ fn compare_shader_pixels() {
                 chars.len() > 1000,
                 "growth fixture must load over 1000 outlined characters"
             );
-            // Fill most of the first band layer so unique glyphs trigger growth
-            // during the load, including later writes into old-layer holes.
+            // Fill most of both first layers so unique glyphs trigger curve
+            // and band growth during the load, including old-layer tail writes.
             let used: u32 = wgpu_font_renderer::internals::font(&store, inspection_key).unwrap()
-                .glyph_cache.values().filter_map(|g| g.bands.as_ref()).map(|b| b.size()).sum();
-            wgpu_font_renderer::internals::pad_bands(&device, &queue, &mut store, 2048 * 2048 - used - 4096);
+                .glyph_cache.values().map(|g| &g.bands).map(|b| b.size()).sum();
+            let used_curves: u32 = wgpu_font_renderer::internals::font(&store, inspection_key).unwrap()
+                .glyph_cache.values().map(|g| g.allocation.size()).sum();
+            wgpu_font_renderer::internals::pad_atlas(&device, &queue, &mut store,
+                [2048 * 2048 - used_curves - 4096, 2048 * 2048 - used - 4096]);
             preset.extend(chars);
         }
         let key = store
@@ -105,18 +108,22 @@ fn compare_shader_pixels() {
             let id = font.face().charmap().map(c).unwrap();
             font.glyph_cache
                 .get(&id.to_u32())
-                .and_then(|g| g.bands.as_ref())
+                .map(|g| &g.bands)
                 .is_some_and(|b| b.layer() == 1 && b.position()[1] >= 2016)
         });
         let new_layer = preset.chars().find(|&c| {
             let id = font.face().charmap().map(c).unwrap();
             font.glyph_cache
                 .get(&id.to_u32())
-                .and_then(|g| g.bands.as_ref())
+                .map(|g| &g.bands)
                 .is_some_and(|b| b.layer() >= 3)
         });
         if grow {
             assert!(old_layer_tail.is_some() && new_layer.is_some());
+            assert!(font.glyph_cache.values().any(|g| g.allocation.layer() == 0 && g.allocation.position()[1] >= 2016),
+                "curve uploads must fill the old layer's tail");
+            assert!(font.glyph_cache.values().any(|g| g.allocation.layer() >= 2),
+                "curve uploads must grow into a new layer");
         }
         // Growth probes cover old band-layer tails and new band layers.
         let probes: Vec<_> = if grow {
@@ -128,7 +135,7 @@ fn compare_shader_pixels() {
             let id = font.face().charmap().map(c).unwrap();
             let glyph = &font.glyph_cache[&id.to_u32()];
             let a = &glyph.allocation;
-            let b = glyph.bands.as_ref().unwrap();
+            let b = &glyph.bands;
             let input = analytic::glyph_input(
                 (a.position(), a.size(), a.layer()),
                 (b.position(), b.layer()),
@@ -195,7 +202,7 @@ fn analytic_inside_opaque() {
     let font = wgpu_font_renderer::internals::font(&store, key).unwrap();
     let glyph = &font.glyph_cache[&font.face().charmap().map('B').unwrap().to_u32()];
     let a = &glyph.allocation;
-    let b = glyph.bands.as_ref().unwrap();
+    let b = &glyph.bands;
     let input = analytic::glyph_input(
         (a.position(), a.size(), a.layer()),
         (b.position(), b.layer()),

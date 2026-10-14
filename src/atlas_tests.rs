@@ -116,7 +116,7 @@ fn placement_regression(prefix: u32, band_prefix: u32, check_path: bool) {
             if padding > 0 && padding < atlas::SIZE {
                 assert!(x + glyph.allocation.size() > atlas::SIZE);
             }
-            let bands = glyph.bands.as_ref().unwrap();
+            let bands = &glyph.bands;
             let [bx, by] = bands.position();
             if band_padding > 0 {
                 assert!(

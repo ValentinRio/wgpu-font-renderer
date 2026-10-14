@@ -25,7 +25,7 @@ pub struct Glyph {
     /// Atlas location and float-texel count for the encoded segments.
     pub allocation: Allocation,
     /// Atlas band header, descriptors and duplicated curves. Loaded glyphs have bands.
-    pub bands: Option<Allocation>,
+    pub bands: Allocation,
     /// Original font-unit bounding box, with y increasing upward.
     pub bbox: Rect,
     /// Nonpositive bottom extent below the baseline, in font units.
@@ -243,7 +243,7 @@ fn create_glyph_cache(
                     #[cfg(feature = "unstable-internals")]
                     curves: builder.curves,
                     allocation,
-                    bands: Some(bands),
+                    bands,
                     bbox,
                     descent,
                     y_offset,

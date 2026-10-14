@@ -259,9 +259,11 @@ fn prepare_and_resize_keep_ink_at_pixel_coordinates() {
     let scale = 32. / font.face().metrics(Size::unscaled(), LocationRef::default()).units_per_em as f32;
     let bearing = |ch| font.glyph_cache[&font.face().charmap().map(ch).unwrap().to_u32()].left_side_bearing as f32 * scale;
     assert_hi_fill(&pixels, 187..=253, bearing('H'));
+    // Dark pixel centres may not precede the straight H edge; x indices
+    // account for the half-pixel centre, with no extra one-pixel allowance.
     let before = ink_bounds(&pixels, 128);
     assert!(
-        before[0] >= (24. + bearing('H')).floor() as u32 && before[1] >= 48 && before[2] < (80. + bearing('i')).ceil() as u32 && before[3] < 96,
+        before[0] >= (24. + bearing('H') - 0.5).ceil() as u32 && before[1] >= 48 && before[2] < (80. + bearing('i')).ceil() as u32 && before[3] < 96,
         "all ink must be within the expected box: {before:?}"
     );
     for size in [[256, 192], [128, 128]] {
@@ -363,7 +365,7 @@ fn cantarell_cff2_loads_outlines_and_renders_ink() {
     assert_hi_fill(&pixels, 149..=201, bearing('H'));
     let bounds = ink_bounds(&pixels, 128);
     assert!(
-        bounds[0] >= (24. + bearing('H')).floor() as u32 && bounds[1] >= 48 && bounds[2] < (80. + bearing('i')).ceil() as u32 && bounds[3] < 96,
+        bounds[0] >= (24. + bearing('H') - 0.5).ceil() as u32 && bounds[1] >= 48 && bounds[2] < (80. + bearing('i')).ceil() as u32 && bounds[3] < 96,
         "CFF2 ink must be within the expected box: {bounds:?}"
     );
     assert!(pollster::block_on(scope.pop()).is_none());
@@ -415,8 +417,8 @@ fn fonts_loaded_after_renderer_construction_refresh_the_atlas() {
     let layers = wgpu_font_renderer::internals::atlas_layer_count(&store);
     // Exhaust the first band layer so the next load replaces the atlas view.
     let used: u32 = wgpu_font_renderer::internals::font(&store, initial).unwrap()
-        .glyph_cache.values().filter_map(|g| g.bands.as_ref()).map(|b| b.size()).sum();
-    wgpu_font_renderer::internals::pad_bands(&device, &queue, &mut store, 2048 * 2048 - used);
+        .glyph_cache.values().map(|g| &g.bands).map(|b| b.size()).sum();
+    wgpu_font_renderer::internals::pad_atlas(&device, &queue, &mut store, [0, 2048 * 2048 - used]);
     let preset = "@Hi";
     let font = store.load_from_bytes(&device, &queue,
         include_bytes!("../fonts/Cantarell-VF.otf"), preset).unwrap();

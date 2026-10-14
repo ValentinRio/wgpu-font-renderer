@@ -181,7 +181,7 @@ impl TypeWriter {
     }
 }
 fn script_runs(text: &str) -> Vec<(&str, Script)> {
-    let strong = |script| !matches!(script, Script::Common | Script::Inherited);
+    let strong = |script| !matches!(script, Script::Common | Script::Inherited | Script::Unknown);
     let initial = analyze(text.chars())
         .map(|(p, _)| p.script())
         .find(|&s| strong(s))
@@ -221,6 +221,14 @@ mod tests {
     }
 
     #[test]
+    fn unknown_script_is_neutral() {
+        assert_eq!(script_runs("\u{e000}\u{0378}"), vec![("\u{e000}\u{0378}", Script::Latin)]);
+        assert_eq!(script_runs("\u{e000}直接\u{0378}!"), vec![("\u{e000}直接\u{0378}!", Script::Han)]);
+        assert_eq!(script_runs("Hi\u{e000}直接\u{0378}"),
+            vec![("Hi\u{e000}", Script::Latin), ("直接\u{0378}", Script::Han)]);
+    }
+
+    #[test]
     fn common_only_text_matches_latin_shaping() {
         for bytes in [
             &include_bytes!("../fonts/Roboto-Regular.ttf")[..],
@@ -228,6 +236,7 @@ mod tests {
         ] {
             let font = swash::FontRef::from_index(bytes, 0).unwrap();
             for text in ["2026", "(1)", "  !?., ()  "] {
+                assert_eq!(script_runs(text), vec![(text, Script::Latin)]);
                 let mut context = ShapeContext::new();
                 let mut shaper = context.builder(font).script(Script::Latin).size(32.).build();
                 shaper.add_str(text);
