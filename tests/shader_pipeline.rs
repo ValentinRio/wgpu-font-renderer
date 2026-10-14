@@ -118,16 +118,26 @@ fn compare_shader_pixels() {
                 .map(|g| &g.bands)
                 .is_some_and(|b| b.layer() >= 3)
         });
+        let old_curve_tail = preset.chars().find(|&c| {
+            let id = font.face().charmap().map(c).unwrap();
+            font.glyph_cache.get(&id.to_u32()).is_some_and(|g|
+                g.allocation.layer() == 0 && g.allocation.position()[1] >= 2016)
+        });
+        let new_curve_layer = preset.chars().find(|&c| {
+            let id = font.face().charmap().map(c).unwrap();
+            font.glyph_cache.get(&id.to_u32()).is_some_and(|g| g.allocation.layer() >= 2)
+        });
         if grow {
             assert!(old_layer_tail.is_some() && new_layer.is_some());
-            assert!(font.glyph_cache.values().any(|g| g.allocation.layer() == 0 && g.allocation.position()[1] >= 2016),
+            assert!(old_curve_tail.is_some(),
                 "curve uploads must fill the old layer's tail");
-            assert!(font.glyph_cache.values().any(|g| g.allocation.layer() >= 2),
+            assert!(new_curve_layer.is_some(),
                 "curve uploads must grow into a new layer");
         }
-        // Growth probes cover old band-layer tails and new band layers.
+        // Render glyphs selected by both curve and band allocation locations.
         let probes: Vec<_> = if grow {
-            old_layer_tail.into_iter().chain(new_layer).collect()
+            old_layer_tail.into_iter().chain(new_layer)
+                .chain(old_curve_tail).chain(new_curve_layer).collect()
         } else {
             "igB@é".chars().chain(wrapped).collect()
         };
