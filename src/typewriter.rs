@@ -149,7 +149,7 @@ impl TypeWriter {
         }
         let mut paragraph = Paragraph::new(font, position, size, color);
         if let Some(font) = store.get(font) {
-            for glyph in self.shape_glyphs_at(font.as_ref(), font.location.coords().iter().map(|c| c.to_bits()), size, text) {
+            for glyph in self.shape_glyphs_at(font.as_ref(), font.shaping_coords().iter().map(|c| c.to_bits()), size, text) {
                 paragraph.push_at(glyph.glyph, glyph.advance, glyph.offset);
             }
 

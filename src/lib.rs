@@ -8,9 +8,9 @@
 //! Cubic outlines are approximated by quadratics within 0.25 font units, with a
 //! depth cap of 10 for pathological inputs that may exceed this tolerance.
 //! CFF2 outlines can be loaded and converted. [`FontStore::load_variation`] selects
-//! axis values from [`FontStore::axes`], sharing bytes with the base font. One
+//! axis overrides from [`FontStore::axes`], inheriting the base location and sharing bytes. One
 //! normalized location drives outlines, placement, metrics and shaping. Default
-//! loads select the default instance. [`FontStore::metrics`] reports pixel line
+//! loads select the default instance; all-zero locations pass no shaping coordinates. [`FontStore::metrics`] reports pixel line
 //! metrics; the baseline is paragraph y plus [`FontMetrics::ascent`].
 //! Contours are explicitly closed. Glyphs with negative total signed area in
 //! y-down coordinates have all contours reversed to match the shader's winding.

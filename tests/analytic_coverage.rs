@@ -270,10 +270,10 @@ fn variable_instances_shape_and_draw_at_the_same_location() {
     ] {
         let mut store = FontStore::new(&device);
         let base = store.load_from_bytes(&device, &queue, &bytes, "II").unwrap();
-        let axis = store.axes(base).unwrap().into_iter().find(|axis| axis.tag == *b"wght").unwrap();
+        let axis = *store.axes(base).unwrap().iter().find(|axis| axis.tag == *b"wght").unwrap();
         let mut widths = Vec::new();
         let mut outlines = Vec::new();
-        for value in [axis.min, axis.max] {
+        for value in [axis.min, axis.max, 550.] {
             let key = store.load_variation(&device, &queue, base, &[(axis.tag, value)]).unwrap();
             let font = wgpu_font_renderer::internals::font(&store, key).unwrap();
             let face = font.face();
@@ -283,7 +283,9 @@ fn variable_instances_shape_and_draw_at_the_same_location() {
             let glyph_id = face.charmap().map('I').unwrap();
             let glyph = &font.glyph_cache[&glyph_id.to_u32()];
             outlines.push(glyph.curves.clone());
-            let position = [20.75 - f32::from(glyph.left_side_bearing) * scale, 20.75];
+            let instance_bounds = face.glyph_metrics(Size::unscaled(), &location).bounds(glyph_id).unwrap();
+            let expected_left = instance_bounds.x_min as i16;
+            let position = [20.75 - f32::from(expected_left) * scale, 20.75];
             let paragraph = TypeWriter::new().shape_text(&store, key, position, 48., [1.; 4], "II").unwrap();
             let advance = face.glyph_metrics(Size::unscaled(), &location).advance_width(glyph_id).unwrap() * scale;
             assert!((paragraph.width() - 2. * advance).abs() < 0.01,
@@ -329,6 +331,8 @@ fn variable_instances_shape_and_draw_at_the_same_location() {
                 * ((glyph.bbox.height() as f32 * scale).ceil() + 2.);
             let mean = total / f64::from(area);
             assert!(mean <= C3_MEAN_ERRORS[3].1, "instance {value}: mean error {mean}");
+            assert!((bounds[0] as f32 - (position[0] + f32::from(expected_left) * scale)).abs() <= 1.,
+                "ink left edge must follow the instance bearing");
             assert!((bounds[1] as f32 - top).abs() <= 1., "ink must follow the instance ascender");
             // Check the stem stripe against the existing centre-ray readback bound;
             // thin instances can intersect both edges within one box-filter sample.

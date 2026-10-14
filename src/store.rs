@@ -14,14 +14,19 @@ use crate::{atlas::Atlas, loader::Font, LoadingError};
 pub struct FontId(CacheKey);
 
 /// Line metrics in physical pixels at the requested font size.
+/// Table selection deliberately differs from skrifa's `Metrics` to match the
+/// renderer: typo metrics require OS/2 v4 or later with USE_TYPO_METRICS;
+/// a zero hhea ascender falls back to nonzero typo, then Windows metrics.
+/// MVAR deltas are applied at the instance location.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FontMetrics {
-    /// Positive baseline distance from the paragraph's top anchor.
+    /// The renderer's anchor ascender: baseline distance from the paragraph top.
+    /// Usually positive, but can be zero or negative for unusual fonts.
     pub ascent: f32,
-    /// Positive distance below the baseline.
+    /// Absolute descender magnitude, always nonnegative (possibly zero).
     pub descent: f32,
-    /// Additional spacing between lines.
+    /// Signed line gap; may be positive, zero or negative.
     pub line_gap: f32,
 }
 
@@ -118,28 +123,30 @@ impl FontStore {
             descent: font.metrics.descent * scale, line_gap: font.metrics.line_gap * scale })
     }
 
-    /// Return design-space axes, or `None` for a foreign ID.
-    /// Non-variable fonts return an empty vector.
-    pub fn axes(&self, font: FontId) -> Option<Vec<Axis>> {
-        Some(self.get(font)?.face().axes().iter().map(|axis| Axis {
-            tag: axis.tag().to_be_bytes(), min: axis.min_value(),
-            default: axis.default_value(), max: axis.max_value(),
-        }).collect())
+    /// Borrow design-space axes computed once when the font was loaded.
+    /// Returns `None` for a foreign ID and an empty slice for non-variable fonts.
+    pub fn axes(&self, font: FontId) -> Option<&[Axis]> {
+        Some(&self.get(font)?.axes)
     }
 
     /// Load a fresh instance sharing the base's bytes and cached character set.
-    /// Values clamp to axis ranges; unknown tags are ignored, omitted axes use
-    /// their defaults, and duplicate tags use the last value. Non-variable
+    /// Values clamp to axis ranges; unknown tags are ignored, omitted axes retain
+    /// the base instance’s values, and duplicate tags use the last value. Non-variable
     /// fonts produce identical instances. Returns [`LoadingError::UnknownFont`]
     /// for a foreign base. Other loading errors and GPU requirements are the
     /// same as [`Self::load_from_bytes`].
+    /// Each instance uploads its own outlines for the base’s character set.
+    /// Fonts are never unloaded: creating instances per frame (for example to
+    /// animate weight) fills the atlas and eventually returns [`LoadingError::AtlasFull`].
     pub fn load_variation(&mut self, device: &wgpu::Device, queue: &wgpu::Queue,
         base: FontId, axes: &[([u8; 4], f32)]) -> Result<FontId, LoadingError> {
         let base = self.get(base).ok_or(LoadingError::UnknownFont)?;
         let data = base.data.clone();
         let characters = base.characters.clone();
+        let mut settings = base.settings.clone();
+        settings.extend_from_slice(axes);
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
-        let font = Font::from_instance(device, &mut encoder, queue, data, characters, axes, &mut self.atlas)?;
+        let font = Font::from_instance(device, &mut encoder, queue, data, characters, &settings, &mut self.atlas)?;
         queue.submit(Some(encoder.finish()));
         let id = FontId(font.key);
         self.cache.insert(id, font);

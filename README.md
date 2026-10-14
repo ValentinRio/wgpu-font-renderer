@@ -104,10 +104,15 @@ restores allocation bookkeeping but keeps the larger texture.
 ### Metrics and variable-font instances
 
 `FontStore::metrics(font, size)` returns `FontMetrics` in physical pixels, with
-positive ascent and descent. A paragraph’s baseline is `position.y + ascent`.
-Invalid sizes and foreign font IDs return `None`. `FontStore::axes(font)` returns
+the renderer’s anchor ascender (usually positive, but zero or negative for
+unusual fonts), nonnegative descent magnitude (possibly zero), and a signed line
+gap that may be positive, zero or negative. Table selection intentionally differs
+from skrifa’s `Metrics`: typo metrics require OS/2 v4 with USE_TYPO_METRICS;
+a zero hhea ascender falls back to nonzero typo, then Windows metrics. This
+matches where glyphs are drawn. A paragraph’s baseline is `position.y + ascent`.
+Invalid sizes and foreign font IDs return `None`. `FontStore::axes(font)` borrows a cached slice of
 `Axis` records with four-byte tags and minimum, default and maximum values (an
-empty vector for a non-variable font).
+empty slice for a non-variable font).
 
 ```rust
 let bold = fonts.load_variation(device, queue, base, &[(*b"wght", 700.0)])?;
@@ -116,11 +121,14 @@ let baseline = 24.0 + metrics.ascent;
 ```
 
 Instances share the base’s bytes and character set and upload their own outlines.
-Axis values clamp to their ranges, unknown tags are ignored, omitted axes use
-defaults, and the last duplicate wins. Non-variable fonts produce identical
-instances. A foreign base returns `LoadingError::UnknownFont`. One skrifa
+Axis values clamp to their ranges, unknown tags are ignored, omitted axes retain
+the base instance’s values, and the last duplicate wins. Non-variable fonts
+produce identical instances. A foreign base returns `LoadingError::UnknownFont`. One skrifa
 normalized location drives outlines, bounds, bearings, MVAR line metrics and
-swash shaping. Default loading preserves the default instance.
+swash shaping. All-zero locations pass no shaping coordinates, preserving
+pre-variation default shaping. Every instance uploads its own outlines for the
+base’s character set. Fonts are never unloaded, so creating instances per frame
+(for example when animating weight) fills the atlas and ends in `AtlasFull`.
 
 ### Untrusted fonts
 

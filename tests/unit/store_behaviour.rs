@@ -312,3 +312,54 @@ fn metrics_and_instances_share_bytes_and_preserve_the_character_set() {
         }
     }
 }
+
+#[test]
+fn review_default_shaping_omits_zero_coords_even_with_feature_variations() {
+    use swash::{shape::ShapeContext, text::Script};
+    let Some((device, queue, _)) = common::gpu() else { return; };
+    for bytes in [include_bytes!("../../fonts/Cantarell-VF.otf").to_vec(), common::zero_feature_variation_font()] {
+        let mut store = FontStore::new(&device);
+        let text = "I II AV To fi ffi e\u{301} 0123!? àÅgß";
+        let base = store.load_from_bytes(&device, &queue, &bytes, text).unwrap();
+        let font = store.get(base).unwrap();
+        assert!(!font.location.coords().is_empty());
+        assert!(font.location.coords().iter().all(|coord| coord.to_bits() == 0));
+        assert!(font.shaping_coords().is_empty(), "default shaping must omit all-zero coordinates");
+        let expected = TypeWriter::new().shape_glyphs(font.as_ref(), 32., text);
+        let actual = TypeWriter::new().shape_text(&store, base, [0.; 2], 32., [1.; 4], text).unwrap();
+        assert_eq!(actual.glyphs(), expected);
+        if bytes == common::zero_feature_variation_font() {
+            let mut context = ShapeContext::new();
+            let mut shaper = context.builder(font.as_ref()).script(Script::Latin).size(32.)
+                .normalized_coords([0i16]).build();
+            shaper.add_str(text);
+            let mut with_zero = Vec::new();
+            shaper.shape_with(|cluster| with_zero.extend(cluster.glyphs.iter().map(|g| GlyphId(g.id))));
+            let without: Vec<_> = expected.iter().map(|g| g.glyph).collect();
+            assert_ne!(with_zero, without, "fixture must distinguish empty from zero coordinates");
+        }
+    }
+}
+
+#[test]
+fn review_chained_instances_keep_unmodified_axes_and_borrow_cached_axes() {
+    use skrifa::MetadataProvider;
+    let Some((device, queue, _)) = common::gpu() else { return; };
+    let bytes = common::two_axis_font();
+    let mut store = FontStore::new(&device);
+    let base = store.load_from_bytes(&device, &queue, &bytes, "Hi").unwrap();
+    let axes = store.axes(base).unwrap();
+    assert_eq!(axes.len(), 2);
+    assert!(std::ptr::eq(axes, store.axes(base).unwrap()));
+    let bold = store.load_variation(&device, &queue, base, &[(*b"wght", 700.)]).unwrap();
+    let narrow = store.load_variation(&device, &queue, bold, &[(*b"wdth", 75.)]).unwrap();
+    let expected = store.get(base).unwrap().face().axes().location([("wght", 700.), ("wdth", 75.)]);
+    assert_eq!(store.get(narrow).unwrap().location, expected);
+    let inherited = store.load_variation(&device, &queue, narrow, &[]).unwrap();
+    assert_eq!(store.get(inherited).unwrap().location, expected);
+    let unknown = store.load_variation(&device, &queue, narrow, &[(*b"????", 1.)]).unwrap();
+    assert_eq!(store.get(unknown).unwrap().location, expected);
+    let reset = store.load_variation(&device, &queue, narrow, &[(*b"wght", 400.)]).unwrap();
+    let expected = store.get(base).unwrap().face().axes().location([("wght", 400.), ("wdth", 75.)]);
+    assert_eq!(store.get(reset).unwrap().location, expected);
+}

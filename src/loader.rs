@@ -45,6 +45,9 @@ pub struct Font {
     pub(crate) data: Arc<[u8]>,
     pub(crate) characters: Arc<str>,
     pub(crate) location: Location,
+    pub(crate) axes: Vec<crate::Axis>,
+    // Retain design values so later overrides normalize together, including avar.
+    pub(crate) settings: Vec<([u8; 4], f32)>,
     pub(crate) metrics: crate::FontMetrics,
     // Keep the legacy integer glyph offsets unchanged, including default rounding.
     pub(crate) ascender_delta: f32,
@@ -116,7 +119,14 @@ impl Font {
         data: Arc<[u8]>, characters: Arc<str>, axes: &[([u8; 4], f32)], atlas: &mut Atlas,
     ) -> Result<Font> {
         let (face, offset, key) = parse_font(&data, 0)?;
-        let location = face.axes().location(axes.iter().map(|&(tag, value)|
+        let axis_info: Vec<_> = face.axes().iter().map(|axis| crate::Axis {
+            tag: axis.tag().to_be_bytes(), min: axis.min_value(),
+            default: axis.default_value(), max: axis.max_value(),
+        }).collect();
+        let settings: Vec<_> = axis_info.iter().filter_map(|axis|
+            axes.iter().rev().find(|(tag, _)| *tag == axis.tag).copied()
+        ).collect();
+        let location = face.axes().location(settings.iter().map(|&(tag, value)|
             (skrifa::raw::types::Tag::new(&tag), value)));
         let metrics = face_line_metrics(&face, (&location).into());
         let ascender_delta = metrics.ascent - f32::from(face_ascender(&face));
@@ -128,8 +138,13 @@ impl Font {
             Ok(cache) => cache,
             Err(error) => { atlas.restore(checkpoint); return Err(error); }
         };
-        Ok(Self { data, characters, location, metrics, ascender_delta,
+        Ok(Self { data, characters, location, axes: axis_info, settings, metrics, ascender_delta,
             index: 0, offset, key, glyph_cache })
+    }
+
+    pub(crate) fn shaping_coords(&self) -> &[skrifa::instance::NormalizedCoord] {
+        if LocationRef::from(&self.location).is_default() { &[] }
+        else { self.location.coords() }
     }
 
     /// Borrow the original bytes as a swash font reference with the same cache key.
@@ -317,8 +332,8 @@ fn prepare_glyph_at(
     Ok((descent, y_offset, builder.curves, bands))
 }
 
-// Exercise exactly the parsing, selection, metrics, outlines and bands used by
-// the GPU loader, without allocating an atlas.
+// Exercise parsing, selection, metrics, outlines and bands at the default
+// location, as in a default GPU load, without allocating an atlas.
 #[cfg(feature = "unstable-internals")]
 pub(crate) fn check_font_bytes(data: &[u8], characters: &str) -> Result<usize> {
     let (face, offset, key) = parse_font(data, 0)?;
