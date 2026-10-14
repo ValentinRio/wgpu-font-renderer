@@ -3,8 +3,8 @@
 //!
 //! [`FontStore`] loads a font and writes the selected glyph outlines into a float
 //! atlas. [`TypeWriter`] shapes text by script into paragraphs containing glyph IDs
-//! and pixel advances and offsets. [`TypeWriter::layout_text`] wraps that shaping
-//! into a [`TextBlock`] using [`TextLayout`], Unicode break opportunities and font
+//! and pixel advances and offsets. [`TypeWriter::layout_text`] shapes and wraps
+//! hard-break-delimited paragraphs into a [`TextBlock`] using [`TextLayout`], Unicode break opportunities and font
 //! metrics. [`TextRenderer`] prepares glyph instances and draws them
 //! with shader-computed coverage, without rasterizing glyphs on the CPU.
 //! Cubic outlines are approximated by quadratics within 0.25 font units, with a

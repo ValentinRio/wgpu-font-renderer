@@ -96,10 +96,11 @@ let block = type_writer.layout_text(
 text_renderer.prepare(&device, &queue, &block, &font_store);
 ```
 
-Layout shapes once and keeps words and clusters intact, allowing long words to
-overflow. Hard breaks draw nothing; a final hard break adds no extra line.
+Layout shapes each hard-break-delimited paragraph once and keeps words and
+clusters intact, allowing long words to overflow. Hard breaks draw nothing; a final hard break adds no extra line.
 Trailing breakable spaces hang at every line end without affecting width or
-alignment; no-break spaces retain their width.
+alignment; no-break spaces retain their width. Leading spaces stay with the
+first content on their line and count toward its width.
 `LineHeight::Font` uses ascent + descent + line gap, falling back to one em when
 that sum is invalid; `Scale` multiplies it and `Pixels` sets an explicit pitch.
 `block.size()` reports the alignment box width and line count times pitch.

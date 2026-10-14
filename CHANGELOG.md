@@ -9,7 +9,7 @@ below 1.0, a minor bump (0.x) may break the API.
 
 ### Added
 
-- `TypeWriter::layout_text`, `TextLayout`, `Align`, `LineHeight` and `TextBlock` add greedy Unicode wrapping, hard breaks, hanging trailing spaces, alignment and block movement. Layout preserves whole-string shaping and uses each font instance’s metrics; `shape_text` remains single-line.
+- `TypeWriter::layout_text`, `TextLayout`, `Align`, `LineHeight` and `TextBlock` add greedy Unicode wrapping, hard breaks, hanging trailing spaces, alignment and block movement. Layout preserves each paragraph’s shaping and uses each font instance’s metrics; `shape_text` remains single-line.
 
 - Metric table selection intentionally matches the renderer rather than skrifa’s `Metrics`: typo metrics require OS/2 v4 with USE_TYPO_METRICS; a zero hhea ascender falls back to nonzero typo, then Windows metrics. Instances are never unloaded; every instance uploads its own outlines, so per-frame creation eventually fills the atlas (`AtlasFull`).
 - `FontStore::metrics` and non-exhaustive `FontMetrics` expose the anchor ascender (possibly zero or negative), nonnegative descent magnitude and signed line gap; ascent matches the renderer’s baseline anchor, including MVAR deltas.
@@ -17,6 +17,8 @@ below 1.0, a minor bump (0.x) may break the API.
 - `LoadingError::UnknownFont` distinguishes a foreign variation base from invalid font data.
 
 ### Changed
+
+- Hard breaks now delimit shaping paragraphs, preserving combining marks at the start of the next paragraph. Leading spaces stay with their line’s first content; layout rejects non-finite origins, derived line heights and block sizes.
 
 - Text layout hangs trailing breakable spaces at soft breaks, hard breaks and the end of text, preserving no-break space widths and all glyphs. Reordered cluster spans stay unbroken, block moves preserve line offsets, and non-finite line widths or origins return `None`.
 

@@ -643,9 +643,12 @@ fn centred_text_block_has_three_ink_bands_at_the_line_pitch() {
     let ink_offset = store.metrics(font, 32.).unwrap().ascent - bounds.y_max;
     for (n, band) in bands.iter().enumerate() {
         let expected_top = 8. + n as f32 * 48. + ink_offset;
-        assert!((band[1] as f32 + 0.5 - expected_top).abs() <= 1.,
-            "absolute ink top must follow the paragraph anchor: {band:?}, expected {expected_top}");
-        assert!((block.lines()[n].position()[1] - (8. + n as f32 * 48.)).abs() <= 1.);
+        // H has a straight cap edge. The first dark sample's centre is at
+        // or below that edge: row = ceil(top - 0.5), with zero row tolerance.
+        // These integer anchors and pitches are exact in f32: zero tolerance.
+        let expected_row = (expected_top - 0.5).ceil() as u32;
+        assert_eq!(band[1], expected_row, "absolute ink top must follow the paragraph anchor");
+        assert_eq!(block.lines()[n].position()[1], 8. + n as f32 * 48.);
         assert_eq!(band[1], bands[0][1] + n as u32 * 48);
         assert_eq!(band[3], bands[0][3] + n as u32 * 48);
         let centre = (band[0] + band[2] + 1) as f32 / 2.;
