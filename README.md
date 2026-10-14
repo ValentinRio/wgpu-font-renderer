@@ -112,9 +112,11 @@ placement, hit testing and selection without reshaping. Ranges follow shaping
 clusters: ligatures share a range, and a base normally stays with its combining
 marks. Swash caps clusters at 32 internal parser characters; decomposition can
 reach that cap with fewer input characters, while emoji variation selectors
-U+FE0E/U+FE0F extend a range without counting toward it. Ranges may overlap at
-cap boundaries (see [Untrusted fonts](#untrusted-fonts)); otherwise distinct
-cluster ranges do not overlap. Reordering shapers may emit decreasing ranges.
+U+FE0E/U+FE0F after an emoji base extend a range without counting toward it.
+Ranges overlap at cap boundaries (see [Untrusted fonts](#untrusted-fonts)) and
+when a decomposed character's components land in separate clusters, which can
+happen at any length (for example Khmer U+17BE or Bengali U+09CB); otherwise
+distinct cluster ranges do not overlap. Reordering shapers may emit decreasing ranges.
 Hand-pushed glyphs return `None`. Shaping and layout reject inputs longer than
 `u32::MAX` bytes.
 
@@ -186,12 +188,13 @@ arithmetic, so a crafted `cmap` panics in debug builds (release builds map the
 character to a wrong glyph instead), and skrifa bounds CFF subroutine nesting
 but not total work, so a crafted CFF glyph can take a long time to load even
 though its memory stays bounded. Swash also caps a cluster at 32 internal
-parser characters and repeats the boundary token in the following cluster,
-which can draw a mark twice even at the end of a script run or hard-break piece.
-The corresponding source ranges may overlap. Decomposition can span the cap:
-pending components are retained, with a shared input-character range across
-clusters. Emoji variation selectors U+FE0E/U+FE0F extend a range without counting
-as internal parser characters. The crate keeps swash’s output; restarting its
+parser characters and repeats the last character it pushed (a mark, a base or
+a joiner) in the following cluster, even at the end of a script run or
+hard-break piece. That glyph is drawn twice, its advance counts twice, and the
+corresponding source ranges overlap. Decomposition can span the cap: pending
+components are retained, with a shared input-character range across clusters.
+Emoji variation selectors U+FE0E/U+FE0F after an emoji base do not count as
+internal parser characters; after any other base they do. The crate keeps swash’s output; restarting its
 parser would discard pending decomposed components.
 
 `FontStore::load` reads the font from a file path. On wasm, or to embed the font in the binary, use `FontStore::load_from_bytes`.

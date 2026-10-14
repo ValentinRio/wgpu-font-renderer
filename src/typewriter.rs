@@ -43,11 +43,14 @@ impl ShapedGlyph {
     /// Shaping clusters normally keep a base and its combining marks together;
     /// swash caps clusters at 32 internal parser characters. Decomposition can
     /// reach the cap with fewer input characters; emoji variation selectors
-    /// U+FE0E/U+FE0F extend a range without counting toward it. At the cap,
-    /// swash repeats the boundary token in the following cluster, so a mark can
-    /// be drawn twice and the ranges can overlap. Components of a decomposed
-    /// character can also span clusters sharing that character’s range. Other
-    /// distinct cluster ranges do not overlap. Glyphs remain in logical
+    /// U+FE0E/U+FE0F after an emoji base extend a range without counting toward
+    /// it (after any other base they count). At the cap, swash repeats the last
+    /// character it pushed (a mark, a base or a joiner) in the following
+    /// cluster, so that glyph is drawn twice, its advance counts twice in
+    /// positions and line widths, and the ranges overlap. Components of a
+    /// decomposed character can also land in separate clusters sharing that
+    /// character’s range, even well below the cap. Other distinct cluster
+    /// ranges do not overlap. Glyphs remain in logical
     /// script-run order (with shaping order within runs); ranges may decrease
     /// within a reordering run. No bidi reordering is performed.
     /// [`TypeWriter::layout_text`] never emits glyphs for hard breaks;
