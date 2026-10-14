@@ -81,8 +81,28 @@ are picked up by the next `prepare` call. Paragraph fields are read through gett
 use `set_position`, `set_color`, `push` (zero offset), and `push_at` to edit a run.
 `glyphs()` returns `ShapedGlyph` values with a glyph ID, advance, and `[x, y]`
 offset in physical pixels, x rightward and y downward. Every shaped glyph is
-retained. Script runs are shaped in logical order; bidi reordering and line
-wrapping are not implemented.
+retained. Script runs are shaped in logical order; bidi reordering is not implemented.
+
+For wrapped text, pass a `TextBlock` directly to `prepare`:
+
+```rust
+use wgpu_font_renderer::{Align, TextLayout};
+
+let layout = TextLayout::default().with_max_width(240.).with_align(Align::Center);
+let block = type_writer.layout_text(
+    &font_store, font_key, [24., 24.], 32., [0., 0., 0., 1.],
+    "Text wraps at Unicode line-break opportunities.", &layout,
+).expect("valid font, size and layout");
+text_renderer.prepare(&device, &queue, &block, &font_store);
+```
+
+Layout shapes once and keeps words and clusters intact, allowing long words to
+overflow. Hard breaks draw nothing; a final hard break adds no extra line.
+Trailing spaces hang at soft breaks without affecting width or alignment.
+`LineHeight::Font` uses ascent + descent + line gap, falling back to one em when
+that sum is invalid; `Scale` multiplies it and `Pixels` sets an explicit pitch.
+`block.size()` reports the alignment box width and line count times pitch.
+Use `set_position` and `set_color` to update all lines together.
 
 Glyph zero is always cached when it has an outline, so characters the font lacks
 draw `.notdef`; an empty `.notdef` advances without drawing. Output glyph zero from controls (Cc) or

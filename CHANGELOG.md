@@ -9,6 +9,8 @@ below 1.0, a minor bump (0.x) may break the API.
 
 ### Added
 
+- `TypeWriter::layout_text`, `TextLayout`, `Align`, `LineHeight` and `TextBlock` add greedy Unicode wrapping, hard breaks, hanging trailing spaces, alignment and block movement. Layout preserves whole-string shaping and uses each font instance’s metrics; `shape_text` remains single-line.
+
 - Metric table selection intentionally matches the renderer rather than skrifa’s `Metrics`: typo metrics require OS/2 v4 with USE_TYPO_METRICS; a zero hhea ascender falls back to nonzero typo, then Windows metrics. Instances are never unloaded; every instance uploads its own outlines, so per-frame creation eventually fills the atlas (`AtlasFull`).
 - `FontStore::metrics` and non-exhaustive `FontMetrics` expose the anchor ascender (possibly zero or negative), nonnegative descent magnitude and signed line gap; ascent matches the renderer’s baseline anchor, including MVAR deltas.
 - `FontStore::axes` borrows cached variable font ranges as `&[Axis]`; `Axis` is non-exhaustive. `load_variation` shares base bytes and characters, uploads instance outlines, inherits the base location, clamps overrides and ignores unknown tags. One skrifa normalized location drives outlines, placement, metrics and shaping.

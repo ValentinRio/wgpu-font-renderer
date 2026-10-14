@@ -584,3 +584,66 @@ fn rendering_without_a_valid_resize_preserves_clear_colour() {
     }
     assert!(pollster::block_on(scope.pop()).is_none());
 }
+
+#[test]
+fn centred_text_block_has_three_ink_bands_at_the_line_pitch() {
+    use wgpu_font_renderer::{Align, LineHeight, TextLayout};
+    let Some((device, queue, config)) = gpu() else {
+        return;
+    };
+    let mut store = FontStore::new(&device);
+    let font = store
+        .load_from_bytes(
+            &device,
+            &queue,
+            include_bytes!("../fonts/Roboto-Regular.ttf"),
+            "H",
+        )
+        .unwrap();
+    let block = TypeWriter::new()
+        .layout_text(
+            &store,
+            font,
+            [20., 8.],
+            32.,
+            [0., 0., 0., 1.],
+            "HH\nH\nHHH",
+            &TextLayout::default()
+                .with_max_width(200.)
+                .with_align(Align::Center)
+                .with_line_height(LineHeight::Pixels(48.)),
+        )
+        .unwrap();
+    let mut renderer = TextRenderer::new(&device, config.format, &store);
+    renderer.prepare(&device, &queue, &block, &store);
+    let pixels = draw_pixels(&device, &queue, &mut renderer, [256, 160]);
+    let mut bands: Vec<[u32; 4]> = Vec::new();
+    for (y, row) in pixels.as_chunks::<{ 256 * 4 }>().0.iter().enumerate() {
+        let xs: Vec<_> = row
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .enumerate()
+            .filter_map(|(x, p)| (p[0] < 128).then_some(x as u32))
+            .collect();
+        if let (Some(&left), Some(&right)) = (xs.first(), xs.last()) {
+            if let Some(band) = bands.last_mut().filter(|b| b[3] + 1 == y as u32) {
+                band[0] = band[0].min(left);
+                band[2] = band[2].max(right);
+                band[3] = y as u32;
+            } else {
+                bands.push([left, y as u32, right, y as u32]);
+            }
+        }
+    }
+    assert_eq!(bands.len(), 3, "{bands:?}");
+    for (n, band) in bands.iter().enumerate() {
+        assert_eq!(band[1], bands[0][1] + n as u32 * 48);
+        assert_eq!(band[3], bands[0][3] + n as u32 * 48);
+        let centre = (band[0] + band[2] + 1) as f32 / 2.;
+        assert!(
+            (centre - 120.).abs() <= 1.,
+            "ink must centre within one pixel: {band:?}"
+        );
+    }
+}
