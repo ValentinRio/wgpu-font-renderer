@@ -180,7 +180,10 @@ fn seeded_loader_and_shaper_never_panic() {
         let result = no_panic(seed, case, "GPU load_from_bytes", || {
             store.load_from_bytes(&device, &queue, &bytes, PRESET)
         });
-        if result.is_ok() {
+        if let Ok(base) = result {
+            no_panic(seed, case, "GPU load_variation", || {
+                store.load_variation(&device, &queue, base, &[(*b"wght", 900.)])
+            }).expect("accepted font also loads a variation");
             gpu_accepted += 1;
         }
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();

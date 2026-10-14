@@ -1,7 +1,7 @@
 use std::{mem, ops::{Bound, RangeBounds}};
 
 use bytemuck::{Pod, Zeroable};
-use skrifa::{MetadataProvider, instance::{Size, LocationRef}};
+use skrifa::{MetadataProvider, instance::Size};
 use wgpu::{
     util::{self, BufferInitDescriptor, DeviceExt}, vertex_attr_array, BindGroup, BindGroupDescriptor,
     BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, 
@@ -332,13 +332,13 @@ impl TextRenderer {
             }
             let Some(font) = store.get(paragraph.font()) else { return; };
 
-            let units_per_em = font.face().metrics(Size::unscaled(), LocationRef::default()).units_per_em as f32;
+            let units_per_em = font.face().metrics(Size::unscaled(), &font.location).units_per_em as f32;
 
             let mut glyph_x = paragraph.position()[0];
 
             paragraph.glyphs().iter().for_each(|shaped| {
                 if let Some(glyph) = font.glyph_cache.get(&(shaped.glyph.0 as u32)) {
-                    let glyph_y = paragraph.position()[1] + (glyph.y_offset as f32 / units_per_em * paragraph.size()) + (f32::abs(glyph.descent as f32) / units_per_em * paragraph.size());
+                    let glyph_y = paragraph.position()[1] + ((glyph.y_offset as f32 + font.ascender_delta) / units_per_em * paragraph.size()) + (f32::abs(glyph.descent as f32) / units_per_em * paragraph.size());
 
                     let size = [
                         (glyph.bbox.width() as f32 * paragraph.size() / units_per_em),

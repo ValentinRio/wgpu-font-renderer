@@ -1,6 +1,6 @@
 use swash::{
     shape::ShapeContext,
-    text::{analyze, Script},
+    text::{analyze, cluster::{CharCluster, Parser, Token}, Script},
 };
 
 use crate::{FontId, FontStore};
@@ -129,7 +129,16 @@ impl TypeWriter {
     /// Shape text at a top-left pixel anchor, with size in pixels per em.
     ///
     /// Returns `None` for an unknown font or a size that is not finite or is <= 0.0.
-    /// Retains every glyph and offset, shaping each script run independently.
+    /// Retains glyphs and offsets, shaping each script run independently.
+    /// Output glyph zero (`.notdef`) is omitted when its source is a Cc control
+    /// or default-ignorable character, contributing no advance. Every other
+    /// output stays as swash shaped it, including visible substitutions and
+    /// ligatures originating at those characters. Other missing characters
+    /// still draw `.notdef` if it has an outline. Mapped Cc controls enter ordinary
+    /// glyph shaping so swash emits their font glyphs instead of hiding them.
+    /// Swash also hides default-ignorables mapped to visible glyphs (for example
+    /// Roboto's soft hyphen), as HarfBuzz does by default. This existing behaviour
+    /// is retained from 0.2.
     /// Common and inherited characters join the preceding run, or the following
     /// run at the start. Runs stay in logical order; bidi and line wrapping are
     /// not implemented. Text with no strong script is shaped as Latin.
@@ -149,7 +158,7 @@ impl TypeWriter {
         }
         let mut paragraph = Paragraph::new(font, position, size, color);
         if let Some(font) = store.get(font) {
-            for glyph in self.shape_glyphs(font.as_ref(), size, text) {
+            for glyph in self.shape_glyphs_at(font.as_ref(), font.location.coords().iter().map(|c| c.to_bits()), size, text) {
                 paragraph.push_at(glyph.glyph, glyph.advance, glyph.offset);
             }
 
@@ -159,18 +168,38 @@ impl TypeWriter {
         }
     }
 
+    #[cfg(any(test, feature = "unstable-internals"))]
     pub(crate) fn shape_glyphs(
         &mut self,
         font: swash::FontRef<'_>,
         size: f32,
         text: &str,
     ) -> Vec<ShapedGlyph> {
+        self.shape_glyphs_at(font, std::iter::empty(), size, text)
+    }
+
+    fn shape_glyphs_at(&mut self, font: swash::FontRef<'_>,
+        coords: impl Iterator<Item = i16> + Clone, size: f32, text: &str) -> Vec<ShapedGlyph> {
         let mut glyphs = Vec::new();
         for (run, script) in script_runs(text) {
-            let mut shaper = self.context.builder(font).script(script).size(size).build();
-            shaper.add_str(run);
+            let mut shaper = self.context.builder(font).script(script).size(size).normalized_coords(coords.clone()).build();
+            // Carry the source category through normalization and substitution.
+            // Only .notdef is hidden: a ligature may inherit this marker and be visible.
+            let charmap = font.charmap();
+            let mut cluster = CharCluster::new();
+            let mut parser = Parser::new(script, run.char_indices().map(|(offset, ch)| Token {
+                ch, offset: offset as u32, len: ch.len_utf8() as u8,
+                // Swash otherwise discards mapped Cc before emitting any glyph.
+                // Give them ordinary properties while keeping the actual cmap character.
+                info: if ch.is_control() && charmap.map(ch) != 0 { ' '.into() } else { ch.into() },
+                data: u32::from(ch.is_control() || is_default_ignorable(ch)),
+            }));
+            while parser.next(&mut cluster) {
+                cluster.map(|ch| charmap.map(ch));
+                shaper.add_cluster(&cluster);
+            }
             shaper.shape_with(|cluster| {
-                glyphs.extend(cluster.glyphs.iter().map(|glyph| ShapedGlyph {
+                glyphs.extend(cluster.glyphs.iter().filter(|glyph| glyph.id != 0 || glyph.data == 0).map(|glyph| ShapedGlyph {
                     glyph: GlyphId(glyph.id),
                     advance: glyph.advance,
                     offset: [glyph.x, -glyph.y],
@@ -180,6 +209,18 @@ impl TypeWriter {
         glyphs
     }
 }
+// Unicode 17.0 Default_Ignorable_Code_Point. Swash does not expose this property
+// and its shaping-specific ignorable flag excludes some members (e.g. CGJ).
+// https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt
+fn is_default_ignorable(ch: char) -> bool {
+    matches!(ch, '\u{AD}' | '\u{034F}' | '\u{061C}' | '\u{115F}'..='\u{1160}'
+        | '\u{17B4}'..='\u{17B5}' | '\u{180B}'..='\u{180F}' | '\u{200B}'..='\u{200F}'
+        | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{3164}'
+        | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}' | '\u{FFA0}' | '\u{FFF0}'..='\u{FFF8}'
+        | '\u{1BCA0}'..='\u{1BCA3}' | '\u{1D173}'..='\u{1D17A}'
+        | '\u{E0000}'..='\u{E0FFF}')
+}
+
 fn script_runs(text: &str) -> Vec<(&str, Script)> {
     let strong = |script| !matches!(script, Script::Common | Script::Inherited | Script::Unknown);
     let initial = analyze(text.chars())

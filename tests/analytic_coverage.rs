@@ -258,3 +258,98 @@ fn c7_dilated_quad_covers_pixels_outside_bbox_without_moving_ink() {
         assert!((a as f32 - e).abs() <= 1.);
     }
 }
+
+#[test]
+fn variable_instances_shape_and_draw_at_the_same_location() {
+    use skrifa::raw::TableProvider;
+    use wgpu_font_renderer::{TextRenderer, TypeWriter};
+    let Some((device, queue, config)) = common::gpu() else { return; };
+    for (bytes, has_anchor_delta) in [
+        (include_bytes!("../fonts/Cantarell-VF.otf").to_vec(), false),
+        (common::mvar_anchor_font(), true),
+    ] {
+        let mut store = FontStore::new(&device);
+        let base = store.load_from_bytes(&device, &queue, &bytes, "II").unwrap();
+        let axis = *store.axes(base).unwrap().iter().find(|axis| axis.tag == *b"wght").unwrap();
+        let mut widths = Vec::new();
+        let mut outlines = Vec::new();
+        for value in [axis.min, axis.max, 550.] {
+            let key = store.load_variation(&device, &queue, base, &[(axis.tag, value)]).unwrap();
+            let font = wgpu_font_renderer::internals::font(&store, key).unwrap();
+            let face = font.face();
+            let location = face.axes().location([("wght", value)]);
+            let units = f32::from(face.metrics(Size::unscaled(), &location).units_per_em);
+            let scale = 48. / units;
+            let glyph_id = face.charmap().map('I').unwrap();
+            let glyph = &font.glyph_cache[&glyph_id.to_u32()];
+            outlines.push(glyph.curves.clone());
+            let instance_bounds = face.glyph_metrics(Size::unscaled(), &location).bounds(glyph_id).unwrap();
+            let expected_left = instance_bounds.x_min as i16;
+            let position = [20.75 - f32::from(expected_left) * scale, 20.75];
+            let paragraph = TypeWriter::new().shape_text(&store, key, position, 48., [1.; 4], "II").unwrap();
+            let advance = face.glyph_metrics(Size::unscaled(), &location).advance_width(glyph_id).unwrap() * scale;
+            assert!((paragraph.width() - 2. * advance).abs() < 0.01,
+                "shaping must use the outline instance's normalized coordinates");
+            widths.push(paragraph.width());
+            let metrics = store.metrics(key, 48.).unwrap();
+            let hhea = face.hhea().unwrap();
+            let os2 = face.os2().unwrap();
+            let default_ascent = if os2.version() >= 4 && os2.fs_selection().contains(
+                skrifa::raw::tables::os2::SelectionFlags::USE_TYPO_METRICS) {
+                f32::from(os2.s_typo_ascender())
+            } else { f32::from(hhea.ascender().to_i16()) };
+            let delta = face.mvar().unwrap().metric_delta(skrifa::raw::tables::mvar::tags::HASC,
+                location.coords()).unwrap_or_default().to_f64() as f32;
+            eprintln!("Cantarell wght {value}, anchor fixture {has_anchor_delta}: HASC MVAR delta {delta}");
+            if has_anchor_delta && value == axis.max { assert_eq!(delta, 100.); }
+            assert!((metrics.ascent - (default_ascent + delta) * scale).abs() < 0.01);
+            let top = position[1] + (default_ascent + delta - f32::from(glyph.bbox.y_max)) * scale;
+            let mut expected = vec![0f32; 128 * 128];
+            for pen in [position[0], position[0] + advance] {
+                let image = reference_coverage(&glyph.curves, -pen / scale, -top / scale, scale, 128, 128);
+                for (pixel, value) in expected.iter_mut().zip(image) { *pixel = (*pixel + value).min(1.); }
+            }
+            let mut renderer = TextRenderer::new(&device, config.format, &store);
+            renderer.prepare(&device, &queue, &[paragraph], &store);
+            let actual = draw::draw_pixels(&device, &queue, &mut renderer, [128, 128], wgpu::Color::BLACK);
+            let mut max = 0f32;
+            let mut total = 0f64;
+            let mut bounds = [128usize, 128, 0, 0];
+            for (index, expected) in expected.iter().enumerate() {
+                let coverage = f32::from(actual[index * 4]) / 255.;
+                let error = (coverage - expected).abs();
+                max = max.max(error);
+                total += f64::from(error);
+                if coverage > 16. / 255. {
+                    let (x, y) = (index % 128, index / 128);
+                    bounds = [bounds[0].min(x), bounds[1].min(y), bounds[2].max(x), bounds[3].max(y)];
+                }
+            }
+            assert!(max <= C3_MAX_ERROR, "instance {value}: max error {max}");
+            // Use C3's padded glyph area rather than diluting error over the viewport.
+            let area = 2. * ((glyph.bbox.width() as f32 * scale).ceil() + 2.)
+                * ((glyph.bbox.height() as f32 * scale).ceil() + 2.);
+            let mean = total / f64::from(area);
+            assert!(mean <= C3_MEAN_ERRORS[3].1, "instance {value}: mean error {mean}");
+            assert!((bounds[0] as f32 - (position[0] + f32::from(expected_left) * scale)).abs() <= 1.,
+                "ink left edge must follow the instance bearing");
+            assert!((bounds[1] as f32 - top).abs() <= 1., "ink must follow the instance ascender");
+            // Check the stem stripe against the existing centre-ray readback bound;
+            // thin instances can intersect both edges within one box-filter sample.
+            let mut centre = vec![0f32; 128 * 128];
+            for pen in [position[0], position[0] + advance] {
+                let image = CentreModel::new(&glyph.curves).image(
+                    [-pen / scale, -top / scale], scale, 128, 128);
+                for (pixel, value) in centre.iter_mut().zip(image) { *pixel = (*pixel + value).min(1.); }
+            }
+            let y = (top + glyph.bbox.height() as f32 * scale * 0.5) as usize;
+            for x in 18..=22 {
+                let coverage = f32::from(actual[(y * 128 + x) * 4]) / 255.;
+                assert!((coverage - centre[y * 128 + x]).abs() <= READBACK_ERROR,
+                    "stem stripe wght {value} at {x},{y}: GPU {coverage}, CPU {}", centre[y * 128 + x]);
+            }
+        }
+        assert_ne!(widths[0], widths[1]);
+        assert_ne!(outlines[0], outlines[1]);
+    }
+}

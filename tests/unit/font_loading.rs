@@ -304,3 +304,189 @@ fn glyph_selection_deduplicates_before_outline_lookup() {
     assert_eq!(ids.len(), ids.iter().collect::<std::collections::HashSet<_>>().len());
     assert_eq!(ids.iter().filter(|id| id.to_u32() == 0).count(), 1);
 }
+
+#[test]
+fn line_metric_families_follow_legacy_ascender_fallbacks() {
+    for (version, use_typo, hhea, typo, expected) in [
+        (3, true, 900, 800, [900., 300., 20.]),
+        (4, true, 900, 800, [800., 250., 30.]),
+        (4, false, 0, 800, [800., 250., 30.]),
+        (4, false, 0, 0, [1000., 400., 0.]),
+        (4, true, 900, 0, [0., 250., 30.]),
+        (6, true, 900, 800, [900., 300., 20.]),
+    ] {
+        let mut bytes = ROBOTO.to_vec();
+        for (tag, offset, value) in [
+            (b"hhea", 4, hhea as u16), (b"hhea", 6, (-300i16) as u16),
+            (b"hhea", 8, 20), (b"OS/2", 0, version),
+            (b"OS/2", 62, if use_typo { 1 << 7 } else { 0 }),
+            (b"OS/2", 68, typo as u16), (b"OS/2", 70, (-250i16) as u16),
+            (b"OS/2", 72, 30), (b"OS/2", 74, 1000), (b"OS/2", 76, 400),
+        ] { patch_u16(&mut bytes, tag, offset, value); }
+        let face = SkFontRef::new(&bytes).unwrap();
+        let metrics = face_line_metrics(&face, LocationRef::default());
+        assert_eq!([metrics.ascent, metrics.descent, metrics.line_gap], expected);
+    }
+}
+
+#[test]
+fn normalized_location_changes_outlines_bounds_and_metric_deltas() {
+    let face = SkFontRef::new(include_bytes!("../../fonts/Cantarell-VF.otf")).unwrap();
+    let axis = face.axes().get_by_tag(skrifa::raw::types::Tag::new(b"wght")).unwrap();
+    let id = face.charmap().map('I').unwrap();
+    let mut outlines_at_extremes = Vec::new();
+    for value in [axis.min_value(), axis.max_value()] {
+        let location = face.axes().location([("wght", value)]);
+        let bbox = glyph_bounding_box_at(&face, id, (&location).into()).unwrap();
+        let (_, _, curves, _) = prepare_glyph_at(&face, id, bbox, (&location).into()).unwrap();
+        let mut expected = BezierBuilder::new(f32::from(bbox.y_max));
+        face.outline_glyphs().get(id).unwrap().draw(draw_settings((&location).into()), &mut expected).unwrap();
+        expected.finish();
+        assert_eq!(curves, expected.curves);
+        let bounds = face.glyph_metrics(Size::unscaled(), &location).bounds(id).unwrap();
+        assert_eq!(bbox.x_min, bounds.x_min as i16);
+        assert_eq!(bbox.x_max, bounds.x_max as i16);
+        outlines_at_extremes.push((bbox, curves));
+    }
+    assert_ne!(outlines_at_extremes[0], outlines_at_extremes[1]);
+    let bytes = common::mvar_anchor_font();
+    let face = SkFontRef::new(&bytes).unwrap();
+    let location = face.axes().location([("wght", axis.max_value())]);
+    let default = face_line_metrics(&face, LocationRef::default());
+    let varied = face_line_metrics(&face, (&location).into());
+    assert_eq!(varied.ascent - default.ascent, 100.);
+}
+
+#[test]
+fn metrics_apply_descent_and_line_gap_mvar_deltas() {
+    let Some((device, queue, _)) = common::gpu() else { return; };
+    let bytes = common::mvar_anchor_font();
+    let mut store = FontStore::new(&device);
+    let base = store.load_from_bytes(&device, &queue, &bytes, "I").unwrap();
+    let instance = store.load_variation(&device, &queue, base, &[(*b"wght", 800.)]).unwrap();
+    let face = store.get(base).unwrap().face();
+    let location = face.axes().location([("wght", 800.)]);
+    let scale = 100. / f32::from(face.metrics(Size::unscaled(), &location).units_per_em);
+    let mvar = face.mvar().unwrap();
+    use skrifa::raw::tables::mvar::tags::{HDSC, HLGP};
+    let descent_delta = mvar.metric_delta(HDSC, location.coords()).unwrap().to_f64() as f32;
+    let gap_delta = mvar.metric_delta(HLGP, location.coords()).unwrap().to_f64() as f32;
+    assert_eq!(descent_delta, -50.);
+    assert_eq!(gap_delta, 30.);
+    let default = store.metrics(base, 100.).unwrap();
+    let varied = store.metrics(instance, 100.).unwrap();
+    assert!((varied.descent - default.descent + descent_delta * scale).abs() < 0.01,
+        "descent must include instance HDSC");
+    assert!((varied.line_gap - default.line_gap - gap_delta * scale).abs() < 0.01,
+        "line gap must include instance HLGP");
+}
+
+#[test]
+fn store_bounds_and_bearings_use_instance_location() {
+    let Some((device, queue, _)) = common::gpu() else { return; };
+    let mut store = FontStore::new(&device);
+    let base = store.load_from_bytes(&device, &queue, include_bytes!("../../fonts/Cantarell-VF.otf"), "Ig").unwrap();
+    for value in [100., 800., 550.] {
+        let instance = store.load_variation(&device, &queue, base, &[(*b"wght", value)]).unwrap();
+        let font = store.get(instance).unwrap();
+        let face = font.face();
+        let location = face.axes().location([("wght", value)]);
+        let mut differs = false;
+        for ch in "Ig".chars() {
+            let id = face.charmap().map(ch).unwrap();
+            let bounds = face.glyph_metrics(Size::unscaled(), &location).bounds(id).unwrap();
+            let expected = Rect { x_min: bounds.x_min as i16, y_min: bounds.y_min as i16,
+                x_max: bounds.x_max as i16, y_max: bounds.y_max as i16 };
+            let glyph = &font.glyph_cache[&id.to_u32()];
+            assert_eq!(glyph.bbox, expected, "cached bbox must use instance location");
+            assert_eq!(glyph.left_side_bearing, expected.x_min, "cached bearing must use instance location");
+            let default = store.get(base).unwrap().glyph_cache[&id.to_u32()].bbox;
+            differs |= expected != default && expected.x_min != default.x_min;
+        }
+        assert!(differs, "fixture must distinguish default bounds and bearings");
+    }
+}
+
+#[test]
+fn store_outlines_are_skrifa_instance_outlines() {
+    let Some((device, queue, _)) = common::gpu() else { return; };
+    let mut store = FontStore::new(&device);
+    let base = store.load_from_bytes(&device, &queue, include_bytes!("../../fonts/Cantarell-VF.otf"), "Ig").unwrap();
+    for value in [100., 800., 550.] {
+        let instance = store.load_variation(&device, &queue, base, &[(*b"wght", value)]).unwrap();
+        let font = store.get(instance).unwrap();
+        let face = font.face();
+        let location = face.axes().location([("wght", value)]);
+        for ch in "Ig".chars() {
+            let id = face.charmap().map(ch).unwrap();
+            let bounds = face.glyph_metrics(Size::unscaled(), &location).bounds(id).unwrap();
+            let mut expected = BezierBuilder::new(f32::from(bounds.y_max as i16));
+            face.outline_glyphs().get(id).unwrap().draw(
+                DrawSettings::unhinted(Size::unscaled(), &location).with_path_style(PathStyle::HarfBuzz),
+                &mut expected).unwrap();
+            expected.finish();
+            // Curves are inspectable under the same feature as GPU coverage tests.
+            #[cfg(feature = "unstable-internals")]
+            assert_eq!(font.glyph_cache[&id.to_u32()].curves, expected.curves,
+                "store outlines must match independent instance draw");
+        }
+    }
+}
+
+#[test]
+fn avar_midrange_instance_matches_mapped_location_and_advance() {
+    let Some((device, queue, _)) = common::gpu() else { return; };
+    let mut store = FontStore::new(&device);
+    let base = store.load_from_bytes(&device, &queue, include_bytes!("../../fonts/Cantarell-VF.otf"), "II").unwrap();
+    let instance = store.load_variation(&device, &queue, base, &[(*b"wght", 550.)]).unwrap();
+    let font = store.get(instance).unwrap();
+    let face = font.face();
+    let location = face.axes().location([("wght", 550.)]);
+    let linear = face.axes().iter().next().unwrap().normalize(550.);
+    assert_ne!(location.coords()[0], linear, "fixture must exercise avar remapping");
+    assert_eq!(font.location, location, "instance location must include avar");
+    let id = face.charmap().map('I').unwrap();
+    let advance = face.glyph_metrics(Size::unscaled(), &location).advance_width(id).unwrap()
+        * 100. / f32::from(face.metrics(Size::unscaled(), &location).units_per_em);
+    let paragraph = TypeWriter::new().shape_text(&store, instance, [0.; 2], 100., [1.; 4], "II").unwrap();
+    assert!((paragraph.width() - 2. * advance).abs() < 0.01, "midrange advance must follow mapped location");
+}
+
+#[test]
+fn nonvariable_instance_with_axes_has_identical_cached_glyphs() {
+    let Some((device, queue, _)) = common::gpu() else { return; };
+    let mut store = FontStore::new(&device);
+    let base = store.load_from_bytes(&device, &queue, ROBOTO, "Ig").unwrap();
+    let instance = store.load_variation(&device, &queue, base, &[(*b"wght", 800.), (*b"wdth", 75.)]).unwrap();
+    let a = store.get(base).unwrap();
+    let b = store.get(instance).unwrap();
+    assert!(a.location.coords().is_empty());
+    assert!(b.location.coords().is_empty(), "non-variable instances have no normalized coordinates");
+    assert_eq!(a.glyph_cache.len(), b.glyph_cache.len());
+    for (id, expected) in &a.glyph_cache {
+        let actual = &b.glyph_cache[id];
+        assert_eq!(actual.bbox, expected.bbox);
+        assert_eq!(actual.left_side_bearing, expected.left_side_bearing);
+        assert_eq!(actual.descent, expected.descent);
+        assert_eq!(actual.y_offset, expected.y_offset);
+        #[cfg(feature = "unstable-internals")]
+        assert_eq!(actual.curves, expected.curves);
+    }
+}
+
+#[test]
+fn reversed_axis_ranges_keep_default_and_use_skrifa_clamping() {
+    let Some((device, queue, _)) = common::gpu() else { return; };
+    let mut bytes = include_bytes!("../../fonts/Cantarell-VF.otf").to_vec();
+    let axis = table_range(&bytes, b"fvar").start + 16;
+    bytes[axis + 4..axis + 8].copy_from_slice(&(800i32 << 16).to_be_bytes());
+    bytes[axis + 12..axis + 16].copy_from_slice(&(100i32 << 16).to_be_bytes());
+    let mut store = FontStore::new(&device);
+    let base = store.load_from_bytes(&device, &queue, &bytes, "I").unwrap();
+    assert!(LocationRef::from(&store.get(base).unwrap().location).is_default());
+    let instance = store.load_variation(&device, &queue, base, &[(*b"wght", 550.)]).unwrap();
+    let expected = store.get(base).unwrap().face().axes().location([("wght", 550.)]);
+    assert_eq!(store.get(instance).unwrap().location, expected);
+    assert_eq!(store.get(instance).unwrap().location.coords()[0].to_bits(), 16384,
+        "reversed range clamps to its minimum (800), normalizing to +1");
+}

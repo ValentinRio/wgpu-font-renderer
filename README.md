@@ -17,7 +17,7 @@ GPU-centered font rendering for [wgpu](https://wgpu.rs/). Glyphs are drawn strai
 - Text shaping with [swash](https://github.com/dfrg/swash).
 - Runs natively and in the browser through WebGPU.
 
-Not there yet: variable fonts render their default instance only, and LCD mode has no filter. See the [roadmap](#roadmap).
+Variable fonts support axis selection through `FontStore::load_variation`; LCD mode has no filter. See the [roadmap](#roadmap).
 
 ## Installation
 
@@ -85,7 +85,10 @@ retained. Script runs are shaped in logical order; bidi reordering and line
 wrapping are not implemented.
 
 Glyph zero is always cached when it has an outline, so characters the font lacks
-draw `.notdef`; an empty `.notdef` advances without drawing. Other uncached
+draw `.notdef`; an empty `.notdef` advances without drawing. Output glyph zero from controls (Cc) or
+default-ignorable characters is omitted without advance; visible substitutions
+and ligatures are retained. Swash also hides mapped default-ignorables such as
+Roboto’s soft hyphen, preserving 0.2 behaviour. Other uncached
 outlines are skipped. Loads that exhaust the atlas return `LoadingError::AtlasFull`
 with the glyph IDs that did not fit, leaving earlier fonts usable.
 Glyph ink is positioned at the pen plus its shaped offset plus the cached left
@@ -100,6 +103,35 @@ allocation would exceed the device's `max_texture_array_layers`. The default
 a 256-layer device limit allows a 4 GiB atlas. Growth temporarily keeps both
 the old and new textures in memory. A load that grows the atlas and then fails
 restores allocation bookkeeping but keeps the larger texture.
+
+### Metrics and variable-font instances
+
+`FontStore::metrics(font, size)` returns `FontMetrics` in physical pixels, with
+the renderer’s anchor ascender (usually positive, but zero or negative for
+unusual fonts), nonnegative descent magnitude (possibly zero), and a signed line
+gap that may be positive, zero or negative. Table selection intentionally differs
+from skrifa’s `Metrics`: typo metrics require OS/2 v4 with USE_TYPO_METRICS;
+a zero hhea ascender falls back to nonzero typo, then Windows metrics. This
+matches where glyphs are drawn. A paragraph’s baseline is `position.y + ascent`.
+Invalid sizes and foreign font IDs return `None`. `FontStore::axes(font)` borrows a cached slice of
+`Axis` records with four-byte tags and minimum, default and maximum values (an
+empty slice for a non-variable font).
+
+```rust
+let bold = fonts.load_variation(device, queue, base, &[(*b"wght", 700.0)])?;
+let metrics = fonts.metrics(bold, 32.0).expect("valid font and size");
+let baseline = 24.0 + metrics.ascent;
+```
+
+Instances share the base’s bytes and character set and upload their own outlines.
+Axis values clamp to their ranges, unknown tags are ignored, omitted axes retain
+the base instance’s values, and the last duplicate wins. Non-variable fonts
+produce identical instances. A foreign base returns `LoadingError::UnknownFont`. One skrifa
+normalized location drives outlines, bounds, bearings, MVAR line metrics and
+swash shaping, including all-zero coordinates at the default instance so
+FeatureVariations whose conditions cover zero apply. Every instance uploads its own outlines for the
+base’s character set. Fonts are never unloaded, so creating instances per frame
+(for example when animating weight) fills the atlas and ends in `AtlasFull`.
 
 ### Untrusted fonts
 
@@ -202,7 +234,7 @@ Each glyph has up to 16 horizontal bands and up to 16 vertical bands. A band lis
 - [x] Subpixel (LCD) anti-aliasing
 - [x] Handle overlapping contours: coverage uses the nonzero winding rule, so overlaps fill instead of rendering as holes
 - [x] Add a CFF1 (`.otf`) test font: the Noto Serif SC subset in `fonts/`
-- [ ] Let callers select variable font axes; only the default instance renders
+- [x] Select variable font axes with shared font bytes and consistent outlines, metrics and shaping
 
 See the [open issues](https://github.com/ValentinRio/wgpu-font-renderer/issues) for a full list of proposed features (and known issues).
 

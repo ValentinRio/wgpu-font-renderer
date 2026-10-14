@@ -7,8 +7,12 @@
 //! with shader-computed coverage, without rasterizing glyphs on the CPU.
 //! Cubic outlines are approximated by quadratics within 0.25 font units, with a
 //! depth cap of 10 for pathological inputs that may exceed this tolerance.
-//! CFF2 outlines can be loaded and converted. Variable fonts use their default
-//! variation instance; the loading API does not select variation axis values.
+//! CFF2 outlines can be loaded and converted. [`FontStore::load_variation`] selects
+//! axis overrides from [`FontStore::axes`], inheriting the base location and sharing bytes. One
+//! normalized location drives outlines, placement, metrics and shaping. Default
+//! loads select the default instance, including zero coordinates for FeatureVariations.
+//! [`FontStore::metrics`] reports pixel line
+//! metrics; the baseline is paragraph y plus [`FontMetrics::ascent`].
 //! Contours are explicitly closed. Glyphs with negative total signed area in
 //! y-down coordinates have all contours reversed to match the shader's winding.
 //! CFF1 outlines use the same path, tested with fonts/NotoSerifSC-Subset.otf.
@@ -21,7 +25,9 @@
 //! both x and y. Shaping retains every glyph and its offsets in logical run order
 //! without bidi reordering. Glyphs absent from the cache selected by `chars` are skipped during drawing.
 //!
-//! Glyph zero is cached if it has an outline, so missing characters draw `.notdef`.
+//! Glyph zero is cached if it has an outline, so missing letters and symbols draw `.notdef`.
+//! Output glyph zero from controls (Cc) or default-ignorables is omitted without advance;
+//! visible substitutions and ligatures are retained.
 //! An empty `.notdef` advances without drawing. Loads that exhaust the atlas
 //! return [`LoadingError::AtlasFull`] without adding the font or affecting earlier
 //! fonts. An outline or its bands must fit a layer, and allocation must stay
@@ -58,6 +64,10 @@
 //! // On wasm, embed bytes with include_bytes! rather than reading a file.
 //! let bytes = std::fs::read("fonts/Roboto-Regular.ttf").expect("read font");
 //! let key = fonts.load_from_bytes(device, queue, &bytes, "Hello")?;
+//! let metrics = fonts.metrics(key, 32.0).expect("valid font and size");
+//! let baseline_y = 24.0 + metrics.ascent;
+//! let axes = fonts.axes(key).expect("loaded font");
+//! let bold = fonts.load_variation(device, queue, key, &[(*b"wght", 700.0)])?;
 //! let paragraph = TypeWriter::new()
 //!     .shape_text(&fonts, key, [24.0, 24.0], 32.0, [0.0, 0.0, 0.0, 1.0], "Hello")
 //!     .expect("font is loaded");
@@ -85,6 +95,8 @@
 //! Every stable public type can be named through this crate or wgpu alone.
 //! ```
 //! fn public_types(
+//!     _: Option<wgpu_font_renderer::Axis>,
+//!     _: Option<wgpu_font_renderer::FontMetrics>,
 //!     _: Option<wgpu_font_renderer::FontId>,
 //!     _: wgpu_font_renderer::GlyphId,
 //!     _: Option<wgpu_font_renderer::ShapedGlyph>,
@@ -96,7 +108,7 @@
 //!     _: Option<wgpu_font_renderer::TextRenderer>,
 //!     _: Option<wgpu::TextureFormat>,
 //! ) {}
-//! public_types(None, wgpu_font_renderer::GlyphId(0), None, None, None, None,
+//! public_types(None, None, None, wgpu_font_renderer::GlyphId(0), None, None, None, None,
 //!     wgpu_font_renderer::TypeWriter::default(),
 //!     wgpu_font_renderer::SubpixelOrder::None, None, None);
 //! ```
@@ -111,7 +123,7 @@ mod renderer;
 mod typewriter;
 mod ortho;
 pub use renderer::{SubpixelOrder, TextRenderer};
-pub use store::{FontId, FontStore};
+pub use store::{Axis, FontId, FontMetrics, FontStore};
 pub use loader::LoadingError;
 pub use typewriter::TypeWriter;
 pub use typewriter::{GlyphId, Paragraph, ShapedGlyph};
