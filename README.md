@@ -82,13 +82,11 @@ On wasm, or to embed a font in the binary, use `FontStore::load_from_bytes`. Lay
 ## Limits
 
 - The pipeline targets one colour attachment, no depth/stencil attachment and sample count 1. It cannot draw inside a pass with depth/stencil, MSAA or several colour targets.
-- Characters outside the preset string draw nothing unless their glyph is already cached. Loading includes canonical composition/decomposition seeds from swash’s Unicode data, Khmer parser vowel seeds, glyph zero, and GSUB substitutions reachable from those seeds (including ligatures only when all components are cached). Empty outlines draw no ink.
-- AAT `morx` limit: when a font has no GSUB and swash shapes with `morx`, its ligatures and substitutions are not cached and can draw nothing.
-- Malformed GSUB coverage indices, reversed ranges, truncated arrays and out-of-range lookup/feature references are rejected at load.
-- Shaping and layout return `Result<_, LayoutError>` with the specific validation failure. GSUB closure is capped at 128 passes and 4,000,000 work units; exceeding either returns `LoadingError::SubstitutionTooComplex`.
+- Only the preset characters draw. For a well-formed font, loading also caches every glyph shaping can produce from them: ligatures, contextual forms and composed or decomposed accents. Other characters draw nothing.
+- Fonts that shape with AAT `morx` instead of GSUB: their ligatures and substitutions are not cached and draw nothing.
 - Fonts are never unloaded. Each load, and each variable-font instance, adds its outlines to the atlas for good, so creating instances per frame eventually returns `LoadingError::AtlasFull`.
 - No bidi reordering and no font fallback: script runs are shaped in logical order, and characters the font lacks draw `.notdef`.
-- Untrusted fonts: the loader caps per-glyph work and refuses glyphs past the caps with `LoadingError::GlyphTooComplex`. Two upstream limits remain: a crafted `cmap` panics swash in debug builds, and a crafted CFF glyph can load slowly. Details are in the crate docs.
+- Untrusted fonts: the loader caps per-glyph work and refuses glyphs past the caps with `LoadingError::GlyphTooComplex`. Malformed GSUB tables are rejected or capped (`LoadingError::SubstitutionTooComplex`). Some crafted fonts still hit swash bugs: debug-build panics in `cmap` and `ClassDef` handling, slow CFF glyph loads, and glyphs that shape but are not cached, so they draw nothing. Details are in the crate docs.
 - LCD mode has no filter yet, so small sizes show some colour fringing.
 
 ## Running the examples

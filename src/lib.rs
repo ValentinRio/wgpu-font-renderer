@@ -2,11 +2,9 @@
 //! Render scalable font outlines with wgpu on native platforms and WebGPU.
 //!
 //! [`FontStore`] loads a font and writes the selected glyph outlines into a float
-//! atlas, including canonical normalization seeds from swash's Unicode data,
-//! Khmer parser vowel seeds, and their bounded GSUB closure across all lookups.
-//! AAT `morx` limit: `morx` ligatures/substitutions are not cached when swash
-//! uses that table instead of GSUB, and may draw nothing. Malformed GSUB arrays,
-//! coverage indices and lookup/feature references are rejected at load.
+//! atlas. For a well-formed font that shapes with GSUB, every glyph shaping can
+//! produce from the preset characters is cached, including ligatures, contextual
+//! forms and normalized accents; `morx` substitutions are not cached.
 //! [`TypeWriter`] shapes text by script into paragraphs containing glyph IDs
 //! and pixel advances and offsets, returning [`LayoutError`] on invalid input.
 //! [`TypeWriter::layout_text`] shapes and wraps
@@ -48,9 +46,14 @@
 //! enforces per-glyph work limits (65,535 points and 16,384 contours after
 //! composite expansion, 4,096 component references, 16,384 encoded segments);
 //! a glyph past them gives [`LoadingError::GlyphTooComplex`]. The limits are
-//! loader policy, so a valid but very complex glyph can be refused. Upstream, swash's `cmap` lookup can
-//! panic on crafted data in debug builds, and skrifa does not bound total CFF
-//! work, so a crafted CFF glyph can load slowly with bounded memory.
+//! loader policy, so a valid but very complex glyph can be refused. Malformed GSUB tables are rejected
+//! at load or stopped by the closure cap ([`LoadingError::SubstitutionTooComplex`]).
+//! The cache guarantee does not extend to crafted fonts. Known upstream limits:
+//! swash's `cmap` and `ClassDef` arithmetic can panic in debug builds on crafted
+//! data; swash misreads null FeatureVariations substitution offsets and can
+//! compose an unexpected Hangul character, emitting glyphs the closure did not
+//! cache (they draw nothing); skrifa does not bound total CFF work, so a crafted
+//! CFF glyph can load slowly with bounded memory.
 //! Glyph ink is placed at the pen plus its shaped offset plus the cached left
 //! side bearing scaled to pixels. In 0.2, each glyph's ink was anchored at the
 //! pen; text now shifts by each glyph's bearing. TrueType outlines apply

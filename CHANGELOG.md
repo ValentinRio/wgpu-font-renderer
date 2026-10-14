@@ -9,8 +9,7 @@ below 1.0, a minor bump (0.x) may break the API.
 
 ### Added
 
-- GSUB glyph closure caches substitutions reachable from preset and canonical normalization glyphs (using swash’s Unicode data, plus Khmer parser vowel seeds) across every lookup, including ligatures whose components are all cached. Closure glyphs receive the existing outline safety checks; bounded closure work fails with `LoadingError::SubstitutionTooComplex`.
-- Malformed GSUB coverage, truncated arrays and out-of-range lookup/feature references are rejected. Coverage records and all visited arrays count toward the work cap, including aliased empty ranges. AAT `morx` substitutions remain an explicitly documented cache limit.
+- Loading caches every glyph GSUB shaping can produce from the preset characters in a well-formed font, so ligatures, contextual forms and normalized accents draw; in 0.2 they drew nothing. Added glyphs pass the same outline checks. Malformed GSUB tables are rejected, and closure work past the caps returns the new `LoadingError::SubstitutionTooComplex`. `morx` substitutions are not cached.
 - Public, non-exhaustive `LayoutError` identifies shaping and layout failures and implements `Debug`, `Display`, `Error`, `Clone` and `PartialEq`.
 
 - `TextRenderer::render_range` draws subsets of the prepared paragraphs with stable indices.
