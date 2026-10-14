@@ -9,6 +9,8 @@ below 1.0, a minor bump (0.x) may break the API.
 
 ### Added
 
+- `ShapedGlyph::source()` exposes cluster byte ranges in the original shaping or layout input for caret placement, hit testing and selection. Hand-pushed glyphs have no source.
+
 - `TypeWriter::layout_text`, `TextLayout`, `Align`, `LineHeight` and `TextBlock` add greedy Unicode wrapping, hard breaks, hanging trailing spaces, alignment and block movement. Layout preserves each paragraph’s shaping and uses each font instance’s metrics; `shape_text` remains single-line.
 
 - Metric table selection intentionally matches the renderer rather than skrifa’s `Metrics`: typo metrics require OS/2 v4 with USE_TYPO_METRICS; a zero hhea ascender falls back to nonzero typo, then Windows metrics. Instances are never unloaded; every instance uploads its own outlines, so per-frame creation eventually fills the atlas (`AtlasFull`).
@@ -17,6 +19,8 @@ below 1.0, a minor bump (0.x) may break the API.
 - `LoadingError::UnknownFont` distinguishes a foreign variation base from invalid font data.
 
 ### Changed
+
+- `ShapedGlyph` stores source ranges in two `u32` fields, limiting its size to 24 bytes. Shaping and layout reject input longer than `u32::MAX` bytes. Swash caps clusters at 32 internal parser characters, counting decomposed components but not emoji variation selectors U+FE0E/U+FE0F that follow an emoji base. Shaping keeps swash’s cluster stream over the crate’s tokens, including its pending components and its repeated cap-boundary character (drawn twice, with overlapping source ranges); restarting at a source byte boundary would lose pending components.
 
 - Text layout whitespace is close to CSS `white-space: pre-wrap`, except that leading spaces never wrap onto a line of their own: they count toward their line's width, so `"   abc"` overflows a maximum width that fits `"abc"`. Breakable spaces (line break class SP or BA, including tab) hang at every line end without contributing width or alignment; no-break spaces never hang.
 - Hard breaks (LF, CR, CRLF as one break, VT, FF, NEL, U+2028 and U+2029) split text into independently shaped paragraphs, including independent script detection. For `"ع\n12"`, `12` is shaped with the Latin script tag (same font) rather than continuing the Arabic run. This preserves combining marks at paragraph starts. Reordered spans stay unbroken, block moves preserve line offsets, and layout rejects non-finite origins, line widths, derived line heights and block sizes.

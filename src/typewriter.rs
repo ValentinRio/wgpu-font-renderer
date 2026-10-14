@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use swash::{
     shape::ShapeContext,
     text::{analyze, cluster::{Boundary, CharCluster, Parser, Token}, Codepoint, LineBreak, Script},
@@ -13,6 +15,9 @@ pub struct GlyphId(
 );
 
 /// One glyph and its positioning in physical pixels.
+///
+/// Equality compares positioning and source ranges as well as the glyph ID:
+/// otherwise identical glyphs at different text positions compare unequal.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ShapedGlyph {
@@ -22,6 +27,50 @@ pub struct ShapedGlyph {
     pub advance: f32,
     /// Offset from the pen in physical pixels, x rightward and y downward.
     pub offset: [f32; 2],
+    // An empty range denotes a hand-added glyph with no source text.
+    pub(crate) source: [u32; 2],
+}
+
+const _: () = assert!(std::mem::size_of::<ShapedGlyph>() <= 24);
+
+impl ShapedGlyph {
+    /// Byte range of this glyph’s shaping cluster in the exact input to
+    /// [`TypeWriter::shape_text`] or [`TypeWriter::layout_text`].
+    ///
+    /// Ends are character boundaries. Every glyph in a shaping cluster has the
+    /// same range, covering all characters of a ligature. Carets and hit tests
+    /// can use these boundaries, but cannot place a caret inside a cluster.
+    /// Shaping clusters normally keep a base and its combining marks together;
+    /// swash caps clusters at 32 internal parser characters. Decomposition can
+    /// reach the cap with fewer input characters; emoji variation selectors
+    /// U+FE0E/U+FE0F after an emoji base extend a range without counting toward
+    /// it (after any other base they count). At the cap, swash repeats the last
+    /// character it pushed (a mark, a base or a joiner) in the following
+    /// cluster, so that glyph is drawn twice, its advance counts twice in
+    /// positions and line widths, and the ranges overlap. Components of a
+    /// decomposed character can also land in separate clusters sharing that
+    /// character’s range, even well below the cap. Other distinct cluster
+    /// ranges do not overlap. Glyphs remain in logical
+    /// script-run order (with shaping order within runs); ranges may decrease
+    /// within a reordering run. No bidi reordering is performed.
+    /// [`TypeWriter::layout_text`] never emits glyphs for hard breaks;
+    /// [`TypeWriter::shape_text`] keeps a glyph when the font maps the hard-break
+    /// character. Hanging spaces keep their ranges.
+    /// Hand-added glyphs from [`Paragraph::push`] or [`Paragraph::push_at`]
+    /// return `None`.
+    ///
+    /// ```
+    /// use wgpu_font_renderer::Paragraph;
+    /// fn cluster_text<'a>(input: &'a str, paragraph: &Paragraph) -> Vec<&'a str> {
+    ///     paragraph.glyphs().iter()
+    ///         .filter_map(|glyph| glyph.source().map(|range| &input[range]))
+    ///         .collect()
+    /// }
+    /// ```
+    pub fn source(&self) -> Option<Range<usize>> {
+        let [start, end] = self.source;
+        (start < end).then_some(start as usize..end as usize)
+    }
 }
 
 /// Shaped text in logical run order; advances are in physical pixels.
@@ -71,6 +120,7 @@ impl Paragraph {
             glyph,
             advance,
             offset,
+            source: [0; 2],
         });
     }
     /// Font used by this run.
@@ -251,7 +301,8 @@ impl TypeWriter {
 
     /// Shape text at a top-left pixel anchor, with size in pixels per em.
     ///
-    /// Returns `None` for an unknown font or a size that is not finite or is <= 0.0.
+    /// Returns `None` for an unknown font, a size that is not finite or is <= 0.0,
+    /// or input longer than `u32::MAX` bytes.
     /// Retains glyphs and offsets, shaping each script run independently.
     /// Output glyph zero (`.notdef`) is omitted when its source is a Cc control
     /// or default-ignorable character, contributing no advance. Every other
@@ -277,13 +328,14 @@ impl TypeWriter {
         color: [f32; 4],
         text: &str,
     ) -> Option<Paragraph> {
-        if !size.is_finite() || size <= 0.0 {
+        if text.len() > u32::MAX as usize || !size.is_finite() || size <= 0.0 {
             return None;
         }
         let mut paragraph = Paragraph::new(font, position, size, color);
         if let Some(font) = store.get(font) {
             for glyph in self.shape_glyphs_at(font.as_ref(), font.location.coords().iter().map(|c| c.to_bits()), size, text) {
-                paragraph.push_at(glyph.glyph, glyph.advance, glyph.offset);
+                paragraph.width += glyph.advance;
+                paragraph.glyphs.push(glyph);
             }
 
             Some(paragraph)
@@ -313,7 +365,8 @@ impl TypeWriter {
     /// Baselines use the same font ascent as [`Self::shape_text`]. Bidi
     /// reordering is not performed. Empty text produces zero lines.
     ///
-    /// Returns `None` in the same cases as [`Self::shape_text`], or for a
+    /// Returns `None` in the same cases as [`Self::shape_text`] (including input
+    /// longer than `u32::MAX` bytes), or for a
     /// non-finite or negative maximum width or a non-finite/nonpositive
     /// `Scale` or `Pixels` line height, or a non-finite origin, line width or block size.
     #[allow(clippy::too_many_arguments)]
@@ -327,6 +380,9 @@ impl TypeWriter {
         text: &str,
         layout: &TextLayout,
     ) -> Option<TextBlock> {
+        if text.len() > u32::MAX as usize {
+            return None;
+        }
         let metrics = store.metrics(font, size)?;
         if position.iter().any(|value| !value.is_finite())
             || layout.max_width.is_some_and(|w| !w.is_finite() || w < 0.)
@@ -351,7 +407,7 @@ impl TypeWriter {
         let instance = store.get(font)?;
         let mut lines = Vec::new();
         for (source, hard) in hard_sections(text) {
-            let piece = &text[source];
+            let piece = &text[source.clone()];
             if piece.is_empty() {
                 if hard {
                     lines.push(Paragraph::new(font, position, size, color));
@@ -370,6 +426,10 @@ impl TypeWriter {
                     .map(|line| {
                         let mut paragraph = Paragraph::new(font, position, size, color);
                         paragraph.glyphs = line.glyphs;
+                        for glyph in &mut paragraph.glyphs {
+                            glyph.source[0] += source.start as u32;
+                            glyph.source[1] += source.start as u32;
+                        }
                         paragraph.width = line.width;
                         paragraph
                     }),
@@ -425,8 +485,8 @@ impl TypeWriter {
         text: &str,
     ) -> Vec<ShapedGlyph> {
         let mut glyphs = Vec::new();
-        self.shape_with_at(font, coords, size, text, |_, cluster| {
-            glyphs.extend(shaped_glyphs(cluster.glyphs));
+        self.shape_with_at(font, coords, size, text, |run_offset, cluster| {
+            glyphs.extend(shaped_glyphs(cluster, run_offset, text));
         });
         glyphs
     }
@@ -443,7 +503,7 @@ impl TypeWriter {
             clusters.push(ShapedCluster {
                 source: run_offset + cluster.source.start as usize
                     ..run_offset + cluster.source.end as usize,
-                glyphs: shaped_glyphs(cluster.glyphs).collect(),
+                glyphs: shaped_glyphs(cluster, run_offset, text).collect(),
             });
         });
         clusters
@@ -465,7 +525,7 @@ impl TypeWriter {
                 .size(size)
                 .normalized_coords(coords.clone())
                 .build();
-            // Carry the source category through normalization and substitution.
+            // Carry the marked source offset through normalization and substitution.
             // Only .notdef is hidden: a ligature may inherit this marker and be visible.
             let charmap = font.charmap();
             let mut cluster = CharCluster::new();
@@ -482,7 +542,11 @@ impl TypeWriter {
                     } else {
                         ch.into()
                     },
-                    data: u32::from(ch.is_control() || is_default_ignorable(ch)),
+                    data: if ch.is_control() || is_default_ignorable(ch) {
+                        offset as u32 + 1
+                    } else {
+                        0
+                    },
                 }),
             );
             while parser.next(&mut cluster) {
@@ -602,13 +666,32 @@ fn is_hanging_space(ch: char) -> bool {
     ch.is_whitespace() && matches!(ch.properties().line_break(), LineBreak::BA | LineBreak::SP)
 }
 
-fn shaped_glyphs(
-    glyphs: &[swash::shape::cluster::Glyph],
-) -> impl Iterator<Item = ShapedGlyph> + '_ {
-    glyphs
+fn shaped_glyphs<'a>(
+    cluster: &'a swash::shape::cluster::GlyphCluster<'_>,
+    run_offset: usize,
+    text: &str,
+) -> impl Iterator<Item = ShapedGlyph> + 'a {
+    let mut start = run_offset + cluster.source.start as usize;
+    let mut end = run_offset + cluster.source.end as usize;
+    // Exclude filtered edge characters without shrinking visible ligatures.
+    let dropped = |offset| cluster.glyphs.iter().any(|g|
+        g.id == 0 && g.data != 0 && run_offset + (g.data - 1) as usize == offset);
+    while start < end && dropped(start) {
+        start += text[start..end].chars().next().unwrap().len_utf8();
+    }
+    while start < end {
+        let last = end - text[start..end].chars().next_back().unwrap().len_utf8();
+        if !dropped(last) {
+            break;
+        }
+        end = last;
+    }
+    let source = [start as u32, end as u32];
+    cluster.glyphs
         .iter()
         .filter(|g| g.id != 0 || g.data == 0)
-        .map(|g| ShapedGlyph {
+        .map(move |g| ShapedGlyph {
+            source,
             glyph: GlyphId(g.id),
             advance: g.advance,
             offset: [g.x, -g.y],
@@ -732,6 +815,7 @@ mod tests {
                     glyph: GlyphId(g.id),
                     advance: g.advance,
                     offset: [g.x, -g.y],
+                    source: [cluster.source.start, cluster.source.end],
                 }));
             });
             assert_eq!(TypeWriter::new().shape_glyphs(font, 32., text), expected);
@@ -763,6 +847,7 @@ mod mark_test {
                 glyph: GlyphId(g.id),
                 advance: g.advance,
                 offset: [g.x, -g.y],
+                source: [cluster.source.start, cluster.source.end],
             }))
         });
         assert_eq!(glyphs, expected);
@@ -1031,9 +1116,13 @@ mod layout_tests {
             }
             assert_eq!(ranges.len(), count);
             for (line, range) in block.lines().iter().zip(ranges) {
-                let expected = writer
+                let mut expected = writer
                     .shape_text(&store, font, [0.; 2], 32., [1.; 4], &text[range.clone()])
                     .unwrap();
+                for glyph in &mut expected.glyphs {
+                    let [start, end] = glyph.source;
+                    glyph.source = [start + range.start as u32, end + range.start as u32];
+                }
                 assert_eq!(line.glyphs(), expected.glyphs(), "{text:?}: {range:?}");
             }
         }
@@ -1042,17 +1131,21 @@ mod layout_tests {
         for (text, pieces) in [
             (
                 "AV é\u{301} office\r\nHi",
-                vec![("AV é\u{301} office", vec![3, 8, 14]), ("Hi", vec![2])],
+                vec![(0, "AV é\u{301} office", vec![3, 8, 14]), (16, "Hi", vec![2])],
             ),
             (
                 "Hi 中文\nAV",
-                vec![("Hi 中文", vec![3, 6, 9]), ("AV", vec![2])],
+                vec![(0, "Hi 中文", vec![3, 6, 9]), (10, "AV", vec![2])],
             ),
-            ("e\u{301} Hi Hi", vec![("e\u{301} Hi Hi", vec![4, 7, 9])]),
+            ("e\u{301} Hi Hi", vec![(0, "e\u{301} Hi Hi", vec![4, 7, 9])]),
         ] {
             let mut expected = Vec::new();
-            for (piece, ends) in pieces {
-                let (whole, sources) = whole_with_sources(&mut writer, &store, font, piece);
+            for (offset, piece, ends) in pieces {
+                let (mut whole, sources) = whole_with_sources(&mut writer, &store, font, piece);
+                for glyph in &mut whole.glyphs {
+                    let [start, end] = glyph.source;
+                    glyph.source = [start + offset, end + offset];
+                }
                 let mut first = 0;
                 for end in ends {
                     let last = sources.partition_point(|source| source.start < end);
@@ -1264,8 +1357,13 @@ mod layout_tests {
         assert_eq!(block.size()[1], 2. * pitch);
         assert_eq!(block.lines()[1].position()[1], pitch);
         let (whole, _) = whole_with_sources(&mut writer, &store, varied, "Hi");
-        for line in block.lines() {
-            assert_eq!(line.glyphs(), whole.glyphs());
+        for (n, line) in block.lines().iter().enumerate() {
+            let mut expected = whole.clone();
+            for glyph in &mut expected.glyphs {
+                let [start, end] = glyph.source;
+                glyph.source = [start + n as u32 * 3, end + n as u32 * 3];
+            }
+            assert_eq!(line.glyphs(), expected.glyphs());
         }
     }
 }
@@ -1401,6 +1499,7 @@ mod round2_tests {
             glyph: GlyphId(id),
             advance: 1.,
             offset: [0.; 2],
+            source: [0; 2],
         };
         let soft: Vec<_> = [(0..1, 1), (2..3, 3), (1..2, 2), (3..4, 4)]
             .into_iter()
@@ -1535,6 +1634,11 @@ mod round3_tests {
                 )
                 .unwrap();
             assert_eq!(block.line_count(), 2);
+            let mut expected = expected.clone();
+            for glyph in &mut expected.glyphs {
+                let [start, end] = glyph.source;
+                glyph.source = [start + 1 + separator.len() as u32, end + 1 + separator.len() as u32];
+            }
             assert_eq!(
                 block.lines()[1].glyphs(),
                 expected.glyphs(),
@@ -1619,5 +1723,376 @@ mod round3_tests {
                 &TextLayout::default().with_line_height(LineHeight::Pixels(f32::MAX))
             )
             .is_none());
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod source_tests {
+    use super::*;
+    use crate::atlas_tests::common;
+
+    const ROBOTO: &[u8] = include_bytes!("../fonts/Roboto-Regular.ttf");
+    const NOTO: &[u8] = include_bytes!("../fonts/NotoSerifSC-Subset.otf");
+
+    fn assert_sources(text: &str, glyphs: &[ShapedGlyph], dropped: &[char]) {
+        let mut covered = vec![false; text.len()];
+        // These fixtures are left-to-right inputs with no shaping reordering.
+        // Monotonic ranges are expected here, not guaranteed for other scripts.
+        let mut previous = 0..0;
+        for glyph in glyphs {
+            let range = glyph.source().expect("shaped glyph has a source");
+            assert!(range.start < range.end);
+            assert!(text.is_char_boundary(range.start));
+            assert!(text.is_char_boundary(range.end));
+            assert!(
+                range.start >= previous.start,
+                "{text:?}: {range:?} after {previous:?}"
+            );
+            assert!(range == previous || range.start >= previous.end);
+            covered[range.clone()].fill(true);
+            previous = range;
+        }
+        for (offset, ch) in text.char_indices() {
+            assert!(
+                covered[offset..offset + ch.len_utf8()]
+                    .iter()
+                    .all(|&covered| covered != dropped.contains(&ch)),
+                "{text:?}: {ch:?} at {offset}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_ligature_and_multiple_glyph_cluster_cover_all_characters() {
+        let bytes = common::missing_ignorable_ligature_font();
+        let face = swash::FontRef::from_index(&bytes, 0).unwrap();
+        let text = "\u{034F}a";
+        let glyphs = TypeWriter::new().shape_glyphs(face, 32., text);
+        assert_eq!(glyphs.len(), 1);
+        assert_eq!(glyphs[0].source(), Some(0..text.len()));
+        let bytes = common::decomposed_font();
+        let face = swash::FontRef::from_index(&bytes, 0).unwrap();
+        let glyphs = TypeWriter::new().shape_glyphs(face, 32., "e\u{301}");
+        assert_eq!(glyphs.len(), 2);
+        assert!(glyphs.iter().all(|g| g.source() == Some(0..3)));
+        // Source metadata must not prevent copying a glyph.
+        let copied = glyphs[0];
+        assert_eq!(copied.source(), glyphs[0].source());
+        let mut shifted = copied;
+        shifted.source = [u32::MAX - 1, u32::MAX];
+        assert_eq!(
+            shifted.source(),
+            Some((u32::MAX - 1) as usize..u32::MAX as usize)
+        );
+        assert_ne!(copied, shifted, "equality includes source positions");
+    }
+
+    #[test]
+    fn source_cap_khmer_keeps_pending_components() {
+        let text = format!("\u{1780}{}\u{17BE}", "\u{17C1}".repeat(30));
+        let face = swash::FontRef::from_index(ROBOTO, 0).unwrap();
+        let glyphs = TypeWriter::new().shape_glyphs(face, 32., &text);
+        // 33 internal components plus swash's repeated boundary component.
+        assert_eq!(glyphs.len(), 34, "pending Khmer component must survive");
+        let expected: Vec<_> = std::iter::repeat_n(0..96, 32)
+            .chain(std::iter::repeat_n(93..96, 2))
+            .collect();
+        assert_eq!(
+            glyphs
+                .iter()
+                .map(|g| g.source().unwrap())
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+
+    #[test]
+    fn source_long_combining_sequence_preserves_swash_cap_output() {
+        let face = swash::FontRef::from_index(ROBOTO, 0).unwrap();
+        for (marks, repeated, spans) in [
+            (31, 1, vec![(0..63, 31), (61..63, 1)]),
+            (40, 1, vec![(0..63, 31), (61..81, 10)]),
+            (64, 2, vec![(0..63, 31), (61..125, 32), (123..129, 3)]),
+        ] {
+            let text = format!("a{}", "\u{301}".repeat(marks));
+            let glyphs = TypeWriter::new().shape_glyphs(face, 32., &text);
+            let expected: Vec<_> = spans
+                .into_iter()
+                .flat_map(|(range, count)| std::iter::repeat_n(range, count))
+                .collect();
+            // Roboto composes the base and first mark, reducing the unique
+            // internal token count (marks + 1) by one. Swash repeats cap tokens.
+            assert_eq!(glyphs.len(), marks + repeated);
+            assert_eq!(
+                glyphs
+                    .iter()
+                    .map(|g| g.source().unwrap())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn source_cap_components_survive_script_runs_and_hard_break_pieces() {
+        let Some((device, queue, _)) = common::gpu() else {
+            return;
+        };
+        let mut store = FontStore::new(&device);
+        let font = store
+            .load_from_bytes(&device, &queue, ROBOTO, "a\u{301}AXYक")
+            .unwrap();
+        let mut writer = TypeWriter::new();
+        let face = swash::FontRef::from_index(ROBOTO, 0).unwrap();
+        for (text, internal_tokens, composed, spans, next_script) in [
+            (
+                format!("a{}", "\u{301}".repeat(40)),
+                41,
+                1,
+                [(0..63, 31), (61..81, 10)],
+                "क",
+            ),
+            (
+                format!("\u{1780}{}\u{17BE}", "\u{17C1}".repeat(30)),
+                33,
+                0,
+                [(0..96, 32), (93..96, 2)],
+                "A",
+            ),
+            (
+                format!("\u{0995}{}\u{09CB}", "\u{09C7}".repeat(30)),
+                33,
+                0,
+                [(0..96, 32), (93..96, 2)],
+                "A",
+            ),
+        ] {
+            // Each fixture hits one cap: one repeated token is retained in the
+            // authorized fallback. Khmer/Bengali each have 33 unique internal
+            // tokens from 32 input characters; their pending component survives.
+            let expected_count = internal_tokens + 1 - composed;
+            let expected: Vec<_> = spans
+                .into_iter()
+                .flat_map(|(range, count)| std::iter::repeat_n(range, count))
+                .collect();
+            assert_eq!(expected.len(), expected_count);
+            for suffix in ["", next_script] {
+                let input = format!("{text}{suffix}");
+                let paragraph = writer
+                    .shape_text(&store, font, [0.; 2], 32., [1.; 4], &input)
+                    .unwrap();
+                let mut sources = expected.clone();
+                if !suffix.is_empty() {
+                    sources.push(text.len()..input.len());
+                }
+                assert_eq!(
+                    paragraph.glyphs().len(),
+                    expected_count + usize::from(!suffix.is_empty()),
+                    "{input:?}"
+                );
+                assert_eq!(
+                    paragraph
+                        .glyphs()
+                        .iter()
+                        .map(|g| g.source().unwrap())
+                        .collect::<Vec<_>>(),
+                    sources,
+                    "{input:?}"
+                );
+
+                // Compare glyphs, advances, offsets and sources to uninterrupted
+                // swash parsing for each run, independently of the crate's parser.
+                let mut context = ShapeContext::new();
+                let mut plain = Vec::new();
+                for (run, script) in script_runs(&input) {
+                    let mut shaper = context.builder(face).script(script).size(32.).build();
+                    shaper.add_str(run);
+                    let offset = run.as_ptr() as usize - input.as_ptr() as usize;
+                    shaper.shape_with(|cluster| {
+                        plain.extend(cluster.glyphs.iter().map(|g| {
+                            (
+                                GlyphId(g.id),
+                                g.advance,
+                                [g.x, -g.y],
+                                offset + cluster.source.start as usize
+                                    ..offset + cluster.source.end as usize,
+                            )
+                        }))
+                    });
+                }
+                let actual: Vec<_> = paragraph
+                    .glyphs()
+                    .iter()
+                    .map(|g| (g.glyph, g.advance, g.offset, g.source().unwrap()))
+                    .collect();
+                assert_eq!(actual, plain);
+
+                // Exercise the cap at a hard-break piece end (empty suffix),
+                // and at a script-run end inside a layout piece (other suffix).
+                let input = format!("X\n{text}{suffix}\r\nY");
+                let block = writer
+                    .layout_text(
+                        &store,
+                        font,
+                        [0.; 2],
+                        32.,
+                        [1.; 4],
+                        &input,
+                        &TextLayout::default().with_max_width(0.),
+                    )
+                    .unwrap();
+                assert_eq!(block.line_count(), 3, "{input:?}");
+                let middle = block.lines()[1].glyphs();
+                assert_eq!(
+                    middle.len(),
+                    expected_count + usize::from(!suffix.is_empty()),
+                    "{input:?}"
+                );
+                let shifted: Vec<_> = sources.iter().map(|r| r.start + 2..r.end + 2).collect();
+                assert_eq!(
+                    middle
+                        .iter()
+                        .map(|g| g.source().unwrap())
+                        .collect::<Vec<_>>(),
+                    shifted,
+                    "{input:?}"
+                );
+                assert_eq!(block.lines()[0].glyphs()[0].source(), Some(0..1));
+                assert_eq!(
+                    block.lines()[2].glyphs()[0].source(),
+                    Some(input.len() - 1..input.len())
+                );
+                for glyph in block.lines().iter().flat_map(|line| line.glyphs()) {
+                    let range = glyph.source().unwrap();
+                    assert!(
+                        input.is_char_boundary(range.start) && input.is_char_boundary(range.end)
+                    );
+                    assert!(!input[range].contains(['\r', '\n']));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn source_public_shaping_covers_input_across_scripts_and_dropped_characters() {
+        let Some((device, queue, _)) = common::gpu() else {
+            return;
+        };
+        let mut store = FontStore::new(&device);
+        let mut writer = TypeWriter::new();
+        for (bytes, texts) in [
+            (
+                ROBOTO,
+                &[
+                    "Hi Hi",
+                    "AVToWAàÅgß",
+                    "e\u{301}",
+                    "Hi 中文 é",
+                    "a\nb",
+                    "a\tb",
+                    "a\u{034F}b",
+                    "a\u{FE0F}b",
+                    "a\u{00AD}b",
+                    "\u{034F}a",
+                    "a\u{034F}\u{034F}b",
+                ][..],
+            ),
+            (NOTO, &["直接从轮廓渲染字形文本", "Hi 直接 é"][..]),
+        ] {
+            let font = store
+                .load_from_bytes(&device, &queue, bytes, &texts.concat())
+                .unwrap();
+            for &text in texts {
+                let paragraph = writer
+                    .shape_text(&store, font, [0.; 2], 32., [1.; 4], text)
+                    .unwrap();
+                assert_sources(
+                    text,
+                    paragraph.glyphs(),
+                    &['\n', '\t', '\u{034F}', '\u{FE0F}', '\u{00AD}'],
+                );
+            }
+        }
+        let font = store
+            .load_from_bytes(&device, &queue, ROBOTO, "a\r")
+            .unwrap();
+        let shaped = writer
+            .shape_text(&store, font, [0.; 2], 32., [1.; 4], "a\ra")
+            .unwrap();
+        assert_eq!(shaped.glyphs()[1].glyph, GlyphId(3));
+        assert_eq!(shaped.glyphs()[1].source(), Some(1..2));
+        let laid_out = writer
+            .layout_text(
+                &store,
+                font,
+                [0.; 2],
+                32.,
+                [1.; 4],
+                "a\ra",
+                &TextLayout::default(),
+            )
+            .unwrap();
+        assert_eq!(laid_out.line_count(), 2);
+        assert_eq!(laid_out.lines()[0].glyphs()[0].source(), Some(0..1));
+        assert_eq!(laid_out.lines()[1].glyphs()[0].source(), Some(2..3));
+        let mut paragraph = Paragraph::new(font, [0.; 2], 32., [1.; 4]);
+        paragraph.push(GlyphId(1), 1.);
+        paragraph.push_at(GlyphId(2), 2., [3., 4.]);
+        assert!(paragraph.glyphs().iter().all(|g| g.source().is_none()));
+        let bytes = common::missing_ignorable_ligature_font();
+        let font = store
+            .load_from_bytes(&device, &queue, &bytes, "\u{034F}aH")
+            .unwrap();
+        let paragraph = writer
+            .shape_text(&store, font, [0.; 2], 32., [1.; 4], "\u{034F}a")
+            .unwrap();
+        assert_eq!(paragraph.glyphs().len(), 1);
+        assert_eq!(paragraph.glyphs()[0].source(), Some(0..3));
+    }
+
+    #[test]
+    fn source_layout_uses_original_bytes_after_hard_breaks_and_soft_wraps() {
+        let Some((device, queue, _)) = common::gpu() else {
+            return;
+        };
+        let text = "é\nHi Hi\r\ne\u{301}   ";
+        let mut store = FontStore::new(&device);
+        let font = store
+            .load_from_bytes(&device, &queue, ROBOTO, text)
+            .unwrap();
+        let block = TypeWriter::new()
+            .layout_text(
+                &store,
+                font,
+                [0.; 2],
+                32.,
+                [1.; 4],
+                text,
+                &TextLayout::default().with_max_width(0.),
+            )
+            .unwrap();
+        let expected = [
+            vec!["é"],
+            vec!["H", "i", " "],
+            vec!["H", "i"],
+            vec!["e\u{301}", " ", " ", " "],
+        ];
+        assert_eq!(block.line_count(), expected.len());
+        for (line, expected) in block.lines().iter().zip(expected) {
+            let slices: Vec<_> = line
+                .glyphs()
+                .iter()
+                .map(|g| &text[g.source().unwrap()])
+                .collect();
+            assert_eq!(slices, expected);
+        }
+        let glyphs: Vec<_> = block
+            .lines()
+            .iter()
+            .flat_map(|p| p.glyphs().iter().copied())
+            .collect();
+        assert_sources(text, &glyphs, &['\n', '\r']);
+        assert_eq!(block.lines()[1].glyphs()[0].source(), Some(3..4));
+        assert_eq!(block.lines()[3].glyphs()[0].source(), Some(10..13));
     }
 }
