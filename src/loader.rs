@@ -1,13 +1,11 @@
-use std::{collections::HashMap, fmt};
+use std::{collections::HashMap, fmt, sync::Arc};
 use skrifa::{
-    instance::{LocationRef, Size},
+    instance::{Location, LocationRef, Size},
     outline::{pen::{PathStyle, ControlBoundsPen}, DrawSettings, OutlineGlyphCollection, OutlineGlyphFormat, OutlinePen},
     raw::TableProvider,
     FontRef as SkFontRef, GlyphId,
 };
 use swash::{CacheKey, FontRef};
-// Only the unit-test modules below use skrifa metadata through `super::*`.
-#[cfg(test)]
 use skrifa::MetadataProvider;
 
 use crate::atlas::{allocation::Allocation, Atlas};
@@ -33,7 +31,8 @@ pub struct Glyph {
     pub bbox: Rect,
     /// Nonpositive bottom extent below the baseline, in font units.
     pub descent: i16,
-    /// `ascender - max(bbox.y_min, 0) - bbox.height()`, in font units.
+    /// `default ascender - max(bbox.y_min, 0) - bbox.height()`, in font units.
+    /// The renderer adds the instance ascender’s MVAR delta before scaling.
     /// When `y_min < 0`, this is `ascender - y_max + y_min`; the renderer adds
     /// `abs(descent)` back before scaling to pixels and adding paragraph y.
     pub y_offset: i32,
@@ -43,7 +42,12 @@ pub struct Glyph {
 
 /// Owned font bytes, parsed face, and selected cached outlines.
 pub struct Font {
-    data: Vec<u8>,
+    pub(crate) data: Arc<[u8]>,
+    pub(crate) characters: Arc<str>,
+    pub(crate) location: Location,
+    pub(crate) metrics: crate::FontMetrics,
+    // Keep the legacy integer glyph offsets unchanged, including default rounding.
+    pub(crate) ascender_delta: f32,
     index: u32,
     /// Byte offset of this face within the font data.
     pub(crate) offset: u32,
@@ -63,6 +67,8 @@ pub enum LoadingError {
     Io(std::io::Error),
     /// Invalid font bytes or a face index absent from the font collection.
     InvalidFont,
+    /// The base font ID does not belong to this store.
+    UnknownFont,
     /// Outlined glyphs that could not fit in the atlas. The font was not loaded.
     AtlasFull(Vec<crate::GlyphId>),
     /// A glyph's outline exceeds the loader's work limits: more than 65,535
@@ -77,6 +83,7 @@ impl fmt::Display for LoadingError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Self::Io(error) => write!(f, "Could not read font: {error}"),
+            Self::UnknownFont => write!(f, "Unknown font ID"),
             Self::InvalidFont => write!(f, "Invalid font data"),
             Self::AtlasFull(glyphs) => write!(f, "Glyphs did not fit in the atlas: {glyphs:?}"),
             Self::GlyphTooComplex(glyph) => write!(f, "Glyph outline exceeds the loader's limits: {glyph:?}"),
@@ -88,40 +95,41 @@ impl std::error::Error for LoadingError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
-            Self::InvalidFont | Self::AtlasFull(_) | Self::GlyphTooComplex(_) => None,
+            Self::UnknownFont | Self::InvalidFont | Self::AtlasFull(_) | Self::GlyphTooComplex(_) => None,
         }
     }
 }
 
 impl Font {
-    /// Parse owned font bytes at a zero-based face index and upload preset outlines.
-    /// Variable fonts use the default variation instance.
-    /// Returns `InvalidFont` for invalid data or an absent face. Glyph zero is always selected;
-    /// outlines without bounding boxes are skipped. Atlas exhaustion returns
-    /// `AtlasFull` and restores allocation bookkeeping. Submit the encoder
-    /// afterward; device, queue, and atlas must match. GPU failures follow wgpu validation.
+    /// Load a default face for internal GPU tests.
+    #[cfg(test)]
     pub(crate) fn from_bytes(
-        device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
-        queue: &wgpu::Queue,
-        data: Vec<u8>,
-        index: usize,
-        cache_preset: &str,
-        atlas: &mut Atlas
+        device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, queue: &wgpu::Queue,
+        data: Vec<u8>, index: usize, cache_preset: &str, atlas: &mut Atlas,
     ) -> Result<Font> {
-        let (face, offset, key) = parse_font(&data, index)?;
+        if index != 0 { return Err(LoadingError::InvalidFont); }
+        Self::from_instance(device, encoder, queue, data.into(), cache_preset.into(), &[], atlas)
+    }
 
-        // Generate glyph cache for each glyph present in the font file
+    pub(crate) fn from_instance(
+        device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, queue: &wgpu::Queue,
+        data: Arc<[u8]>, characters: Arc<str>, axes: &[([u8; 4], f32)], atlas: &mut Atlas,
+    ) -> Result<Font> {
+        let (face, offset, key) = parse_font(&data, 0)?;
+        let location = face.axes().location(axes.iter().map(|&(tag, value)|
+            (skrifa::raw::types::Tag::new(&tag), value)));
+        let metrics = face_line_metrics(&face, (&location).into());
+        let ascender_delta = metrics.ascent - f32::from(face_ascender(&face));
         let font = FontRef { data: &data, offset, key };
         let checkpoint = atlas.checkpoint();
         let glyph_cache = create_glyph_cache(device, encoder, queue, &face,
-            glyph_ids(font, cache_preset), atlas);
+            glyph_ids(font, &characters), (&location).into(), atlas);
         let glyph_cache = match glyph_cache {
             Ok(cache) => cache,
             Err(error) => { atlas.restore(checkpoint); return Err(error); }
         };
-
-        Ok(Self { data, index: index as u32, offset, key, glyph_cache })
+        Ok(Self { data, characters, location, metrics, ascender_delta,
+            index: 0, offset, key, glyph_cache })
     }
 
     /// Borrow the original bytes as a swash font reference with the same cache key.
@@ -173,7 +181,15 @@ fn select_ascender(hhea: i16, os2: Option<(u16, bool, i16, i16)>) -> i16 {
 fn face_ascender(face: &SkFontRef<'_>) -> i16 {
     use skrifa::raw::tables::os2::SelectionFlags;
     // Match the old parser's version and minimum-length checks.
-    let os2 = face.os2().ok().filter(|table| {
+    let os2 = valid_os2(face).map(|table| (
+        table.version(), table.fs_selection().contains(SelectionFlags::USE_TYPO_METRICS),
+        table.s_typo_ascender(), table.us_win_ascent() as i16,
+    ));
+    select_ascender(face.hhea().expect("validated hhea table").ascender().to_i16(), os2)
+}
+
+fn valid_os2<'a>(face: &SkFontRef<'a>) -> Option<skrifa::raw::tables::os2::Os2<'a>> {
+    face.os2().ok().filter(|table| {
         let minimum = match table.version() {
             0 => 78,
             1 => 86,
@@ -182,11 +198,31 @@ fn face_ascender(face: &SkFontRef<'_>) -> i16 {
             _ => return false,
         };
         table.offset_data().len() >= minimum
-    }).map(|table| (
-        table.version(), table.fs_selection().contains(SelectionFlags::USE_TYPO_METRICS),
-        table.s_typo_ascender(), table.us_win_ascent() as i16,
-    ));
-    select_ascender(face.hhea().expect("validated hhea table").ascender().to_i16(), os2)
+    })
+}
+
+fn face_line_metrics(face: &SkFontRef<'_>, location: LocationRef<'_>) -> crate::FontMetrics {
+    use skrifa::raw::{tables::{os2::SelectionFlags, mvar::tags::{HASC, HDSC, HLGP}}, types::Tag};
+    let hhea = face.hhea().expect("validated hhea table");
+    let mut descent = f32::from(hhea.descender().to_i16());
+    let mut line_gap = f32::from(hhea.line_gap().to_i16());
+    if let Some(os2) = valid_os2(face) {
+        if (os2.version() >= 4 && os2.fs_selection().contains(SelectionFlags::USE_TYPO_METRICS))
+            || (hhea.ascender().to_i16() == 0 && os2.s_typo_ascender() != 0) {
+            descent = f32::from(os2.s_typo_descender());
+            line_gap = f32::from(os2.s_typo_line_gap());
+        } else if hhea.ascender().to_i16() == 0 {
+            descent = -f32::from(os2.us_win_descent());
+            line_gap = 0.;
+        }
+    }
+    let delta = |tag: Tag| face.mvar().ok().and_then(|mvar|
+        mvar.metric_delta(tag, location.coords()).ok()).map_or(0., |v| v.to_f64() as f32);
+    crate::FontMetrics {
+        ascent: f32::from(face_ascender(face)) + delta(HASC),
+        descent: (descent + delta(HDSC)).abs(),
+        line_gap: line_gap + delta(HLGP),
+    }
 }
 
 fn glyph_ids<'a>(font: FontRef<'a>, characters: &'a str) -> impl Iterator<Item = GlyphId> + 'a {
@@ -203,6 +239,7 @@ fn create_glyph_cache(
     queue: &wgpu::Queue,
     face: &SkFontRef<'_>,
     glyph_ids: impl Iterator<Item = GlyphId>,
+    location: LocationRef<'_>,
     atlas: &mut Atlas
 ) -> Result<HashMap<u32, Glyph>> {
     let mut glyph_cache = HashMap::new();
@@ -210,8 +247,8 @@ fn create_glyph_cache(
 
     for glyph_id in glyph_ids {
         check_composite_budget(face, glyph_id)?;
-        if let Some(bbox) = glyph_bounding_box(face, glyph_id) {
-            let (descent, y_offset, curves, band_data) = prepare_glyph(face, glyph_id, bbox)?;
+        if let Some(bbox) = glyph_bounding_box_at(face, glyph_id, location) {
+            let (descent, y_offset, curves, band_data) = prepare_glyph_at(face, glyph_id, bbox, location)?;
             let left_side_bearing = bbox.x_min;
 
             // Each eight-float segment occupies two RGBA32F texels, including
@@ -256,8 +293,13 @@ fn create_glyph_cache(
     if failed.is_empty() { Ok(glyph_cache) } else { Err(LoadingError::AtlasFull(failed)) }
 }
 
-fn prepare_glyph(
-    face: &SkFontRef<'_>, id: GlyphId, bbox: Rect,
+#[cfg(feature = "unstable-internals")]
+fn prepare_glyph(face: &SkFontRef<'_>, id: GlyphId, bbox: Rect) -> Result<(i16, i32, Vec<f32>, Vec<f32>)> {
+    prepare_glyph_at(face, id, bbox, LocationRef::default())
+}
+
+fn prepare_glyph_at(
+    face: &SkFontRef<'_>, id: GlyphId, bbox: Rect, location: LocationRef<'_>,
 ) -> Result<(i16, i32, Vec<f32>, Vec<f32>)> {
     // Any legal i16 box spans at most 65,535 units, so i32 holds every derived value.
     let height = bbox.height();
@@ -266,7 +308,7 @@ fn prepare_glyph(
     let total_height = height + i32::from(descent) + distance;
     let y_offset = i32::from(face_ascender(face)) - distance - height;
     let mut builder = BezierBuilder::new(total_height as f32);
-    outline_glyph(face, id, &mut builder);
+    outline_glyph_at(face, id, &mut builder, location);
     if builder.over_budget {
         return Err(LoadingError::GlyphTooComplex(crate::GlyphId(id.to_u32() as u16)));
     }
@@ -362,8 +404,8 @@ impl Rect {
     pub fn height(&self) -> i32 { i32::from(self.y_max) - i32::from(self.y_min) }
 }
 
-fn draw_settings() -> DrawSettings<'static> {
-    DrawSettings::unhinted(Size::unscaled(), LocationRef::default())
+fn draw_settings(location: LocationRef<'_>) -> DrawSettings<'_> {
+    DrawSettings::unhinted(Size::unscaled(), location)
         .with_path_style(PathStyle::HarfBuzz)
 }
 
@@ -376,14 +418,19 @@ fn outlines<'a>(face: &SkFontRef<'a>) -> Option<OutlineGlyphCollection<'a>> {
         .find_map(|format| OutlineGlyphCollection::with_format(face, format))
 }
 
-fn draw_glyph(face: &SkFontRef<'_>, id: GlyphId, pen: &mut impl OutlinePen) -> Option<()> {
-    outlines(face)?.get(id)?.draw(draw_settings(), pen).ok()?;
+fn draw_glyph(face: &SkFontRef<'_>, id: GlyphId, pen: &mut impl OutlinePen, location: LocationRef<'_>) -> Option<()> {
+    outlines(face)?.get(id)?.draw(draw_settings(location), pen).ok()?;
     Some(())
 }
 
+#[cfg(any(test, feature = "unstable-internals"))]
 fn glyph_bounding_box(face: &SkFontRef<'_>, id: GlyphId) -> Option<Rect> {
+    glyph_bounding_box_at(face, id, LocationRef::default())
+}
+
+fn glyph_bounding_box_at(face: &SkFontRef<'_>, id: GlyphId, location: LocationRef<'_>) -> Option<Rect> {
     let mut pen = ControlBoundsPen::default();
-    draw_glyph(face, id, &mut pen)?;
+    draw_glyph(face, id, &mut pen, location)?;
     let bounds = pen.bounding_box()?;
     // Bounds enclose control points, including CFF/CFF2 controls, and truncate
     // toward zero to preserve the cached integer font-unit metrics.
@@ -400,9 +447,14 @@ fn glyph_bounding_box(face: &SkFontRef<'_>, id: GlyphId) -> Option<Rect> {
     })
 }
 
+#[cfg(test)]
 fn outline_glyph(face: &SkFontRef<'_>, id: GlyphId, pen: &mut impl OutlinePen) -> Option<Rect> {
-    draw_glyph(face, id, pen)?;
-    glyph_bounding_box(face, id)
+    outline_glyph_at(face, id, pen, LocationRef::default())
+}
+
+fn outline_glyph_at(face: &SkFontRef<'_>, id: GlyphId, pen: &mut impl OutlinePen, location: LocationRef<'_>) -> Option<Rect> {
+    draw_glyph(face, id, pen, location)?;
+    glyph_bounding_box_at(face, id, location)
 }
 
 // Header: min x/y, band width/height, horizontal/vertical counts.

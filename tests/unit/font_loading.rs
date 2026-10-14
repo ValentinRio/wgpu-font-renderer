@@ -304,3 +304,55 @@ fn glyph_selection_deduplicates_before_outline_lookup() {
     assert_eq!(ids.len(), ids.iter().collect::<std::collections::HashSet<_>>().len());
     assert_eq!(ids.iter().filter(|id| id.to_u32() == 0).count(), 1);
 }
+
+#[test]
+fn line_metric_families_follow_legacy_ascender_fallbacks() {
+    for (version, use_typo, hhea, typo, expected) in [
+        (3, true, 900, 800, [900., 300., 20.]),
+        (4, true, 900, 800, [800., 250., 30.]),
+        (4, false, 0, 800, [800., 250., 30.]),
+        (4, false, 0, 0, [1000., 400., 0.]),
+        (4, true, 900, 0, [0., 250., 30.]),
+        (6, true, 900, 800, [900., 300., 20.]),
+    ] {
+        let mut bytes = ROBOTO.to_vec();
+        for (tag, offset, value) in [
+            (b"hhea", 4, hhea as u16), (b"hhea", 6, (-300i16) as u16),
+            (b"hhea", 8, 20), (b"OS/2", 0, version),
+            (b"OS/2", 62, if use_typo { 1 << 7 } else { 0 }),
+            (b"OS/2", 68, typo as u16), (b"OS/2", 70, (-250i16) as u16),
+            (b"OS/2", 72, 30), (b"OS/2", 74, 1000), (b"OS/2", 76, 400),
+        ] { patch_u16(&mut bytes, tag, offset, value); }
+        let face = SkFontRef::new(&bytes).unwrap();
+        let metrics = face_line_metrics(&face, LocationRef::default());
+        assert_eq!([metrics.ascent, metrics.descent, metrics.line_gap], expected);
+    }
+}
+
+#[test]
+fn normalized_location_changes_outlines_bounds_and_metric_deltas() {
+    let face = SkFontRef::new(include_bytes!("../../fonts/Cantarell-VF.otf")).unwrap();
+    let axis = face.axes().get_by_tag(skrifa::raw::types::Tag::new(b"wght")).unwrap();
+    let id = face.charmap().map('I').unwrap();
+    let mut outlines_at_extremes = Vec::new();
+    for value in [axis.min_value(), axis.max_value()] {
+        let location = face.axes().location([("wght", value)]);
+        let bbox = glyph_bounding_box_at(&face, id, (&location).into()).unwrap();
+        let (_, _, curves, _) = prepare_glyph_at(&face, id, bbox, (&location).into()).unwrap();
+        let mut expected = BezierBuilder::new(f32::from(bbox.y_max));
+        face.outline_glyphs().get(id).unwrap().draw(draw_settings((&location).into()), &mut expected).unwrap();
+        expected.finish();
+        assert_eq!(curves, expected.curves);
+        let bounds = face.glyph_metrics(Size::unscaled(), &location).bounds(id).unwrap();
+        assert_eq!(bbox.x_min, bounds.x_min as i16);
+        assert_eq!(bbox.x_max, bounds.x_max as i16);
+        outlines_at_extremes.push((bbox, curves));
+    }
+    assert_ne!(outlines_at_extremes[0], outlines_at_extremes[1]);
+    let bytes = common::mvar_anchor_font();
+    let face = SkFontRef::new(&bytes).unwrap();
+    let location = face.axes().location([("wght", axis.max_value())]);
+    let default = face_line_metrics(&face, LocationRef::default());
+    let varied = face_line_metrics(&face, (&location).into());
+    assert_eq!(varied.ascent - default.ascent, 100.);
+}

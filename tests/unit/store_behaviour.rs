@@ -248,3 +248,67 @@ fn bearing_positions_match_cpu_coverage_and_advance_spacing() {
     assert_ne!(bearings[0], bearings[1]);
     assert!((left_edges[1] - left_edges[0] - (advance + bearings[1] - bearings[0])).abs() <= 1.);
 }
+
+#[test]
+fn metrics_and_instances_share_bytes_and_preserve_the_character_set() {
+    use skrifa::{MetadataProvider, instance::{LocationRef, Size}, raw::TableProvider};
+    let Some((device, queue, _)) = common::gpu() else { return; };
+    for bytes in [ROBOTO, &include_bytes!("../../fonts/Cantarell-VF.otf")[..]] {
+        let mut store = FontStore::new(&device);
+        let base = store.load_from_bytes(&device, &queue, bytes, "Hi").unwrap();
+        let face = store.get(base).unwrap().face();
+        let hhea = face.hhea().unwrap();
+        let os2 = face.os2().unwrap();
+        let typo = os2.version() >= 4 && os2.fs_selection().contains(
+            skrifa::raw::tables::os2::SelectionFlags::USE_TYPO_METRICS);
+        let scale = 100. / f32::from(face.metrics(Size::unscaled(), LocationRef::default()).units_per_em);
+        let expected = if typo {
+            [os2.s_typo_ascender(), os2.s_typo_descender(), os2.s_typo_line_gap()]
+        } else {
+            [hhea.ascender().to_i16(), hhea.descender().to_i16(), hhea.line_gap().to_i16()]
+        };
+        let metrics = store.metrics(base, 100.).unwrap();
+        for (actual, expected) in [metrics.ascent, metrics.descent, metrics.line_gap]
+            .into_iter().zip([f32::from(expected[0]), f32::from(expected[1]).abs(), f32::from(expected[2])]) {
+            assert!((actual - expected * scale).abs() < 0.01);
+        }
+        let glyph = store.get(base).unwrap().glyph_cache.values().next().unwrap();
+        let anchor = glyph.y_offset + i32::from(glyph.bbox.y_max) - i32::from(glyph.descent);
+        assert!((metrics.ascent - anchor as f32 * scale).abs() < 0.01);
+        for size in [0., -1., f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(store.metrics(base, size).is_none());
+        }
+        let mut foreign = FontStore::new(&device);
+        let foreign_id = foreign.load_from_bytes(&device, &queue, bytes, "Hi").unwrap();
+        assert!(store.metrics(foreign_id, 100.).is_none());
+        assert!(store.axes(foreign_id).is_none());
+        assert!(matches!(store.load_variation(&device, &queue, foreign_id, &[]), Err(LoadingError::UnknownFont)));
+        let instance = store.load_variation(&device, &queue, base, &[]).unwrap();
+        assert_ne!(instance, base);
+        let a = store.get(base).unwrap();
+        let b = store.get(instance).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&a.data, &b.data));
+        assert!(std::sync::Arc::ptr_eq(&a.characters, &b.characters));
+        assert_eq!(a.location, b.location);
+        assert_eq!(a.glyph_cache.len(), b.glyph_cache.len());
+        assert!(a.glyph_cache.keys().all(|id| b.glyph_cache.contains_key(id)));
+        let mut writer = TypeWriter::new();
+        assert_eq!(writer.shape_text(&store, base, [0.; 2], 100., [1.; 4], "Hi").unwrap().glyphs(),
+            writer.shape_text(&store, instance, [0.; 2], 100., [1.; 4], "Hi").unwrap().glyphs());
+        assert_eq!(pixels(&device, &queue, &store, &writer.shape_text(&store, base, [24.; 2], 32., [0.,0.,0.,1.], "Hi").unwrap()),
+            pixels(&device, &queue, &store, &writer.shape_text(&store, instance, [24.; 2], 32., [0.,0.,0.,1.], "Hi").unwrap()));
+        if let Some(axis) = store.axes(base).unwrap().first() {
+            let axis = *axis;
+            let clamp = store.load_variation(&device, &queue, instance, &[(*b"????", 10.), (axis.tag, axis.min), (axis.tag, axis.max + 1000.)]).unwrap();
+            let max = store.load_variation(&device, &queue, base, &[(axis.tag, axis.max)]).unwrap();
+            assert_eq!(store.get(clamp).unwrap().location, store.get(max).unwrap().location);
+            assert_eq!(store.metrics(clamp, 100.), store.metrics(max, 100.));
+            let clamp = store.load_variation(&device, &queue, base, &[(axis.tag, axis.min - 1000.)]).unwrap();
+            let min = store.load_variation(&device, &queue, base, &[(axis.tag, axis.min)]).unwrap();
+            assert_eq!(store.get(clamp).unwrap().location, store.get(min).unwrap().location);
+        } else {
+            let instance = store.load_variation(&device, &queue, base, &[(*b"wght", 900.)]).unwrap();
+            assert_eq!(store.metrics(base, 100.), store.metrics(instance, 100.));
+        }
+    }
+}

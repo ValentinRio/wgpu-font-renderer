@@ -81,3 +81,22 @@ pub fn decomposed_font() -> Vec<u8> {
     bytes.extend(cmap);
     bytes
 }
+
+// Cantarell's MVAR has x-height, strikeout and sub/superscript offsets but no
+// ascender record. Reuse its variation store with a sorted HASC record and a
+// visible positive-weight delta to exercise baseline placement independently.
+#[allow(dead_code)]
+pub fn mvar_anchor_font() -> Vec<u8> {
+    let mut bytes = include_bytes!("../../fonts/Cantarell-VF.otf").to_vec();
+    let count = u16::from_be_bytes(bytes[4..6].try_into().unwrap()) as usize;
+    let record = (0..count).map(|i| 12 + i * 16)
+        .find(|&i| &bytes[i..i + 4] == b"MVAR").unwrap();
+    let offset = u32::from_be_bytes(bytes[record + 8..record + 12].try_into().unwrap()) as usize;
+    let length = u32::from_be_bytes(bytes[record + 12..record + 16].try_into().unwrap()) as usize;
+    assert_eq!(&bytes[offset + 12..offset + 16], b"sbyo");
+    assert_eq!(&bytes[offset + 16..offset + 20], &[0, 0, 0, 3]);
+    bytes[offset + 12..offset + 16].copy_from_slice(b"hasc");
+    assert_eq!(length, 90);
+    bytes[offset + length - 1] = 100;
+    bytes
+}

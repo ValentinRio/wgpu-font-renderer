@@ -7,6 +7,12 @@ below 1.0, a minor bump (0.x) may break the API.
 
 ## [Unreleased]
 
+### Added
+
+- `FontStore::metrics` and non-exhaustive `FontMetrics` expose pixel ascent, positive descent and line gap; ascent matches the renderer’s baseline anchor, including MVAR deltas.
+- `FontStore::axes` and non-exhaustive `Axis` expose variable font ranges. `load_variation` shares base bytes and characters, uploads instance outlines, clamps values and ignores unknown tags. One skrifa normalized location drives outlines, placement, metrics and shaping; default output is preserved.
+- `LoadingError::UnknownFont` distinguishes a foreign variation base from invalid font data.
+
 ### Changed
 
 - Loading checks glyph dimensions and enforces per-glyph work limits, found by a seeded robustness test over random and corrupted fonts, rejecting a glyph past them with the new `LoadingError::GlyphTooComplex`; a valid but very complex glyph can be refused. A `VARC` table is ignored in favour of `glyf` or CFF outlines. Glyphs whose bounding box spans more than 32,767 font units, which OpenType allows, now load.

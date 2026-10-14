@@ -149,7 +149,7 @@ impl TypeWriter {
         }
         let mut paragraph = Paragraph::new(font, position, size, color);
         if let Some(font) = store.get(font) {
-            for glyph in self.shape_glyphs(font.as_ref(), size, text) {
+            for glyph in self.shape_glyphs_at(font.as_ref(), font.location.coords().iter().map(|c| c.to_bits()), size, text) {
                 paragraph.push_at(glyph.glyph, glyph.advance, glyph.offset);
             }
 
@@ -159,15 +159,21 @@ impl TypeWriter {
         }
     }
 
+    #[cfg(any(test, feature = "unstable-internals"))]
     pub(crate) fn shape_glyphs(
         &mut self,
         font: swash::FontRef<'_>,
         size: f32,
         text: &str,
     ) -> Vec<ShapedGlyph> {
+        self.shape_glyphs_at(font, std::iter::empty(), size, text)
+    }
+
+    fn shape_glyphs_at(&mut self, font: swash::FontRef<'_>,
+        coords: impl Iterator<Item = i16> + Clone, size: f32, text: &str) -> Vec<ShapedGlyph> {
         let mut glyphs = Vec::new();
         for (run, script) in script_runs(text) {
-            let mut shaper = self.context.builder(font).script(script).size(size).build();
+            let mut shaper = self.context.builder(font).script(script).size(size).normalized_coords(coords.clone()).build();
             shaper.add_str(run);
             shaper.shape_with(|cluster| {
                 glyphs.extend(cluster.glyphs.iter().map(|glyph| ShapedGlyph {

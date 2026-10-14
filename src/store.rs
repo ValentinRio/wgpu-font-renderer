@@ -1,4 +1,5 @@
 use swash::CacheKey;
+use skrifa::MetadataProvider;
 use wgpu::CommandEncoderDescriptor;
 
 use std::collections::HashMap;
@@ -11,6 +12,32 @@ use crate::{atlas::Atlas, loader::Font, LoadingError};
 /// [`crate::TypeWriter::shape_text`] returns `None`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct FontId(CacheKey);
+
+/// Line metrics in physical pixels at the requested font size.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FontMetrics {
+    /// Positive baseline distance from the paragraph's top anchor.
+    pub ascent: f32,
+    /// Positive distance below the baseline.
+    pub descent: f32,
+    /// Additional spacing between lines.
+    pub line_gap: f32,
+}
+
+/// A variable font axis, with values in its design space.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Axis {
+    /// Four-byte OpenType axis tag.
+    pub tag: [u8; 4],
+    /// Minimum axis value.
+    pub min: f32,
+    /// Default axis value.
+    pub default: f32,
+    /// Maximum axis value.
+    pub max: f32,
+}
 
 /// Owns loaded font data and the shared GPU outline atlas.
 /// Later loads are picked up by the renderer on its next preparation.
@@ -68,7 +95,7 @@ impl FontStore {
     ) -> Result<FontId, LoadingError> {
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
 
-        let font = Font::from_bytes(device, &mut encoder, queue, data.to_vec(), 0, chars, &mut self.atlas)?;
+        let font = Font::from_instance(device, &mut encoder, queue, data.into(), chars.into(), &[], &mut self.atlas)?;
 
         queue.submit(Some(encoder.finish()));
 
@@ -77,6 +104,46 @@ impl FontStore {
         self.cache.insert(cache_key, font);
 
         Ok(cache_key)
+    }
+
+    /// Return line metrics at `size` physical pixels per em.
+    /// The baseline is at paragraph y plus `ascent`. Returns `None` for a
+    /// foreign ID or a nonfinite or nonpositive size.
+    pub fn metrics(&self, font: FontId, size: f32) -> Option<FontMetrics> {
+        if !size.is_finite() || size <= 0. { return None; }
+        let font = self.get(font)?;
+        let scale = size / f32::from(font.face().metrics(skrifa::instance::Size::unscaled(),
+            &font.location).units_per_em);
+        Some(FontMetrics { ascent: font.metrics.ascent * scale,
+            descent: font.metrics.descent * scale, line_gap: font.metrics.line_gap * scale })
+    }
+
+    /// Return design-space axes, or `None` for a foreign ID.
+    /// Non-variable fonts return an empty vector.
+    pub fn axes(&self, font: FontId) -> Option<Vec<Axis>> {
+        Some(self.get(font)?.face().axes().iter().map(|axis| Axis {
+            tag: axis.tag().to_be_bytes(), min: axis.min_value(),
+            default: axis.default_value(), max: axis.max_value(),
+        }).collect())
+    }
+
+    /// Load a fresh instance sharing the base's bytes and cached character set.
+    /// Values clamp to axis ranges; unknown tags are ignored, omitted axes use
+    /// their defaults, and duplicate tags use the last value. Non-variable
+    /// fonts produce identical instances. Returns [`LoadingError::UnknownFont`]
+    /// for a foreign base. Other loading errors and GPU requirements are the
+    /// same as [`Self::load_from_bytes`].
+    pub fn load_variation(&mut self, device: &wgpu::Device, queue: &wgpu::Queue,
+        base: FontId, axes: &[([u8; 4], f32)]) -> Result<FontId, LoadingError> {
+        let base = self.get(base).ok_or(LoadingError::UnknownFont)?;
+        let data = base.data.clone();
+        let characters = base.characters.clone();
+        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
+        let font = Font::from_instance(device, &mut encoder, queue, data, characters, axes, &mut self.atlas)?;
+        queue.submit(Some(encoder.finish()));
+        let id = FontId(font.key);
+        self.cache.insert(id, font);
+        Ok(id)
     }
 
     #[cfg(feature = "unstable-internals")]
