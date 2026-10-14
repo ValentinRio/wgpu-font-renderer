@@ -3,7 +3,9 @@
 //!
 //! [`FontStore`] loads a font and writes the selected glyph outlines into a float
 //! atlas. [`TypeWriter`] shapes text by script into paragraphs containing glyph IDs
-//! and pixel advances and offsets. [`TextRenderer`] prepares glyph instances and draws them
+//! and pixel advances and offsets. [`TypeWriter::layout_text`] shapes and wraps
+//! hard-break-delimited paragraphs into a [`TextBlock`] using [`TextLayout`], Unicode break opportunities and font
+//! metrics. [`TextRenderer`] prepares glyph instances and draws them
 //! with shader-computed coverage, without rasterizing glyphs on the CPU.
 //! Cubic outlines are approximated by quadratics within 0.25 font units, with a
 //! depth cap of 10 for pathological inputs that may exceed this tolerance.
@@ -92,6 +94,21 @@
 //! # }
 //! ```
 
+//! Wrapped blocks can be passed directly to `prepare`; their lines are read-only.
+//! ```no_run
+//! use wgpu_font_renderer::{Align, FontId, FontStore, TextLayout, TextRenderer, TypeWriter};
+//! # fn wrapped(device: &wgpu::Device, queue: &wgpu::Queue,
+//! # fonts: &FontStore, font: FontId, renderer: &mut TextRenderer) {
+//! let layout = TextLayout::default().with_max_width(240.).with_align(Align::Center);
+//! let mut block = TypeWriter::new().layout_text(
+//!     fonts, font, [24., 24.], 32., [0., 0., 0., 1.],
+//!     "Text wraps at Unicode line-break opportunities.", &layout,
+//! ).expect("valid font, size and layout");
+//! block.set_position([40., 24.]);
+//! renderer.prepare(device, queue, &block, fonts);
+//! # }
+//! ```
+//!
 //! Every stable public type can be named through this crate or wgpu alone.
 //! ```
 //! fn public_types(
@@ -103,12 +120,18 @@
 //!     _: Option<wgpu_font_renderer::FontStore>,
 //!     _: Option<wgpu_font_renderer::LoadingError>,
 //!     _: Option<wgpu_font_renderer::Paragraph>,
+//!     _: Option<wgpu_font_renderer::TextBlock>,
+//!     _: wgpu_font_renderer::TextLayout,
+//!     _: wgpu_font_renderer::Align,
+//!     _: wgpu_font_renderer::LineHeight,
 //!     _: wgpu_font_renderer::TypeWriter,
 //!     _: wgpu_font_renderer::SubpixelOrder,
 //!     _: Option<wgpu_font_renderer::TextRenderer>,
 //!     _: Option<wgpu::TextureFormat>,
 //! ) {}
 //! public_types(None, None, None, wgpu_font_renderer::GlyphId(0), None, None, None, None,
+//!     None, wgpu_font_renderer::TextLayout::default(),
+//!     wgpu_font_renderer::Align::Left, wgpu_font_renderer::LineHeight::Font,
 //!     wgpu_font_renderer::TypeWriter::default(),
 //!     wgpu_font_renderer::SubpixelOrder::None, None, None);
 //! ```
@@ -126,7 +149,7 @@ pub use renderer::{SubpixelOrder, TextRenderer};
 pub use store::{Axis, FontId, FontMetrics, FontStore};
 pub use loader::LoadingError;
 pub use typewriter::TypeWriter;
-pub use typewriter::{GlyphId, Paragraph, ShapedGlyph};
+pub use typewriter::{Align, GlyphId, LineHeight, Paragraph, ShapedGlyph, TextBlock, TextLayout};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod atlas_tests;

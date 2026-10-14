@@ -9,12 +9,17 @@ below 1.0, a minor bump (0.x) may break the API.
 
 ### Added
 
+- `TypeWriter::layout_text`, `TextLayout`, `Align`, `LineHeight` and `TextBlock` add greedy Unicode wrapping, hard breaks, hanging trailing spaces, alignment and block movement. Layout preserves each paragraph’s shaping and uses each font instance’s metrics; `shape_text` remains single-line.
+
 - Metric table selection intentionally matches the renderer rather than skrifa’s `Metrics`: typo metrics require OS/2 v4 with USE_TYPO_METRICS; a zero hhea ascender falls back to nonzero typo, then Windows metrics. Instances are never unloaded; every instance uploads its own outlines, so per-frame creation eventually fills the atlas (`AtlasFull`).
 - `FontStore::metrics` and non-exhaustive `FontMetrics` expose the anchor ascender (possibly zero or negative), nonnegative descent magnitude and signed line gap; ascent matches the renderer’s baseline anchor, including MVAR deltas.
 - `FontStore::axes` borrows cached variable font ranges as `&[Axis]`; `Axis` is non-exhaustive. `load_variation` shares base bytes and characters, uploads instance outlines, inherits the base location, clamps overrides and ignores unknown tags. One skrifa normalized location drives outlines, placement, metrics and shaping.
 - `LoadingError::UnknownFont` distinguishes a foreign variation base from invalid font data.
 
 ### Changed
+
+- Text layout whitespace is close to CSS `white-space: pre-wrap`, except that leading spaces never wrap onto a line of their own: they count toward their line's width, so `"   abc"` overflows a maximum width that fits `"abc"`. Breakable spaces (line break class SP or BA, including tab) hang at every line end without contributing width or alignment; no-break spaces never hang.
+- Hard breaks (LF, CR, CRLF as one break, VT, FF, NEL, U+2028 and U+2029) split text into independently shaped paragraphs, including independent script detection. For `"ع\n12"`, `12` is shaped with the Latin script tag (same font) rather than continuing the Arabic run. This preserves combining marks at paragraph starts. Reordered spans stay unbroken, block moves preserve line offsets, and layout rejects non-finite origins, line widths, derived line heights and block sizes.
 
 - Variable fonts shape at their normalized location even when all coordinates are zero. Unlike 0.2, FeatureVariations whose condition ranges cover the default location now apply there.
 - Output glyph zero (`.notdef`) is omitted from `Paragraph::glyphs()` only when its source is a Cc control or default-ignorable character, contributing no advance or ink. Nonzero output glyphs, including substitutions and ligatures with such a source, retain swash’s glyphs and positioning. Mapped Cc controls enter ordinary glyph shaping to retain their font glyphs; swash’s control handling would otherwise hide them before output. Missing letters and symbols still draw `.notdef` when it has an outline. Swash’s existing hiding of mapped default-ignorables (for example Roboto’s U+00AD), like HarfBuzz’s default, is retained from 0.2.
