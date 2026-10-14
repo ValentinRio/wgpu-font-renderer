@@ -108,8 +108,12 @@ Use `set_position` and `set_color` to update all lines together.
 
 `ShapedGlyph::source()` gives the cluster’s byte range in the original input,
 including across wrapped lines and hard breaks. Use these ranges for caret
-placement, hit testing and selection without reshaping; ligatures and combining
-sequences share a range. Hand-pushed glyphs return `None`.
+placement, hit testing and selection without reshaping. Ranges follow shaping
+clusters: ligatures share a range, and a base normally stays with its combining
+marks, but sequences longer than 32 characters split into multiple clusters.
+Distinct clusters have non-overlapping ranges; reordering shapers may emit them
+in decreasing order. Hand-pushed glyphs return `None`. Shaping and layout reject
+inputs longer than `u32::MAX` bytes.
 
 Glyph zero is always cached when it has an outline, so characters the font lacks
 draw `.notdef`; an empty `.notdef` advances without drawing. Output glyph zero from controls (Cc) or

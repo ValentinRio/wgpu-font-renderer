@@ -338,7 +338,7 @@ fn default_shaping_applies_feature_variations_covering_zero() {
         let mut with_zero = Vec::new();
         shaper.shape_with(|cluster| with_zero.extend(cluster.glyphs.iter().map(|g| crate::ShapedGlyph {
             glyph: GlyphId(g.id), advance: g.advance, offset: [g.x, -g.y],
-            source: Some([cluster.source.start as usize, cluster.source.end as usize]),
+            source: [cluster.source.start, cluster.source.end],
         })));
         assert_eq!(actual.glyphs(), with_zero);
         if has_substitution {
@@ -436,7 +436,7 @@ fn mapped_control_keeps_its_real_glyph_and_swash_positioning() {
     let mut expected = Vec::new();
     shaper.shape_with(|cluster| expected.extend(cluster.glyphs.iter().map(|g| crate::ShapedGlyph {
         glyph: GlyphId(g.id), advance: g.advance, offset: [g.x, -g.y],
-            source: Some([cluster.source.start as usize, cluster.source.end as usize]),
+            source: [cluster.source.start, cluster.source.end],
     })));
     assert!(expected.iter().any(|g| g.glyph == GlyphId(3)));
     let Some((device, queue, _)) = common::gpu() else { return; };
@@ -485,7 +485,7 @@ fn visible_ligature_starting_at_missing_default_ignorable_is_retained() {
     let mut expected = Vec::new();
     shaper.shape_with(|cluster| expected.extend(cluster.glyphs.iter().map(|g| crate::ShapedGlyph {
         glyph: GlyphId(g.id), advance: g.advance, offset: [g.x, -g.y],
-            source: Some([cluster.source.start as usize, cluster.source.end as usize]),
+            source: [cluster.source.start, cluster.source.end],
     })));
     assert_eq!(expected.len(), 1, "fixture must form a ligature");
     assert_eq!(expected[0].glyph, output);
