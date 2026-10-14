@@ -101,6 +101,20 @@ a 256-layer device limit allows a 4 GiB atlas. Growth temporarily keeps both
 the old and new textures in memory. A load that grows the atlas and then fails
 restores allocation bookkeeping but keeps the larger texture.
 
+### Untrusted fonts
+
+Font bytes are parsed by skrifa and swash. For any input, `load_from_bytes`
+returns a font or a `LoadingError`, within fixed per-glyph work limits: at
+most 65,535 points after composite expansion, 4,096 composite component
+references and 16,384 encoded segments. A glyph past a limit fails the load with
+`LoadingError::GlyphTooComplex`; real glyphs stay far below them. These
+guarantees are exercised by a seeded robustness test over random and corrupted
+fonts. Two limits remain upstream: swash's `cmap` lookup uses unchecked
+arithmetic, so a crafted `cmap` panics in debug builds (release builds map the
+character to a wrong glyph instead), and skrifa bounds CFF subroutine nesting
+but not total work, so a crafted CFF glyph can take a long time to load even
+though its memory stays bounded.
+
 `FontStore::load` reads the font from a file path. On wasm, or to embed the font in the binary, use `FontStore::load_from_bytes`.
 
 A complete program is in [`examples/simple.rs`](examples/simple.rs).

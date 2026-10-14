@@ -33,7 +33,7 @@ pub struct Glyph {
     /// `ascender - max(bbox.y_min, 0) - bbox.height()`, in font units.
     /// When `y_min < 0`, this is `ascender - y_max + y_min`; the renderer adds
     /// `abs(descent)` back before scaling to pixels and adding paragraph y.
-    pub y_offset: i16,
+    pub y_offset: i32,
     /// Bounding-box left edge in font units, used by the shader.
     pub left_side_bearing: i16,
 }
@@ -62,6 +62,11 @@ pub enum LoadingError {
     InvalidFont,
     /// Outlined glyphs that could not fit in the atlas. The font was not loaded.
     AtlasFull(Vec<crate::GlyphId>),
+    /// A glyph's outline exceeds the loader's work limits: more than 65,535
+    /// points after composite expansion, more than 4,096 composite component
+    /// references, or more than 16,384 encoded segments. Real glyphs stay far
+    /// below these. The font was not loaded.
+    GlyphTooComplex(crate::GlyphId),
 }
 
 impl fmt::Display for LoadingError {
@@ -70,6 +75,7 @@ impl fmt::Display for LoadingError {
             Self::Io(error) => write!(f, "Could not read font: {error}"),
             Self::InvalidFont => write!(f, "Invalid font data"),
             Self::AtlasFull(glyphs) => write!(f, "Glyphs did not fit in the atlas: {glyphs:?}"),
+            Self::GlyphTooComplex(glyph) => write!(f, "Glyph outline exceeds the loader's limits: {glyph:?}"),
         }
     }
 }
@@ -78,7 +84,7 @@ impl std::error::Error for LoadingError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
-            Self::InvalidFont | Self::AtlasFull(_) => None,
+            Self::InvalidFont | Self::AtlasFull(_) | Self::GlyphTooComplex(_) => None,
         }
     }
 }
@@ -199,13 +205,16 @@ fn create_glyph_cache(
     let mut failed = Vec::new();
 
     for glyph_id in glyph_ids {
+        check_composite_budget(face, glyph_id)?;
         if let Some(bbox) = glyph_bounding_box(face, glyph_id) {
             let (descent, y_offset, curves, band_data) = prepare_glyph(face, glyph_id, bbox)?;
             let left_side_bearing = bbox.x_min;
 
             // Each eight-float segment occupies two RGBA32F texels, including
             // the original index and sort-key padding slots.
-            let curves_count = curves.len() as u32;
+            let too_complex = || LoadingError::GlyphTooComplex(crate::GlyphId(glyph_id.to_u32() as u16));
+            let curves_count = u32::try_from(curves.len()).map_err(|_| too_complex())?;
+            let bands_count = u32::try_from(band_data.len()).map_err(|_| too_complex())?;
     
             let bytes = unsafe {
                 std::slice::from_raw_parts(curves.as_ptr() as *const u8, curves.len() * 4)
@@ -213,7 +222,7 @@ fn create_glyph_cache(
 
             if let Some(allocation) = atlas.upload(curves_count, bytes, device, encoder, queue) {
                 let bands = atlas.upload_bands(
-                    band_data.len() as u32,
+                    bands_count,
                     bytemuck::cast_slice(&band_data),
                     device, encoder, queue,
                 );
@@ -245,18 +254,18 @@ fn create_glyph_cache(
 
 fn prepare_glyph(
     face: &SkFontRef<'_>, id: GlyphId, bbox: Rect,
-) -> Result<(i16, i16, Vec<f32>, Vec<f32>)> {
-    // Cached dimensions and placement are i16. Malformed outlines and metrics
-    // must be rejected before arithmetic or later renderer calculations overflow.
-    bbox.x_max.checked_sub(bbox.x_min).ok_or(LoadingError::InvalidFont)?;
-    let height = bbox.y_max.checked_sub(bbox.y_min).ok_or(LoadingError::InvalidFont)?;
+) -> Result<(i16, i32, Vec<f32>, Vec<f32>)> {
+    // Any legal i16 box spans at most 65,535 units, so i32 holds every derived value.
+    let height = bbox.height();
     let descent = bbox.y_min.min(0);
-    let distance = bbox.y_min.max(0);
-    let total_height = i32::from(height) + i32::from(descent) + i32::from(distance);
-    let y_offset = i16::try_from(i32::from(face_ascender(face)) - i32::from(distance) - i32::from(height))
-        .map_err(|_| LoadingError::InvalidFont)?;
+    let distance = i32::from(bbox.y_min.max(0));
+    let total_height = height + i32::from(descent) + distance;
+    let y_offset = i32::from(face_ascender(face)) - distance - height;
     let mut builder = BezierBuilder::new(total_height as f32);
     outline_glyph(face, id, &mut builder);
+    if builder.over_budget {
+        return Err(LoadingError::GlyphTooComplex(crate::GlyphId(id.to_u32() as u16)));
+    }
     builder.finish();
     let bands = build_slug_bands(&builder.curves);
     Ok((descent, y_offset, builder.curves, bands))
@@ -265,11 +274,55 @@ fn prepare_glyph(
 // Exercise exactly the parsing, selection, metrics, outlines and bands used by
 // the GPU loader, without allocating an atlas.
 #[cfg(feature = "unstable-internals")]
-pub(crate) fn check_font_bytes(data: &[u8], characters: &str) -> Result<()> {
+pub(crate) fn check_font_bytes(data: &[u8], characters: &str) -> Result<usize> {
     let (face, offset, key) = parse_font(data, 0)?;
+    let mut prepared = 0;
     for id in glyph_ids(FontRef { data, offset, key }, characters) {
+        check_composite_budget(&face, id)?;
         if let Some(bbox) = glyph_bounding_box(&face, id) {
             prepare_glyph(&face, id, bbox)?;
+            prepared += 1;
+        }
+    }
+    Ok(prepared)
+}
+
+const MAX_GLYPH_POINTS: usize = 65_535;
+const MAX_COMPONENT_REFERENCES: usize = 4_096;
+const MAX_GLYPH_SEGMENTS: usize = 16_384;
+// skrifa stops composite recursion past this depth; deeper references never draw.
+const MAX_COMPOSITE_DEPTH: usize = 32;
+
+// skrifa expands a TrueType composite and sizes its scratch memory before any
+// point limit applies, and bounds only recursion depth, not fan-out. Walk the
+// component graph first with a fixed budget so a crafted composite is
+// rejected before skrifa is asked to draw it. Parse errors are left to skrifa.
+fn check_composite_budget(face: &SkFontRef<'_>, id: GlyphId) -> Result<()> {
+    use skrifa::raw::tables::glyf::Glyph as Outline;
+    let (Ok(glyf), Ok(loca)) = (face.glyf(), face.loca(None)) else {
+        return Ok(());
+    };
+    let too_complex = || LoadingError::GlyphTooComplex(crate::GlyphId(id.to_u32() as u16));
+    let mut pending = vec![(id, 0)];
+    let (mut points, mut references) = (0usize, 0usize);
+    while let Some((glyph, depth)) = pending.pop() {
+        match loca.get_glyf(glyph, &glyf) {
+            Ok(Some(Outline::Simple(simple))) => {
+                points += simple.num_points();
+                if points > MAX_GLYPH_POINTS {
+                    return Err(too_complex());
+                }
+            }
+            Ok(Some(Outline::Composite(composite))) if depth < MAX_COMPOSITE_DEPTH => {
+                for (component, _) in composite.component_glyphs_and_flags() {
+                    references += 1;
+                    if references > MAX_COMPONENT_REFERENCES {
+                        return Err(too_complex());
+                    }
+                    pending.push((component.into(), depth + 1));
+                }
+            }
+            _ => {}
         }
     }
     Ok(())
@@ -291,10 +344,10 @@ pub struct Rect {
 }
 
 impl Rect {
-    /// Width in font units.
-    pub fn width(&self) -> i16 { self.x_max - self.x_min }
-    /// Height in font units.
-    pub fn height(&self) -> i16 { self.y_max - self.y_min }
+    /// Width in font units; i32 because a legal i16 box can span 65,535 units.
+    pub fn width(&self) -> i32 { i32::from(self.x_max) - i32::from(self.x_min) }
+    /// Height in font units; i32 for the same reason as [`Self::width`].
+    pub fn height(&self) -> i32 { i32::from(self.y_max) - i32::from(self.y_min) }
 }
 
 fn draw_settings() -> DrawSettings<'static> {
@@ -406,6 +459,8 @@ struct BezierBuilder {
     contours: Vec<usize>,
     pub curves: Vec<f32>,
     total_height: f32,
+    /// Set once the glyph exceeds `MAX_GLYPH_SEGMENTS`; further commands are dropped.
+    over_budget: bool,
 }
 
 const CUBIC_TOLERANCE: f32 = 0.25;
@@ -419,6 +474,15 @@ impl BezierBuilder {
             contours: Vec::new(),
             curves: Vec::new(),
             total_height,
+            over_budget: false,
+        }
+    }
+
+    fn push_segment(&mut self, segment: [f32; 8]) {
+        if self.curves.len() >= MAX_GLYPH_SEGMENTS * 8 {
+            self.over_budget = true;
+        } else {
+            self.curves.extend_from_slice(&segment);
         }
     }
 
@@ -469,8 +533,11 @@ impl BezierBuilder {
         let d: [f32; 2] = std::array::from_fn(|i| -p[0][i] + 3. * p[1][i] - 3. * p[2][i] + p[3][i]);
         // Degree reduction has error D*t*(t-0.5)*(t-1), whose maximum
         // magnitude is |D|/(12*sqrt(3)). Use the conservative bound |D|/12.
+        if self.over_budget {
+            return;
+        }
         if !(d[0].hypot(d[1]) > 12. * CUBIC_TOLERANCE) || depth >= 10 {
-            self.curves.extend_from_slice(&[
+            self.push_segment([
                 p[0][0], p[0][1], control[0], control[1], p[3][0], p[3][1], 0., 0.,
             ]);
         } else {
@@ -489,6 +556,10 @@ impl BezierBuilder {
 
 impl OutlinePen for BezierBuilder {
     fn move_to(&mut self, x: f32, y: f32) {
+        if self.contours.len() >= MAX_GLYPH_SEGMENTS {
+            self.over_budget = true;
+            return;
+        }
         self.last_position = [x, self.total_height - y];
         self.contour_position = [x, y];
         self.contours.push(self.curves.len());
@@ -497,7 +568,7 @@ impl OutlinePen for BezierBuilder {
 
     fn line_to(&mut self, x: f32, y: f32) {
         let [x0, y0] = self.last_position;
-        self.curves.extend_from_slice(&[
+        self.push_segment([
             x0,
             y0,
             x,
@@ -512,7 +583,7 @@ impl OutlinePen for BezierBuilder {
 
     fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
         let [x0, y0] = self.last_position;
-        self.curves.extend_from_slice(&[
+        self.push_segment([
             x0,
             y0,
             x1,

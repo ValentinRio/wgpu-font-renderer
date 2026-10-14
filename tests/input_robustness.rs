@@ -125,29 +125,27 @@ fn seeded_loader_and_shaper_never_panic() {
         .ok()
         .map(|s| s.parse::<usize>().unwrap());
     let cases: Vec<_> = replay.map_or_else(|| (0..CASES).collect(), |case| vec![case]);
-    let mut accepted = 0;
+    let (mut accepted, mut prepared) = (0, 0);
     for &case in &cases {
         let bytes = input(seed, case);
         let result = no_panic(seed, case, "CPU loader", || {
             internals::check_font_bytes(&bytes, PRESET)
         });
-        if seed == SEED && case == 8941 {
-            assert!(
-                matches!(result, Err(wgpu_font_renderer::LoadingError::InvalidFont)),
-                "overflow regression must be rejected"
-            );
-        }
-        if result.is_ok() {
+        // Case 8941 once overflowed i16 glyph-height arithmetic; it now only has to not panic.
+        if let Ok(glyphs) = result {
             accepted += 1;
+            if glyphs > 0 {
+                prepared += 1;
+            }
         }
     }
     eprintln!(
-        "CPU loader: {} inputs, {accepted} accepted, {:?}",
+        "CPU loader: {} inputs, {accepted} accepted, {prepared} prepared outlined glyphs, {:?}",
         cases.len(),
         start.elapsed()
     );
     if replay.is_none() {
-        assert!(accepted >= 300, "must exercise glyph-cache construction");
+        assert!(prepared >= 3_000, "must exercise glyph-cache construction, not only header checks");
     }
 
     let mut writer = TypeWriter::new();
@@ -182,12 +180,6 @@ fn seeded_loader_and_shaper_never_panic() {
         let result = no_panic(seed, case, "GPU load_from_bytes", || {
             store.load_from_bytes(&device, &queue, &bytes, PRESET)
         });
-        if seed == SEED && case == 8941 {
-            assert!(
-                matches!(result, Err(wgpu_font_renderer::LoadingError::InvalidFont)),
-                "GPU overflow regression must be rejected"
-            );
-        }
         if result.is_ok() {
             gpu_accepted += 1;
         }
@@ -197,6 +189,9 @@ fn seeded_loader_and_shaper_never_panic() {
         "GPU load_from_bytes: {} inputs, {gpu_accepted} accepted",
         gpu_cases.len()
     );
+    if replay.is_none() {
+        assert!(gpu_accepted >= 100, "GPU path must load real fonts, not only reject");
+    }
     let mut store = FontStore::new(&device);
     for (font, bytes) in FONTS.iter().enumerate() {
         let key = store
@@ -218,4 +213,124 @@ fn seeded_loader_and_shaper_never_panic() {
         cases.len() * FONTS.len(),
         start.elapsed()
     );
+}
+
+// Replace Roboto's outlines with `glyphs` at ids 0.., every other id empty.
+// New long-format glyf and loca tables are appended and the directory repointed;
+// parsers here do not verify checksums.
+fn with_glyphs(glyphs: &[Vec<u8>]) -> Vec<u8> {
+    let mut bytes = FONTS[0].to_vec();
+    let read16 = |b: &[u8], at: usize| u16::from_be_bytes([b[at], b[at + 1]]) as usize;
+    let read32 = |b: &[u8], at: usize| u32::from_be_bytes(b[at..at + 4].try_into().unwrap()) as usize;
+    let record = |b: &[u8], tag: &[u8; 4]| {
+        (0..read16(b, 4)).map(|i| 12 + i * 16).find(|&r| &b[r..r + 4] == tag).unwrap()
+    };
+    let glyph_count = read16(&bytes, read32(&bytes, record(&bytes, b"maxp") + 8) + 4);
+    let mut glyf = Vec::new();
+    let mut loca = Vec::new();
+    for id in 0..=glyph_count {
+        loca.extend_from_slice(&(glyf.len() as u32).to_be_bytes());
+        if let Some(glyph) = glyphs.get(id) {
+            glyf.extend_from_slice(glyph);
+            glyf.resize(glyf.len().next_multiple_of(4), 0);
+        }
+    }
+    // Real fonts keep hmtx's left side bearing equal to the glyph's x_min, and
+    // skrifa shifts outlines to it, so match it for the crafted glyphs.
+    let hmtx = read32(&bytes, record(&bytes, b"hmtx") + 8);
+    let metrics = read16(&bytes, read32(&bytes, record(&bytes, b"hhea") + 8) + 34);
+    for (id, glyph) in glyphs.iter().enumerate().take(metrics) {
+        bytes[hmtx + id * 4 + 2..hmtx + id * 4 + 4].copy_from_slice(&glyph[2..4]);
+    }
+    let head = read32(&bytes, record(&bytes, b"head") + 8);
+    bytes[head + 50..head + 52].copy_from_slice(&1u16.to_be_bytes());
+    for (tag, table) in [(b"glyf", glyf), (b"loca", loca)] {
+        bytes.resize(bytes.len().next_multiple_of(4), 0);
+        let r = record(&bytes, tag);
+        let offset = bytes.len() as u32;
+        bytes[r + 8..r + 12].copy_from_slice(&offset.to_be_bytes());
+        bytes[r + 12..r + 16].copy_from_slice(&(table.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&table);
+    }
+    bytes
+}
+
+fn glyph_header(contours: i16, bbox: [i16; 4]) -> Vec<u8> {
+    [contours].iter().chain(&bbox).flat_map(|v| v.to_be_bytes()).collect()
+}
+
+// One closed contour of `points` on-curve points stepping right by `step`
+// units from `x_min`, with y alternating 0 and 1, so it has `points` segments.
+fn simple_glyph(points: u16, x_min: i16, step: u8) -> Vec<u8> {
+    let x_max = (i32::from(x_min) + (i32::from(points) - 1) * i32::from(step)) as i16;
+    let mut glyph = glyph_header(1, [x_min, 0, x_max, 1]);
+    glyph.extend_from_slice(&(points - 1).to_be_bytes());
+    glyph.extend_from_slice(&0u16.to_be_bytes());
+    // Flags: on curve; the first point has word x/y, the rest have a short
+    // positive x and a short y that is +1 on odd points and -1 on even ones.
+    glyph.push(0x01);
+    glyph.extend((1..points).map(|i| 0x01 | 0x02 | 0x10 | 0x04 | if i % 2 == 1 { 0x20 } else { 0 }));
+    glyph.extend_from_slice(&x_min.to_be_bytes());
+    glyph.extend(std::iter::repeat_n(step, points as usize - 1));
+    glyph.extend_from_slice(&0i16.to_be_bytes());
+    glyph.extend(std::iter::repeat_n(1u8, points as usize - 1));
+    glyph
+}
+
+// A composite referencing `component` `copies` times at zero offset.
+fn composite_glyph(component: u16, copies: usize) -> Vec<u8> {
+    let mut glyph = glyph_header(-1, [0, 0, 1, 1]);
+    for i in 0..copies {
+        let more = if i + 1 < copies { 0x0020 } else { 0 };
+        glyph.extend_from_slice(&(0x0001u16 | 0x0002 | more).to_be_bytes());
+        glyph.extend_from_slice(&component.to_be_bytes());
+        glyph.extend_from_slice(&[0; 4]);
+    }
+    glyph
+}
+
+fn too_complex(result: Result<usize, wgpu_font_renderer::LoadingError>) -> bool {
+    matches!(result, Err(wgpu_font_renderer::LoadingError::GlyphTooComplex(_)))
+}
+
+#[test]
+fn glyph_wider_than_i16_loads() {
+    // OpenType allows x_min=-20000 and x_max=19750; the span exceeds i16::MAX.
+    let font = with_glyphs(&[simple_glyph(160, -20000, 250)]);
+    assert_eq!(internals::check_font_bytes(&font, "").unwrap(), 1);
+    if let Some((device, queue, _)) = common::gpu() {
+        let mut store = FontStore::new(&device);
+        let id = store.load_from_bytes(&device, &queue, &font, "").unwrap();
+        let glyph = &internals::font(&store, id).unwrap().glyph_cache[&0];
+        assert_eq!(glyph.bbox.width(), 39_750);
+    }
+}
+
+#[test]
+fn composite_fan_out_is_rejected_before_drawing() {
+    // Twenty levels, each referencing the next twice: 2^20 references to an
+    // empty leaf. Nothing would ever be drawn, so only the reference budget
+    // can reject it; with a large leaf skrifa would size scratch memory for
+    // 2^20 copies of its points before drawing.
+    let glyphs: Vec<_> = (1..=20).map(|next| composite_glyph(next, 2)).collect();
+    assert!(too_complex(internals::check_font_bytes(&with_glyphs(&glyphs), "")));
+}
+
+#[test]
+fn expanded_point_count_is_bounded() {
+    // Two references to a 40,000-point glyph expand to 80,000 points.
+    let font = with_glyphs(&[composite_glyph(1, 2), simple_glyph(40_000, 0, 0)]);
+    assert!(too_complex(internals::check_font_bytes(&font, "")));
+    // One reference stays within the point budget and fails on segments instead.
+    let font = with_glyphs(&[composite_glyph(1, 1), simple_glyph(40_000, 0, 0)]);
+    assert!(too_complex(internals::check_font_bytes(&font, "")));
+}
+
+#[test]
+fn encoded_segments_are_bounded() {
+    let font = with_glyphs(&[simple_glyph(16_384, 0, 0)]);
+    assert_eq!(internals::check_font_bytes(&font, "").unwrap(), 1);
+    // 16,386 points: 16,385 lines plus the closing line back to the start.
+    let font = with_glyphs(&[simple_glyph(16_386, 0, 0)]);
+    assert!(too_complex(internals::check_font_bytes(&font, "")));
 }

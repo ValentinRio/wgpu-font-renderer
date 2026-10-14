@@ -29,6 +29,13 @@
 //! per 512 × 2048 RGBA32Float layer, initially 32 MiB; 256 layers use 4 GiB.
 //! Growth temporarily retains both old and new textures. A load that grows the
 //! atlas and then fails restores allocations but keeps the larger texture.
+//!
+//! For any font bytes, loading returns a font or a [`LoadingError`] within fixed
+//! per-glyph work limits (65,535 points after composite expansion, 4,096
+//! composite component references, 16,384 encoded segments); a glyph past them
+//! gives [`LoadingError::GlyphTooComplex`]. Upstream, swash's `cmap` lookup can
+//! panic on crafted data in debug builds, and skrifa does not bound total CFF
+//! work, so a crafted CFF glyph can load slowly with bounded memory.
 //! Glyph ink is placed at the pen plus its shaped offset plus the cached left
 //! side bearing scaled to pixels. In 0.2, each glyph's ink was anchored at the
 //! pen; text now shifts by each glyph's bearing. TrueType outlines apply
@@ -117,8 +124,8 @@ mod atlas_tests;
 pub mod internals {
     pub use crate::loader::{Font, Glyph};
 
-    /// Run the loader CPU path without uploading the glyph cache.
-    pub fn check_font_bytes(data: &[u8], characters: &str) -> Result<(), crate::LoadingError> {
+    /// Run the loader CPU path without uploading; returns how many outlined glyphs were prepared.
+    pub fn check_font_bytes(data: &[u8], characters: &str) -> Result<usize, crate::LoadingError> {
         crate::loader::check_font_bytes(data, characters)
     }
 

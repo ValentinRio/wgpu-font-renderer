@@ -9,6 +9,7 @@ below 1.0, a minor bump (0.x) may break the API.
 
 ### Changed
 
+- Loading never panics on malformed glyph outlines and enforces per-glyph work limits, rejecting a glyph past them with the new `LoadingError::GlyphTooComplex`. Glyphs whose bounding box spans more than 32,767 font units, which OpenType allows, now load.
 - Grayscale text now honours colour alpha, including the LCD fallback; in 0.2 it ignored alpha. LCD continues to scale coverage by alpha. Alpha one preserves existing output.
 
 ### Breaking
@@ -19,7 +20,7 @@ below 1.0, a minor bump (0.x) may break the API.
 - `FontStore::new` takes only a device.
 - `FontStore::load` accepts any `AsRef<Path>` path and returns `FontId`.
 - `FontStore::load_from_bytes` returns `FontId`.
-- `LoadingError` is non-exhaustive, with `Io(std::io::Error)`, `InvalidFont`, and `AtlasFull(Vec<GlyphId>)`; it implements `Error` and preserves the I/O source.
+- `LoadingError` is non-exhaustive, with `Io(std::io::Error)`, `InvalidFont`, and `AtlasFull(Vec<GlyphId>)` and `GlyphTooComplex(GlyphId)`; it implements `Error` and preserves the I/O source.
 - `Paragraph` fields are private; use getters, `set_position`, and `set_color`.
 - `Paragraph::new` takes the font first, followed by position, size, and color.
 - `Paragraph::append` is renamed to `push` (zero offset); `push_at` accepts an offset. `glyphs()` now returns `&[ShapedGlyph]`, a non-exhaustive, `Copy` struct with public `glyph`, `advance`, and `offset` fields in physical pixels, x rightward and y downward.
