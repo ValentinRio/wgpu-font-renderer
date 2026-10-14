@@ -110,10 +110,13 @@ Use `set_position` and `set_color` to update all lines together.
 including across wrapped lines and hard breaks. Use these ranges for caret
 placement, hit testing and selection without reshaping. Ranges follow shaping
 clusters: ligatures share a range, and a base normally stays with its combining
-marks, but sequences longer than 32 characters split into multiple clusters.
-Distinct clusters have non-overlapping ranges; reordering shapers may emit them
-in decreasing order. Hand-pushed glyphs return `None`. Shaping and layout reject
-inputs longer than `u32::MAX` bytes.
+marks. Swash caps clusters at 32 internal parser characters; decomposition can
+reach that cap with fewer input characters, while emoji variation selectors
+U+FE0E/U+FE0F extend a range without counting toward it. Ranges may overlap at
+cap boundaries (see [Untrusted fonts](#untrusted-fonts)); otherwise distinct
+cluster ranges do not overlap. Reordering shapers may emit decreasing ranges.
+Hand-pushed glyphs return `None`. Shaping and layout reject inputs longer than
+`u32::MAX` bytes.
 
 Glyph zero is always cached when it has an outline, so characters the font lacks
 draw `.notdef`; an empty `.notdef` advances without drawing. Output glyph zero from controls (Cc) or
@@ -177,12 +180,19 @@ outlines of every Unicode-mapped character plus glyph zero load within them for
 28 fonts (DejaVu and Liberation families, Noto Color Emoji, Roboto, Cantarell and
 a Noto Serif SC subset); unmapped glyphs and full CJK fonts were not measured.
 A seeded robustness test over random and corrupted fonts found no panic in this
-crate after the fixes above; that is tested behaviour, not a proof. Two limits
+crate after the fixes above; that is tested behaviour, not a proof. Limits
 remain upstream: swash's `cmap` lookup uses unchecked
 arithmetic, so a crafted `cmap` panics in debug builds (release builds map the
 character to a wrong glyph instead), and skrifa bounds CFF subroutine nesting
 but not total work, so a crafted CFF glyph can take a long time to load even
-though its memory stays bounded.
+though its memory stays bounded. Swash also caps a cluster at 32 internal
+parser characters and repeats the boundary token in the following cluster,
+which can draw a mark twice even at the end of a script run or hard-break piece.
+The corresponding source ranges may overlap. Decomposition can span the cap:
+pending components are retained, with a shared input-character range across
+clusters. Emoji variation selectors U+FE0E/U+FE0F extend a range without counting
+as internal parser characters. The crate keeps swash’s output; restarting its
+parser would discard pending decomposed components.
 
 `FontStore::load` reads the font from a file path. On wasm, or to embed the font in the binary, use `FontStore::load_from_bytes`.
 

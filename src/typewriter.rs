@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use swash::{
     shape::ShapeContext,
-    text::{analyze, cluster::{Boundary, CharCluster, Parser, Token, MAX_CLUSTER_SIZE}, Codepoint, LineBreak, Script},
+    text::{analyze, cluster::{Boundary, CharCluster, Parser, Token}, Codepoint, LineBreak, Script},
 };
 
 use crate::{FontId, FontStore};
@@ -41,10 +41,15 @@ impl ShapedGlyph {
     /// same range, covering all characters of a ligature. Carets and hit tests
     /// can use these boundaries, but cannot place a caret inside a cluster.
     /// Shaping clusters normally keep a base and its combining marks together;
-    /// sequences longer than 32 characters are split into multiple clusters.
-    /// Ranges of distinct clusters in a paragraph never overlap. Glyphs remain
-    /// in logical script-run order (with shaping order within runs); ranges may
-    /// decrease within a reordering run. No bidi reordering is performed.
+    /// swash caps clusters at 32 internal parser characters. Decomposition can
+    /// reach the cap with fewer input characters; emoji variation selectors
+    /// U+FE0E/U+FE0F extend a range without counting toward it. At the cap,
+    /// swash repeats the boundary token in the following cluster, so a mark can
+    /// be drawn twice and the ranges can overlap. Components of a decomposed
+    /// character can also span clusters sharing that character’s range. Other
+    /// distinct cluster ranges do not overlap. Glyphs remain in logical
+    /// script-run order (with shaping order within runs); ranges may decrease
+    /// within a reordering run. No bidi reordering is performed.
     /// [`TypeWriter::layout_text`] never emits glyphs for hard breaks;
     /// [`TypeWriter::shape_text`] keeps a glyph when the font maps the hard-break
     /// character. Hanging spaces keep their ranges.
@@ -521,37 +526,29 @@ impl TypeWriter {
             // Only .notdef is hidden: a ligature may inherit this marker and be visible.
             let charmap = font.charmap();
             let mut cluster = CharCluster::new();
-            let tokens = |start: usize| {
-                run[start..].char_indices().map(move |(offset, ch)| {
-                    let offset = start + offset;
-                    Token {
-                        ch,
-                        offset: offset as u32,
-                        len: ch.len_utf8() as u8,
-                        // Swash otherwise discards mapped Cc before emitting any glyph.
-                        // Give them ordinary properties while keeping the actual cmap character.
-                        info: if ch.is_control() && charmap.map(ch) != 0 {
-                            ' '.into()
-                        } else {
-                            ch.into()
-                        },
-                        data: if ch.is_control() || is_default_ignorable(ch) {
-                            offset as u32 + 1
-                        } else {
-                            0
-                        },
-                    }
-                })
-            };
-            let mut parser = Parser::new(script, tokens(0));
+            let mut parser = Parser::new(
+                script,
+                run.char_indices().map(|(offset, ch)| Token {
+                    ch,
+                    offset: offset as u32,
+                    len: ch.len_utf8() as u8,
+                    // Swash otherwise discards mapped Cc before emitting any glyph.
+                    // Give them ordinary properties while keeping the actual cmap character.
+                    info: if ch.is_control() && charmap.map(ch) != 0 {
+                        ' '.into()
+                    } else {
+                        ch.into()
+                    },
+                    data: if ch.is_control() || is_default_ignorable(ch) {
+                        offset as u32 + 1
+                    } else {
+                        0
+                    },
+                }),
+            );
             while parser.next(&mut cluster) {
                 cluster.map(|ch| charmap.map(ch));
                 shaper.add_cluster(&cluster);
-                if cluster.chars().len() == MAX_CLUSTER_SIZE {
-                    // Swash leaves its current token at the cap, repeating the
-                    // last character. Resume after it to keep sources disjoint.
-                    parser = Parser::new(script, tokens(cluster.range().end as usize));
-                }
             }
             let run_offset = run.as_ptr() as usize - text.as_ptr() as usize;
             shaper.shape_with(|cluster| emit(run_offset, cluster));
@@ -1788,22 +1785,188 @@ mod source_tests {
     }
 
     #[test]
-    fn source_long_combining_sequence_splits_at_cluster_cap() {
+    fn source_cap_khmer_keeps_pending_components() {
+        let text = format!("\u{1780}{}\u{17BE}", "\u{17C1}".repeat(30));
         let face = swash::FontRef::from_index(ROBOTO, 0).unwrap();
-        for (marks, expected) in [
-            (31, std::iter::once(0..63).collect()),
-            (40, vec![0..63, 63..81]),
-            (64, vec![0..63, 63..127, 127..129]),
+        let glyphs = TypeWriter::new().shape_glyphs(face, 32., &text);
+        // 33 internal components plus swash's repeated boundary component.
+        assert_eq!(glyphs.len(), 34, "pending Khmer component must survive");
+        let expected: Vec<_> = std::iter::repeat_n(0..96, 32)
+            .chain(std::iter::repeat_n(93..96, 2))
+            .collect();
+        assert_eq!(
+            glyphs
+                .iter()
+                .map(|g| g.source().unwrap())
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+
+    #[test]
+    fn source_long_combining_sequence_preserves_swash_cap_output() {
+        let face = swash::FontRef::from_index(ROBOTO, 0).unwrap();
+        for (marks, repeated, spans) in [
+            (31, 1, vec![(0..63, 31), (61..63, 1)]),
+            (40, 1, vec![(0..63, 31), (61..81, 10)]),
+            (64, 2, vec![(0..63, 31), (61..125, 32), (123..129, 3)]),
         ] {
             let text = format!("a{}", "\u{301}".repeat(marks));
             let glyphs = TypeWriter::new().shape_glyphs(face, 32., &text);
-            let mut ranges: Vec<_> = glyphs.iter().map(|g| g.source().unwrap()).collect();
-            ranges.dedup();
-            assert_eq!(ranges, expected);
-            // Roboto composes the base and first mark; each remaining mark
-            // contributes one glyph, including after a capped cluster.
-            assert_eq!(glyphs.len(), marks, "no mark is repeated at the cap");
-            assert_sources(&text, &glyphs, &[]);
+            let expected: Vec<_> = spans
+                .into_iter()
+                .flat_map(|(range, count)| std::iter::repeat_n(range, count))
+                .collect();
+            // Roboto composes the base and first mark, reducing the unique
+            // internal token count (marks + 1) by one. Swash repeats cap tokens.
+            assert_eq!(glyphs.len(), marks + repeated);
+            assert_eq!(
+                glyphs
+                    .iter()
+                    .map(|g| g.source().unwrap())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn source_cap_components_survive_script_runs_and_hard_break_pieces() {
+        let Some((device, queue, _)) = common::gpu() else {
+            return;
+        };
+        let mut store = FontStore::new(&device);
+        let font = store
+            .load_from_bytes(&device, &queue, ROBOTO, "a\u{301}AXYक")
+            .unwrap();
+        let mut writer = TypeWriter::new();
+        let face = swash::FontRef::from_index(ROBOTO, 0).unwrap();
+        for (text, internal_tokens, composed, spans, next_script) in [
+            (
+                format!("a{}", "\u{301}".repeat(40)),
+                41,
+                1,
+                [(0..63, 31), (61..81, 10)],
+                "क",
+            ),
+            (
+                format!("\u{1780}{}\u{17BE}", "\u{17C1}".repeat(30)),
+                33,
+                0,
+                [(0..96, 32), (93..96, 2)],
+                "A",
+            ),
+            (
+                format!("\u{0995}{}\u{09CB}", "\u{09C7}".repeat(30)),
+                33,
+                0,
+                [(0..96, 32), (93..96, 2)],
+                "A",
+            ),
+        ] {
+            // Each fixture hits one cap: one repeated token is retained in the
+            // authorized fallback. Khmer/Bengali each have 33 unique internal
+            // tokens from 32 input characters; their pending component survives.
+            let expected_count = internal_tokens + 1 - composed;
+            let expected: Vec<_> = spans
+                .into_iter()
+                .flat_map(|(range, count)| std::iter::repeat_n(range, count))
+                .collect();
+            assert_eq!(expected.len(), expected_count);
+            for suffix in ["", next_script] {
+                let input = format!("{text}{suffix}");
+                let paragraph = writer
+                    .shape_text(&store, font, [0.; 2], 32., [1.; 4], &input)
+                    .unwrap();
+                let mut sources = expected.clone();
+                if !suffix.is_empty() {
+                    sources.push(text.len()..input.len());
+                }
+                assert_eq!(
+                    paragraph.glyphs().len(),
+                    expected_count + usize::from(!suffix.is_empty()),
+                    "{input:?}"
+                );
+                assert_eq!(
+                    paragraph
+                        .glyphs()
+                        .iter()
+                        .map(|g| g.source().unwrap())
+                        .collect::<Vec<_>>(),
+                    sources,
+                    "{input:?}"
+                );
+
+                // Compare glyphs, advances, offsets and sources to uninterrupted
+                // swash parsing for each run, independently of the crate's parser.
+                let mut context = ShapeContext::new();
+                let mut plain = Vec::new();
+                for (run, script) in script_runs(&input) {
+                    let mut shaper = context.builder(face).script(script).size(32.).build();
+                    shaper.add_str(run);
+                    let offset = run.as_ptr() as usize - input.as_ptr() as usize;
+                    shaper.shape_with(|cluster| {
+                        plain.extend(cluster.glyphs.iter().map(|g| {
+                            (
+                                GlyphId(g.id),
+                                g.advance,
+                                [g.x, -g.y],
+                                offset + cluster.source.start as usize
+                                    ..offset + cluster.source.end as usize,
+                            )
+                        }))
+                    });
+                }
+                let actual: Vec<_> = paragraph
+                    .glyphs()
+                    .iter()
+                    .map(|g| (g.glyph, g.advance, g.offset, g.source().unwrap()))
+                    .collect();
+                assert_eq!(actual, plain);
+
+                // Exercise the cap at a hard-break piece end (empty suffix),
+                // and at a script-run end inside a layout piece (other suffix).
+                let input = format!("X\n{text}{suffix}\r\nY");
+                let block = writer
+                    .layout_text(
+                        &store,
+                        font,
+                        [0.; 2],
+                        32.,
+                        [1.; 4],
+                        &input,
+                        &TextLayout::default().with_max_width(0.),
+                    )
+                    .unwrap();
+                assert_eq!(block.line_count(), 3, "{input:?}");
+                let middle = block.lines()[1].glyphs();
+                assert_eq!(
+                    middle.len(),
+                    expected_count + usize::from(!suffix.is_empty()),
+                    "{input:?}"
+                );
+                let shifted: Vec<_> = sources.iter().map(|r| r.start + 2..r.end + 2).collect();
+                assert_eq!(
+                    middle
+                        .iter()
+                        .map(|g| g.source().unwrap())
+                        .collect::<Vec<_>>(),
+                    shifted,
+                    "{input:?}"
+                );
+                assert_eq!(block.lines()[0].glyphs()[0].source(), Some(0..1));
+                assert_eq!(
+                    block.lines()[2].glyphs()[0].source(),
+                    Some(input.len() - 1..input.len())
+                );
+                for glyph in block.lines().iter().flat_map(|line| line.glyphs()) {
+                    let range = glyph.source().unwrap();
+                    assert!(
+                        input.is_char_boundary(range.start) && input.is_char_boundary(range.end)
+                    );
+                    assert!(!input[range].contains(['\r', '\n']));
+                }
+            }
         }
     }
 
