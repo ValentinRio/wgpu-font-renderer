@@ -137,6 +137,16 @@ pub enum LineHeight {
 /// Greedy Unicode line wrapping and alignment options.
 ///
 /// Defaults to no maximum width, left alignment and the font line height.
+///
+/// Whitespace follows CSS `white-space: pre-wrap`: leading spaces are kept and
+/// count toward their line's width, so `"   abc"` can overflow a maximum width
+/// that fits `"abc"`. Trailing breakable spaces hang at every line end and do
+/// not count toward width or alignment. No-break spaces never hang.
+///
+/// Hard breaks split text into independently shaped paragraphs, including
+/// independent script detection. For `"ع\n12"`, `12` uses the Latin fallback
+/// rather than continuing the Arabic run. Hard breaks are LF, CR, CRLF (one
+/// break), VT, FF, NEL, U+2028 and U+2029.
 #[non_exhaustive]
 #[derive(Clone, Debug, Default)]
 pub struct TextLayout {
@@ -284,12 +294,18 @@ impl TypeWriter {
     /// at Unicode line-break opportunities.
     ///
     /// Breaks fall between clusters; words wider than the box overflow intact.
-    /// Hard breaks draw nothing, CRLF counts as one break, and a final hard
-    /// break adds no extra line. Trailing breakable spaces hang at every line
-    /// end: their glyphs remain, but contribute no width or alignment offset.
-    /// No-break spaces retain their width. Leading spaces stay with the first
-    /// content on their line and count toward its width. Reordered source spans
-    /// stay intact. Hard-break characters are never passed to the shaper.
+    /// Whitespace follows CSS `white-space: pre-wrap`: leading spaces are kept
+    /// and count toward their line's width, so `"   abc"` can overflow a maximum
+    /// width that fits `"abc"`. Trailing breakable spaces hang at every line end:
+    /// their glyphs remain but do not count toward width or alignment. No-break
+    /// spaces never hang. Reordered source spans stay intact.
+    ///
+    /// Hard breaks are LF, CR, CRLF (one break), VT, FF, NEL, U+2028 and U+2029.
+    /// They are never passed to the shaper. Each paragraph is shaped on its own,
+    /// including independent script detection: for `"ع\n12"`, `12` uses the
+    /// Latin fallback rather than continuing the Arabic run. A final hard break
+    /// adds no extra line.
+    ///
     /// Without a maximum width the box is as wide as its widest line.
     /// Baselines use the same font ascent as [`Self::shape_text`]. Bidi
     /// reordering is not performed. Empty text produces zero lines.
@@ -377,7 +393,7 @@ impl TypeWriter {
             offsets.push(offset);
         }
         let height = lines.len() as f32 * line_height;
-        if !width.is_finite() || !height.is_finite() {
+        if !height.is_finite() {
             return None;
         }
         Some(TextBlock {
@@ -500,11 +516,11 @@ fn hard_sections(text: &str) -> Vec<(std::ops::Range<usize>, bool)> {
     sections
 }
 
+// Text is one paragraph; hard breaks were removed before shaping.
 fn break_lines(text: &str, clusters: &[ShapedCluster], max_width: Option<f32>) -> Vec<LayoutLine> {
     let mut opportunities = Vec::new();
-    let sections = hard_sections(text);
-    for ((offset, ch), (_, boundary)) in text.char_indices().zip(analyze(text.chars())) {
-        if !is_hard_break(ch) && matches!(boundary, Boundary::Line | Boundary::Mandatory) {
+    for ((offset, _), (_, boundary)) in text.char_indices().zip(analyze(text.chars())) {
+        if offset > 0 && matches!(boundary, Boundary::Line | Boundary::Mandatory) {
             opportunities.push(offset);
         }
     }
@@ -513,92 +529,69 @@ fn break_lines(text: &str, clusters: &[ShapedCluster], max_width: Option<f32>) -
     // shaper's order, including reordering within Indic/Myanmar syllables.
     let mut by_source: Vec<_> = (0..clusters.len()).collect();
     by_source.sort_unstable_by_key(|&i| (clusters[i].source.start, i));
-    let mut lines = Vec::new();
-    for (section, hard) in sections {
-        let first = by_source.partition_point(|&i| clusters[i].source.start < section.start);
-        let last = by_source.partition_point(|&i| clusters[i].source.start < section.end);
-        let mut members: Vec<_> = by_source[first..last]
-            .iter()
-            .copied()
-            // Hard-break output is excluded by source containment, regardless
-            // of its glyph ID or its position in the shaper's output.
-            .filter(|&i| clusters[i].source.end <= section.end)
-            .collect();
-        members.sort_unstable();
-        let mut spans: Vec<std::ops::Range<usize>> = Vec::new();
-        for &i in &members {
-            let mut span = clusters[i].source.clone();
-            // Coalesce overlaps and inversions into an unbreakable source span.
-            // Merging backwards also covers non-adjacent inversions.
-            while spans
-                .last()
-                .is_some_and(|previous| previous.end > span.start)
-            {
-                let previous = spans.pop().unwrap();
-                span.start = span.start.min(previous.start);
-                span.end = span.end.max(previous.end);
-            }
-            spans.push(span);
+    let mut spans: Vec<std::ops::Range<usize>> = Vec::new();
+    for cluster in clusters {
+        let mut span = cluster.source.clone();
+        // Coalesce overlaps and inversions into an unbreakable source span.
+        // Merging backwards also covers non-adjacent inversions.
+        while spans.last().is_some_and(|previous| previous.end > span.start) {
+            let previous = spans.pop().unwrap();
+            span.start = span.start.min(previous.start);
+            span.end = span.end.max(previous.end);
         }
-        let first = opportunities.partition_point(|&offset| offset <= section.start);
-        let last = opportunities.partition_point(|&offset| offset < section.end);
-        let ends = opportunities[first..last]
-            .iter()
-            .copied()
-            .filter(|&offset| {
-                let i = spans.partition_point(|span| span.end <= offset);
-                !spans.get(i).is_some_and(|span| span.start < offset)
-            })
-            .chain(std::iter::once(section.end));
-        let mut line = LayoutLine::default();
-        let mut raw_width = 0.;
-        let mut has_unit = false;
-        let mut line_has_content = false;
-        let mut unit_start = section.start;
-        for end in ends {
-            let trimmed_end = unit_start
-                + text[unit_start..end]
-                    .trim_end_matches(is_hanging_space)
-                    .len();
-            let first = by_source.partition_point(|&i| clusters[i].source.start < unit_start);
-            let last = by_source.partition_point(|&i| clusters[i].source.start < end);
-            let mut unit: Vec<_> = by_source[first..last]
-                .iter()
-                .copied()
-                .filter(|&i| clusters[i].source.end <= end)
-                .collect();
-            unit.sort_unstable();
-            let mut raw = 0.;
-            let mut trimmed = 0.;
-            for &i in &unit {
-                let width: f32 = clusters[i].glyphs.iter().map(|g| g.advance).sum();
-                raw += width;
-                if clusters[i].source.start < trimmed_end {
-                    trimmed += width;
-                }
-            }
-            let has_content = trimmed_end > unit_start;
-            // Keep hanging-only prefixes with the first content on the line.
-            if line_has_content && has_content && max_width.is_some_and(|w| raw_width + trimmed > w)
-            {
-                lines.push(line);
-                line = LayoutLine::default();
-                raw_width = 0.;
-            }
-            if has_content {
-                line.width = raw_width + trimmed;
-            }
-            raw_width += raw;
-            line.glyphs
-                .extend(unit.iter().flat_map(|&i| &clusters[i].glyphs).copied());
-            line_has_content |= has_content;
-            has_unit |= end > unit_start;
-            unit_start = end;
-        }
-        if has_unit || hard {
-            lines.push(line);
-        }
+        spans.push(span);
     }
+    let ends = opportunities.into_iter().filter(|&offset| {
+        let i = spans.partition_point(|span| span.end <= offset);
+        !spans.get(i).is_some_and(|span| span.start < offset)
+    }).chain(std::iter::once(text.len()));
+    let mut lines = Vec::new();
+    let mut line = LayoutLine::default();
+    let mut raw_width = 0.;
+    let mut has_unit = false;
+    let mut line_has_content = false;
+    let mut unit_start = 0;
+    for end in ends {
+        let trimmed_end = unit_start
+            + text[unit_start..end]
+                .trim_end_matches(is_hanging_space)
+                .len();
+        let first = by_source.partition_point(|&i| clusters[i].source.start < unit_start);
+        let last = by_source.partition_point(|&i| clusters[i].source.start < end);
+        let mut unit: Vec<_> = by_source[first..last]
+            .iter()
+            .copied()
+            .filter(|&i| clusters[i].source.end <= end)
+            .collect();
+        unit.sort_unstable();
+        let mut raw = 0.;
+        let mut trimmed = 0.;
+        for &i in &unit {
+            let width: f32 = clusters[i].glyphs.iter().map(|g| g.advance).sum();
+            raw += width;
+            if clusters[i].source.start < trimmed_end {
+                trimmed += width;
+            }
+        }
+        let has_content = trimmed_end > unit_start;
+        // Keep hanging-only prefixes with the first content on the line.
+        if line_has_content && has_content && max_width.is_some_and(|w| raw_width + trimmed > w)
+        {
+            lines.push(line);
+            line = LayoutLine::default();
+            raw_width = 0.;
+        }
+        if has_content {
+            line.width = raw_width + trimmed;
+        }
+        raw_width += raw;
+        line.glyphs
+            .extend(unit.iter().flat_map(|&i| &clusters[i].glyphs).copied());
+        line_has_content |= has_content;
+        has_unit |= end > unit_start;
+        unit_start = end;
+    }
+    if has_unit { lines.push(line); }
     lines
 }
 
@@ -664,6 +657,16 @@ fn script_runs(text: &str) -> Vec<(&str, Script)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mandatory_break_classes_match_hard_break_set() {
+        // Swash exposes the class directly; no analyze probe is needed.
+        for ch in (0..=char::MAX as u32).filter_map(char::from_u32) {
+            let mandatory = matches!(ch.properties().line_break(),
+                LineBreak::BK | LineBreak::CR | LineBreak::LF | LineBreak::NL);
+            assert_eq!(is_hard_break(ch), mandatory, "U+{:04X}", ch as u32);
+        }
+    }
 
     #[test]
     fn scripts_keep_common_and_inherited_with_neighbours() {
@@ -1390,7 +1393,7 @@ mod round2_tests {
     }
 
     #[test]
-    fn round2_reordered_sources_stay_together_and_remove_hard_glyphs() {
+    fn round2_reordered_sources_stay_together() {
         let glyph = |id| ShapedGlyph {
             glyph: GlyphId(id),
             advance: 1.,
@@ -1419,46 +1422,21 @@ mod round2_tests {
         let hung = break_lines("a\t", &ba, None);
         assert_eq!(hung[0].width, 1.);
         assert_eq!(hung[0].glyphs, [glyph(1), glyph(2)]);
-        // A reordered syllable spans a space opportunity; CR output occurs
-        // before clusters with smaller source offsets in shaping order.
-        let clusters: Vec<_> = [
-            (0..1, 1),
-            (4..5, 4),
-            (2..3, 2),
-            (3..4, 3),
-            (1..2, 9),
-            (5..6, 5),
-        ]
-        .into_iter()
-        .map(|(source, id)| ShapedCluster {
-            source,
-            glyphs: vec![glyph(id)],
-        })
-        .collect();
-        let lines = break_lines("a\rb cZ", &clusters, Some(0.));
-        let actual: Vec<Vec<_>> = lines
-            .iter()
-            .map(|line| line.glyphs.iter().map(|g| g.glyph.0).collect())
-            .collect();
-        assert_eq!(actual, [vec![1], vec![4, 2, 3, 5]]);
+        // A reordered syllable spans a space opportunity in one paragraph.
+        let clusters: Vec<_> = [(2..3, 4), (0..1, 2), (1..2, 3), (3..4, 5)]
+            .into_iter().map(|(source, id)| ShapedCluster {
+                source, glyphs: vec![glyph(id)],
+            }).collect();
+        let lines = break_lines("b cZ", &clusters, Some(0.));
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].glyphs, [glyph(4), glyph(2), glyph(3), glyph(5)]);
         let reversed = [
-            ShapedCluster {
-                source: 2..3,
-                glyphs: vec![glyph(3)],
-            },
-            ShapedCluster {
-                source: 1..2,
-                glyphs: vec![glyph(9)],
-            },
-            ShapedCluster {
-                source: 0..1,
-                glyphs: vec![glyph(1)],
-            },
+            ShapedCluster { source: 1..2, glyphs: vec![glyph(3)] },
+            ShapedCluster { source: 0..1, glyphs: vec![glyph(1)] },
         ];
-        let lines = break_lines("a\rb", &reversed, None);
-        assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0].glyphs, [glyph(1)]);
-        assert_eq!(lines[1].glyphs, [glyph(3)]);
+        let lines = break_lines("ab", &reversed, None);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].glyphs, [glyph(3), glyph(1)]);
     }
 
     #[test]

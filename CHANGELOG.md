@@ -18,9 +18,8 @@ below 1.0, a minor bump (0.x) may break the API.
 
 ### Changed
 
-- Hard breaks now delimit shaping paragraphs, preserving combining marks at the start of the next paragraph. Leading spaces stay with their line’s first content; layout rejects non-finite origins, derived line heights and block sizes.
-
-- Text layout hangs trailing breakable spaces at soft breaks, hard breaks and the end of text, preserving no-break space widths and all glyphs. Reordered cluster spans stay unbroken, block moves preserve line offsets, and non-finite line widths or origins return `None`.
+- Text layout follows CSS `white-space: pre-wrap`: leading spaces are kept and count toward their line's width, so `"   abc"` can overflow a maximum width that fits `"abc"`. Trailing breakable spaces hang at every line end without contributing width or alignment; no-break spaces never hang.
+- Hard breaks (LF, CR, CRLF as one break, VT, FF, NEL, U+2028 and U+2029) split text into independently shaped paragraphs, including independent script detection. For `"ع\n12"`, `12` uses the Latin fallback rather than continuing the Arabic run. This preserves combining marks at paragraph starts. Reordered spans stay unbroken, block moves preserve line offsets, and layout rejects non-finite origins, line widths, derived line heights and block sizes.
 
 - Variable fonts shape at their normalized location even when all coordinates are zero. Unlike 0.2, FeatureVariations whose condition ranges cover the default location now apply there.
 - Output glyph zero (`.notdef`) is omitted from `Paragraph::glyphs()` only when its source is a Cc control or default-ignorable character, contributing no advance or ink. Nonzero output glyphs, including substitutions and ligatures with such a source, retain swash’s glyphs and positioning. Mapped Cc controls enter ordinary glyph shaping to retain their font glyphs; swash’s control handling would otherwise hide them before output. Missing letters and symbols still draw `.notdef` when it has an outline. Swash’s existing hiding of mapped default-ignorables (for example Roboto’s U+00AD), like HarfBuzz’s default, is retained from 0.2.
