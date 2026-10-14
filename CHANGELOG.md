@@ -9,7 +9,8 @@ below 1.0, a minor bump (0.x) may break the API.
 
 ### Added
 
-- GSUB glyph closure caches substitutions reachable from preset glyphs across every lookup, including ligatures whose components are all cached. Closure glyphs receive the existing outline safety checks; bounded closure work fails with `LoadingError::SubstitutionTooComplex`.
+- GSUB glyph closure caches substitutions reachable from preset and canonical normalization glyphs (using swash’s Unicode data, plus Khmer parser vowel seeds) across every lookup, including ligatures whose components are all cached. Closure glyphs receive the existing outline safety checks; bounded closure work fails with `LoadingError::SubstitutionTooComplex`.
+- Malformed GSUB coverage, truncated arrays and out-of-range lookup/feature references are rejected. Coverage records and all visited arrays count toward the work cap, including aliased empty ranges. AAT `morx` substitutions remain an explicitly documented cache limit.
 - Public, non-exhaustive `LayoutError` identifies shaping and layout failures and implements `Debug`, `Display`, `Error`, `Clone` and `PartialEq`.
 
 - `TextRenderer::render_range` draws subsets of the prepared paragraphs with stable indices.
@@ -27,7 +28,7 @@ below 1.0, a minor bump (0.x) may break the API.
 
 ### Changed
 
-- `TypeWriter::shape_text` and `layout_text` return `Result<_, LayoutError>` instead of `Option`; handle the error or use `?`. Both reject non-finite positions.
+- `TypeWriter::shape_text` and `layout_text` return `Result<_, LayoutError>` instead of `Option`; handle the error or use `?`. `shape_text` now rejects non-finite positions, which 0.2 accepted; `layout_text` also rejects them. Derived line heights must stay finite and positive after scaling, including underflow checks.
 
 - Fonts are read with skrifa instead of ttf-parser. swash is at 0.2 without its scaler and rasteriser.
 - `.notdef` is now drawn for every character a font lacks, if glyph zero has an outline. In 0.2 it was drawn only after a loaded character had been explicitly mapped to glyph zero. An empty `.notdef` still advances without drawing.

@@ -115,7 +115,7 @@ fn bundled_unicode_and_presets_agree_with_swash() {
         assert!(expected.is_subset(&cached), "{name}: every loader-selected outlined glyph is cached");
         let face = SkFontRef::new(bytes).unwrap();
         let closed: BTreeSet<_> = closure_glyph_ids(&face, FontRef::from_index(bytes, 0).unwrap(), &preset).unwrap()
-            .into_iter().filter(|&id| face.gsub().is_ok() || glyph_bounding_box(&face, id).is_some()).map(|id| id.to_u32()).collect();
+            .into_iter().map(|id| id.to_u32()).collect();
         assert_eq!(cached, closed, "{name}: cache keys exactly match closure");
         if glyph_bounding_box(&SkFontRef::new(bytes).unwrap(), GlyphId::new(0)).is_some() {
             assert!(cached.contains(&0), "{name}: outlined .notdef must be cached");

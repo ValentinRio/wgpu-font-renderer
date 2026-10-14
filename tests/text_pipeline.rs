@@ -756,3 +756,113 @@ fn check_gsub_ligatures(name: &str, bytes: &[u8], ligatures: [u16; 2]) {
         );
     }
 }
+
+#[test]
+fn round2_cantarell_canonical_composition_is_cached_and_drawn() {
+    let Some((device, queue, config)) = gpu() else {
+        return;
+    };
+    let mut store = FontStore::new(&device);
+    let base = store
+        .load_from_bytes(
+            &device,
+            &queue,
+            include_bytes!("../fonts/Cantarell-VF.otf"),
+            "e\u{0301}",
+        )
+        .unwrap();
+    let variation = store.load_variation(&device, &queue, base, &[]).unwrap();
+    for id in [base, variation] {
+        let paragraph = TypeWriter::new()
+            .shape_text(&store, id, [16., 16.], 48., [0., 0., 0., 1.], "e\u{0301}")
+            .unwrap();
+        assert_eq!(paragraph.glyphs()[0].glyph.0, 288);
+        let font = wgpu_font_renderer::internals::font(&store, id).unwrap();
+        let mut renderer = TextRenderer::new(&device, config.format, &store);
+        renderer.prepare(&device, &queue, [&paragraph], &store);
+        let image = draw_pixels(&device, &queue, &mut renderer, [128, 128]);
+        let ink = image.as_chunks::<4>().0.iter().any(|p| p[0] < 240);
+        assert!(
+            font.glyph_cache.contains_key(&288) && ink,
+            "glyph 288: cached={}, ink={ink}",
+            font.glyph_cache.contains_key(&288)
+        );
+    }
+}
+
+#[test]
+fn round2_empty_glyph_without_gsub_is_cached() {
+    let Some((device, queue, _)) = gpu() else {
+        return;
+    };
+    let mut bytes = include_bytes!("../fonts/Roboto-Regular.ttf").to_vec();
+    let count = u16::from_be_bytes(bytes[4..6].try_into().unwrap()) as usize;
+    let record = (0..count)
+        .map(|i| 12 + i * 16)
+        .find(|&i| &bytes[i..i + 4] == b"GSUB")
+        .unwrap();
+    bytes[record..record + 4].copy_from_slice(b"ZZZZ");
+    let mut store = FontStore::new(&device);
+    let font = store.load_from_bytes(&device, &queue, &bytes, " ").unwrap();
+    let paragraph = TypeWriter::new()
+        .shape_text(&store, font, [0.; 2], 32., [1.; 4], " ")
+        .unwrap();
+    let id = paragraph.glyphs()[0].glyph.0 as u32;
+    assert!(
+        wgpu_font_renderer::internals::font(&store, font)
+            .unwrap()
+            .glyph_cache
+            .contains_key(&id),
+        "empty glyph {id} missing from cache"
+    );
+}
+
+#[test]
+fn round2_khmer_parser_seed_is_cached() {
+    let Some((device, queue, _)) = gpu() else {
+        return;
+    };
+    // Give a Latin outline fixture three Khmer cmap entries. Swash injects
+    // U+17C1 when parsing U+17BE; Unicode canonical decomposition does not.
+    let mut bytes = include_bytes!("../fonts/Roboto-Regular.ttf").to_vec();
+    let count = u16::from_be_bytes(bytes[4..6].try_into().unwrap()) as usize;
+    let record = (0..count)
+        .map(|i| 12 + i * 16)
+        .find(|&i| &bytes[i..i + 4] == b"cmap")
+        .unwrap();
+    let offset = bytes.len() as u32;
+    let mut cmap: Vec<u8> = [0u16, 1, 3, 10, 0, 12, 12, 0, 0, 52, 0, 0, 0, 3]
+        .iter()
+        .flat_map(|v| v.to_be_bytes())
+        .collect();
+    for (ch, id) in [(0x1780u32, 37u32), (0x17be, 38), (0x17c1, 39)] {
+        for value in [ch, ch, id] {
+            cmap.extend(value.to_be_bytes());
+        }
+    }
+    bytes[record + 8..record + 12].copy_from_slice(&offset.to_be_bytes());
+    bytes[record + 12..record + 16].copy_from_slice(&(cmap.len() as u32).to_be_bytes());
+    bytes.extend(cmap);
+    let mut store = FontStore::new(&device);
+    let font = store
+        .load_from_bytes(&device, &queue, &bytes, "កើ")
+        .unwrap();
+    let paragraph = TypeWriter::new()
+        .shape_text(&store, font, [0.; 2], 32., [1.; 4], "កើ")
+        .unwrap();
+    assert!(
+        paragraph.glyphs().iter().any(|g| g.glyph.0 == 39),
+        "fixture must emit synthetic vowel: {:?}",
+        paragraph.glyphs()
+    );
+    let cache = &wgpu_font_renderer::internals::font(&store, font)
+        .unwrap()
+        .glyph_cache;
+    assert!(
+        paragraph
+            .glyphs()
+            .iter()
+            .all(|g| cache.contains_key(&(g.glyph.0 as u32))),
+        "synthetic Khmer vowel glyph 39 missing"
+    );
+}

@@ -58,3 +58,11 @@ validation cause.
 Run the full suite with `REQUIRE_GPU=1 cargo test --offline --all-features`.
 The `unstable-internals` feature enables integration targets that inspect fonts
 and the atlas; its hidden inspection module is exempt from semver.
+
+S6 round 2 adds canonical composition/decomposition and Khmer parser seed checks,
+including Cantarell e + acute through both loading APIs and GPU readback. Crafted
+GSUB tests reject coverage indices, truncated ligatures, and lookup/feature
+references beyond their declared lists, covering every contextual format and
+FeatureVariations. Aliased empty ranges exercise the work cap with a CI time
+bound. A scaled height underflow returns `InvalidLineHeight`; the metrics anchor
+test selects the outlined H glyph rather than a random cache entry.

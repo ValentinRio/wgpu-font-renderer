@@ -2,7 +2,11 @@
 //! Render scalable font outlines with wgpu on native platforms and WebGPU.
 //!
 //! [`FontStore`] loads a font and writes the selected glyph outlines into a float
-//! atlas, including their bounded GSUB closure across all lookups.
+//! atlas, including canonical normalization seeds from swash's Unicode data,
+//! Khmer parser vowel seeds, and their bounded GSUB closure across all lookups.
+//! AAT `morx` limit: `morx` ligatures/substitutions are not cached when swash
+//! uses that table instead of GSUB, and may draw nothing. Malformed GSUB arrays,
+//! coverage indices and lookup/feature references are rejected at load.
 //! [`TypeWriter`] shapes text by script into paragraphs containing glyph IDs
 //! and pixel advances and offsets, returning [`LayoutError`] on invalid input.
 //! [`TypeWriter::layout_text`] shapes and wraps
@@ -29,7 +33,7 @@
 //! both x and y. Shaping retains every glyph and its offsets in logical run order
 //! without bidi reordering. Glyphs absent from the cache selected by `chars` are skipped during drawing.
 //!
-//! Glyph zero is cached if it has an outline, so missing letters and symbols draw `.notdef`.
+//! Glyph zero is cached, so missing letters and symbols draw `.notdef` if it has an outline.
 //! Output glyph zero from controls (Cc) or default-ignorables is omitted without advance;
 //! visible substitutions and ligatures are retained.
 //! An empty `.notdef` advances without drawing. Loads that exhaust the atlas

@@ -56,7 +56,7 @@ pub struct Font {
     pub(crate) offset: u32,
     /// Unique swash cache key identifying this loaded face.
     pub(crate) key: CacheKey,
-    /// Cached preset and GSUB-closure outlines, by glyph ID. GSUB fonts include
+    /// Cached preset and GSUB-closure outlines, by glyph ID. Includes
     /// empty glyph entries with zero-sized allocations and boxes.
     pub glyph_cache: HashMap<u32, Glyph>,
 }
@@ -248,12 +248,69 @@ fn glyph_ids<'a>(font: FontRef<'a>, characters: &'a str) -> impl Iterator<Item =
     }).chain(std::iter::once(GlyphId::new(0))).filter(move |id| seen.insert(*id))
 }
 
+fn normalization_glyph_ids(font: FontRef<'_>, characters: &str) -> Vec<GlyphId> {
+    use swash::text::Codepoint;
+    let mut alphabet: std::collections::HashSet<char> = characters.chars().collect();
+    for ch in characters.chars() {
+        alphabet.extend(ch.decompose());
+    }
+    let charmap = font.charmap();
+    let mut ids: Vec<_> = glyph_ids(font, characters).collect();
+    let mut seen: std::collections::HashSet<_> = ids.iter().copied().collect();
+    let mut add = |ch| {
+        let id = GlyphId::new(charmap.map(ch) as u32);
+        if seen.insert(id) {
+            ids.push(id);
+        }
+    };
+    for ch in characters.chars().flat_map(Codepoint::decompose) {
+        add(ch);
+    }
+    // Khmer's parser inserts a vowel that is not a Unicode decomposition.
+    // Ask the same parser rather than maintaining a second split-vowel table.
+    use swash::text::{
+        cluster::{CharCluster, Parser, Token},
+        Script,
+    };
+    for &ch in alphabet.iter().filter(|ch| ch.script() == Script::Khmer) {
+        let token = Token {
+            ch,
+            len: ch.len_utf8() as u8,
+            info: ch.properties().into(),
+            ..Default::default()
+        };
+        let mut parser = Parser::new(Script::Khmer, std::iter::once(token));
+        let mut cluster = CharCluster::new();
+        while parser.next(&mut cluster) {
+            for part in cluster.chars() {
+                add(part.ch);
+            }
+        }
+    }
+    // The Unicode domain is fixed and bounded. Cache its nontrivial canonical
+    // decompositions once; never enumerate potentially hostile cmap ranges.
+    static DECOMPOSABLE: std::sync::OnceLock<Vec<char>> = std::sync::OnceLock::new();
+    let decomposable = DECOMPOSABLE.get_or_init(|| {
+        (0..=0x10ffff)
+            .filter_map(char::from_u32)
+            .filter(|&ch| ch.decompose().chars() != [ch])
+            .collect()
+    });
+    // Expanded alphabet also covers partial recomposition within a cluster.
+    for &ch in decomposable {
+        if ch.decompose().all(|part| alphabet.contains(&part)) {
+            add(ch);
+        }
+    }
+    ids
+}
+
 fn closure_glyph_ids(face: &SkFontRef<'_>, font: FontRef<'_>, characters: &str) -> Result<Vec<GlyphId>> {
     // Missing GSUB is normal; a present but malformed table is a loading error.
     let gsub = if face.table_data(skrifa::raw::types::Tag::new(b"GSUB")).is_some() {
         Some(face.gsub().map_err(|_| LoadingError::InvalidFont)?)
     } else { None };
-    crate::gsub::closure(gsub, glyph_ids(font, characters))
+    crate::gsub::closure(gsub, normalization_glyph_ids(font, characters).into_iter())
 }
 
 fn create_glyph_cache(
@@ -267,7 +324,6 @@ fn create_glyph_cache(
 ) -> Result<HashMap<u32, Glyph>> {
     let mut glyph_cache = HashMap::new();
     let mut failed = Vec::new();
-    let has_gsub = face.table_data(skrifa::raw::types::Tag::new(b"GSUB")).is_some();
 
     for glyph_id in glyph_ids {
         check_composite_budget(face, glyph_id)?;
@@ -311,7 +367,7 @@ fn create_glyph_cache(
                 let id = crate::GlyphId(glyph_id.to_u32() as u16);
                 failed.push(id);
             }
-        } else if has_gsub {
+        } else {
             // Record empty closure members (e.g. spaces) without atlas storage.
             // The renderer skips their zero-area boxes while retaining advance.
             glyph_cache.insert(glyph_id.to_u32(), Glyph {
@@ -969,10 +1025,7 @@ mod closure_counts {
                 .iter()
                 .filter(|&&id| glyph_bounding_box(&face, id).is_some())
                 .count();
-            let has_gsub = face
-                .table_data(skrifa::raw::types::Tag::new(b"GSUB"))
-                .is_some();
-            let after = if has_gsub { ids.len() } else { outlined };
+            let after = ids.len();
             eprintln!("{name}: cached {before} -> {after} ({outlined} outlined after closure)");
             assert!(after >= before);
         }

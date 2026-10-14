@@ -299,7 +299,8 @@ fn metrics_and_instances_share_bytes_and_preserve_the_character_set() {
             .into_iter().zip([f32::from(expected[0]), f32::from(expected[1]).abs(), f32::from(expected[2])]) {
             assert!((actual - expected * scale).abs() < 0.01);
         }
-        let glyph = store.get(base).unwrap().glyph_cache.values().next().unwrap();
+        let glyph_id = face.charmap().map('H').unwrap().to_u32();
+        let glyph = &store.get(base).unwrap().glyph_cache[&glyph_id];
         let anchor = glyph.y_offset + i32::from(glyph.bbox.y_max) - i32::from(glyph.descent);
         assert!((metrics.ascent - anchor as f32 * scale).abs() < 0.01);
         for size in [0., -1., f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {

@@ -448,7 +448,7 @@ impl TypeWriter {
             LineHeight::Pixels(p) if p.is_finite() && p > 0. => p,
             _ => return Err(LayoutError::InvalidLineHeight),
         };
-        if !line_height.is_finite() {
+        if !line_height.is_finite() || line_height <= 0. {
             return Err(LayoutError::InvalidLineHeight);
         }
         let instance = store.get(font).ok_or(LayoutError::UnknownFont)?;
@@ -2197,5 +2197,31 @@ mod error_tests {
                 .unwrap_err(),
             LayoutError::InvalidLineHeight
         );
+    }
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn round2_scaled_line_height_underflow_is_rejected() {
+        let Some((device, queue, _)) = crate::atlas_tests::common::gpu() else {
+            return;
+        };
+        let mut store = FontStore::new(&device);
+        let font = store
+            .load_from_bytes(
+                &device,
+                &queue,
+                include_bytes!("../fonts/Roboto-Regular.ttf"),
+                "H",
+            )
+            .unwrap();
+        let result = TypeWriter::new().layout_text(
+            &store,
+            font,
+            [0.; 2],
+            f32::from_bits(1),
+            [1.; 4],
+            "H",
+            &TextLayout::default().with_line_height(LineHeight::Scale(0.25)),
+        );
+        assert_eq!(result.unwrap_err(), LayoutError::InvalidLineHeight);
     }
 }

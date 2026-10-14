@@ -79,7 +79,15 @@ impl FontStore {
         self.load_from_bytes(device, queue, &data, chars)
     }
 
-    /// Load face zero from font bytes and upload outlines for `chars`.
+    /// Load face zero from font bytes and upload outlines for `chars`, their
+    /// canonical normalization seeds (using swash's Unicode data), Khmer parser
+    /// vowel seeds, and the bounded closure of every GSUB lookup.
+    ///
+    /// AAT `morx` limit: when swash uses `morx` instead of GSUB, its ligatures
+    /// and substitutions are not included in the cache and may draw nothing.
+    /// Malformed GSUB coverage, truncated arrays and out-of-range lookup/feature
+    /// references are rejected with [`LoadingError::InvalidFont`]. Closure work
+    /// beyond the policy caps returns [`LoadingError::SubstitutionTooComplex`].
     ///
     /// Returns a fresh font key, or [`LoadingError::InvalidFont`] for invalid data.
     /// Glyph zero is always cached if it has an outline, so missing characters
