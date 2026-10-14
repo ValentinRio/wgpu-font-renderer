@@ -198,38 +198,20 @@ fn create_glyph_cache(
     let mut glyph_cache = HashMap::new();
     let mut failed = Vec::new();
 
-    let ascender = face_ascender(face);
-
     for glyph_id in glyph_ids {
         if let Some(bbox) = glyph_bounding_box(face, glyph_id) {
-            let height = bbox.height();
+            let (descent, y_offset, curves, band_data) = prepare_glyph(face, glyph_id, bbox)?;
             let left_side_bearing = bbox.x_min;
-    
-            let (descent, distance_from_baseline) = if bbox.y_min <= 0 {
-                (bbox.y_min, 0)
-            } else {
-                (0, bbox.y_min)
-            };
-    
-            let total_height = height + descent + distance_from_baseline;
-            let y_offset = ascender - distance_from_baseline - height;
-    
-            let mut builder = BezierBuilder::new(total_height as f32);
-    
-            outline_glyph(face, glyph_id, &mut builder);
-            // Close the final contour before winding normalization.
-            builder.finish();
 
             // Each eight-float segment occupies two RGBA32F texels, including
             // the original index and sort-key padding slots.
-            let curves_count = builder.curves.len() as u32;
+            let curves_count = curves.len() as u32;
     
             let bytes = unsafe {
-                std::slice::from_raw_parts(builder.curves.as_ptr() as *const u8, builder.curves.len() * 4)
+                std::slice::from_raw_parts(curves.as_ptr() as *const u8, curves.len() * 4)
             };
 
             if let Some(allocation) = atlas.upload(curves_count, bytes, device, encoder, queue) {
-                let band_data = build_slug_bands(&builder.curves);
                 let bands = atlas.upload_bands(
                     band_data.len() as u32,
                     bytemuck::cast_slice(&band_data),
@@ -241,7 +223,7 @@ fn create_glyph_cache(
                 };
                 let glyph = Glyph {
                     #[cfg(feature = "unstable-internals")]
-                    curves: builder.curves,
+                    curves,
                     allocation,
                     bands,
                     bbox,
@@ -259,6 +241,38 @@ fn create_glyph_cache(
     }
 
     if failed.is_empty() { Ok(glyph_cache) } else { Err(LoadingError::AtlasFull(failed)) }
+}
+
+fn prepare_glyph(
+    face: &SkFontRef<'_>, id: GlyphId, bbox: Rect,
+) -> Result<(i16, i16, Vec<f32>, Vec<f32>)> {
+    // Cached dimensions and placement are i16. Malformed outlines and metrics
+    // must be rejected before arithmetic or later renderer calculations overflow.
+    bbox.x_max.checked_sub(bbox.x_min).ok_or(LoadingError::InvalidFont)?;
+    let height = bbox.y_max.checked_sub(bbox.y_min).ok_or(LoadingError::InvalidFont)?;
+    let descent = bbox.y_min.min(0);
+    let distance = bbox.y_min.max(0);
+    let total_height = i32::from(height) + i32::from(descent) + i32::from(distance);
+    let y_offset = i16::try_from(i32::from(face_ascender(face)) - i32::from(distance) - i32::from(height))
+        .map_err(|_| LoadingError::InvalidFont)?;
+    let mut builder = BezierBuilder::new(total_height as f32);
+    outline_glyph(face, id, &mut builder);
+    builder.finish();
+    let bands = build_slug_bands(&builder.curves);
+    Ok((descent, y_offset, builder.curves, bands))
+}
+
+// Exercise exactly the parsing, selection, metrics, outlines and bands used by
+// the GPU loader, without allocating an atlas.
+#[cfg(feature = "unstable-internals")]
+pub(crate) fn check_font_bytes(data: &[u8], characters: &str) -> Result<()> {
+    let (face, offset, key) = parse_font(data, 0)?;
+    for id in glyph_ids(FontRef { data, offset, key }, characters) {
+        if let Some(bbox) = glyph_bounding_box(&face, id) {
+            prepare_glyph(&face, id, bbox)?;
+        }
+    }
+    Ok(())
 }
 
 const SLUG_BAND_EPSILON: f32 = 0.05;

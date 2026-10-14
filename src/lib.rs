@@ -116,6 +116,16 @@ mod atlas_tests;
 #[doc(hidden)]
 pub mod internals {
     pub use crate::loader::{Font, Glyph};
+
+    /// Run the loader CPU path without uploading the glyph cache.
+    pub fn check_font_bytes(data: &[u8], characters: &str) -> Result<(), crate::LoadingError> {
+        crate::loader::check_font_bytes(data, characters)
+    }
+
+    /// Shape a bundled test face without a GPU atlas.
+    pub fn shape_font_bytes(writer: &mut crate::TypeWriter, data: &[u8], text: &str) {
+        writer.shape_glyphs(swash::FontRef::from_index(data, 0).expect("valid test font"), 32., text);
+    }
     pub use crate::atlas::allocation::Allocation;
 
     /// Inspect a loaded font.
