@@ -323,8 +323,10 @@ fn default_shaping_applies_feature_variations_covering_zero() {
     ] {
         let mut store = FontStore::new(&device);
         let text = "I II AV To fi ffi e\u{301} 0123!? àÅgß";
-        let base = store.load_from_bytes(&device, &queue, &bytes, text).unwrap();
+        let base = store.load_from_bytes(&device, &queue, &bytes, &format!("{text}H")).unwrap();
         let font = store.get(base).unwrap();
+        assert_ne!(font.as_ref().charmap().map('I'), 0);
+        assert_ne!(font.as_ref().charmap().map('H'), 0);
         assert!(!font.location.coords().is_empty());
         assert!(font.location.coords().iter().all(|coord| coord.to_bits() == 0));
         let without_coords = TypeWriter::new().shape_glyphs(font.as_ref(), 32., text);
@@ -343,6 +345,11 @@ fn default_shaping_applies_feature_variations_covering_zero() {
             assert_eq!(without_coords[0].glyph, GlyphId(charmap.map('I')));
             assert_eq!(actual.glyphs()[0].glyph, GlyphId(charmap.map('H')));
             assert_ne!(actual.glyphs(), without_coords, "default location must activate I -> H");
+            let ink = TypeWriter::new().shape_text(&store, base, [24.; 2], 32.,
+                [0., 0., 0., 1.], "I").unwrap();
+            assert_eq!(ink.glyphs()[0].glyph, GlyphId(charmap.map('H')));
+            assert!(pixels(&device, &queue, &store, &ink).iter().any(|&value| value != 255),
+                "the default FeatureVariations substitution must draw cached H ink");
         } else {
             assert_eq!(actual.glyphs(), without_coords);
         }
@@ -373,7 +380,14 @@ fn chained_instances_keep_unmodified_axes_and_borrow_cached_axes() {
 }
 
 #[test]
-fn controls_and_missing_default_ignorables_draw_only_neighbouring_letters() {
+fn missing_controls_and_default_ignorables_draw_only_neighbouring_letters() {
+    let cmap = swash::FontRef::from_index(ROBOTO, 0).unwrap().charmap();
+    for ch in ['\n', '\t', '\u{034F}', '\u{FE0F}'] {
+        assert_eq!(cmap.map(ch), 0, "fixture must lack {ch:?}");
+    }
+    assert_eq!(cmap.map('龍'), 0, "fixture must lack the CJK letter");
+    assert_ne!(cmap.map('a'), 0);
+    assert_ne!(cmap.map('b'), 0);
     let Some((device, queue, _)) = common::gpu() else { return; };
     let mut store = FontStore::new(&device);
     let font = store.load_from_bytes(&device, &queue, ROBOTO, "ab").unwrap();
@@ -381,30 +395,14 @@ fn controls_and_missing_default_ignorables_draw_only_neighbouring_letters() {
     let plain = writer.shape_text(&store, font, [24.; 2], 32., [0., 0., 0., 1.], "ab").unwrap();
     let reference = pixels(&device, &queue, &store, &plain);
     assert_eq!(plain.glyphs().len(), 2);
-    for text in ["a\nb", "a\rb", "a\tb", "a\0b", "a\u{85}b", "a\u{200B}b", "a\u{200D}b", "a\u{FE0F}b"] {
+    for text in ["a\nb", "a\tb", "a\u{034F}b", "a\u{FE0F}b"] {
         let paragraph = writer.shape_text(&store, font, [24.; 2], 32., [0., 0., 0., 1.], text).unwrap();
         assert_eq!(paragraph.glyphs(), plain.glyphs(), "invisible source character in {text:?}");
         assert_eq!(paragraph.width(), plain.width());
         assert_eq!(pixels(&device, &queue, &store, &paragraph), reference,
             "only the two letters may draw for {text:?}");
     }
-    let charmap = store.get(font).unwrap().as_ref().charmap();
-    for ch in ('\0'..='\u{9F}').filter(|ch| ch.is_control()).chain([
-        '\u{034F}', '\u{061C}', '\u{115F}', '\u{1160}', '\u{17B4}', '\u{17B5}',
-        '\u{180B}', '\u{180C}', '\u{180D}', '\u{180E}', '\u{180F}',
-        '\u{200B}', '\u{200C}', '\u{200D}', '\u{200E}', '\u{200F}',
-        '\u{202A}', '\u{2060}', '\u{2065}', '\u{3164}', '\u{FE00}', '\u{FE0F}',
-        '\u{FEFF}', '\u{FFA0}', '\u{FFF0}', '\u{1BCA0}', '\u{1D173}',
-        '\u{E0000}', '\u{E0001}', '\u{E007F}', '\u{E0100}', '\u{E01EF}', '\u{E0FFF}',
-    ]) {
-        if ch.is_control() || charmap.map(ch) == 0 {
-            let text = format!("a{ch}b");
-            let paragraph = writer.shape_text(&store, font, [24.; 2], 32., [0., 0., 0., 1.], &text).unwrap();
-            assert_eq!(paragraph.glyphs(), plain.glyphs(), "invisible source character {ch:?}");
-            assert_eq!(paragraph.width(), plain.width());
-        }
-    }
-    let controls = writer.shape_text(&store, font, [24.; 2], 32., [0., 0., 0., 1.], "\n\r\t\0\u{200B}").unwrap();
+    let controls = writer.shape_text(&store, font, [24.; 2], 32., [0., 0., 0., 1.], "\n\t\u{034F}").unwrap();
     assert!(controls.glyphs().is_empty());
     assert_eq!(controls.width(), 0.);
     assert!(pixels(&device, &queue, &store, &controls).iter().all(|&value| value == 255));
@@ -419,4 +417,77 @@ fn controls_and_missing_default_ignorables_draw_only_neighbouring_letters() {
     assert_eq!(missing_only.glyphs()[0].glyph, GlyphId(0));
     assert!(pixels(&device, &queue, &store, &missing_only).iter().any(|&value| value != 255),
         "the missing letter's notdef must have ink");
+}
+
+#[test]
+fn mapped_control_keeps_its_real_glyph_and_swash_positioning() {
+    use swash::{shape::ShapeContext, text::Script};
+    let face = swash::FontRef::from_index(ROBOTO, 0).unwrap();
+    let cmap = face.charmap();
+    assert_eq!(cmap.map('\r'), 3, "Roboto maps CR to a real glyph");
+    assert_ne!(cmap.map('a'), 0);
+    assert_ne!(cmap.map('b'), 0);
+    let mut context = ShapeContext::new();
+    let mut shaper = context.builder(face).script(Script::Latin).size(32.).retain_ignorables(true).build();
+    shaper.add_str("a\rb");
+    let mut expected = Vec::new();
+    shaper.shape_with(|cluster| expected.extend(cluster.glyphs.iter().map(|g| crate::ShapedGlyph {
+        glyph: GlyphId(g.id), advance: g.advance, offset: [g.x, -g.y],
+    })));
+    assert!(expected.iter().any(|g| g.glyph == GlyphId(3)));
+    let Some((device, queue, _)) = common::gpu() else { return; };
+    let mut store = FontStore::new(&device);
+    let font = store.load_from_bytes(&device, &queue, ROBOTO, "ab\r").unwrap();
+    let paragraph = TypeWriter::new().shape_text(&store, font, [24.; 2], 32., [0., 0., 0., 1.], "a\rb").unwrap();
+    assert!(paragraph.glyphs().iter().any(|g| g.glyph == GlyphId(3)));
+    assert_eq!(paragraph.glyphs(), expected);
+    assert_eq!(paragraph.width(), expected.iter().map(|g| g.advance).sum::<f32>());
+}
+
+#[test]
+fn swash_hides_mapped_default_ignorables_as_before() {
+    let cmap = swash::FontRef::from_index(ROBOTO, 0).unwrap().charmap();
+    assert_ne!(cmap.map('\u{00AD}'), 0, "Roboto maps soft hyphen to a real glyph");
+    assert_ne!(cmap.map('\u{200B}'), 0, "Roboto maps ZWSP to a real glyph");
+    assert_ne!(cmap.map('a'), 0);
+    assert_ne!(cmap.map('b'), 0);
+    let Some((device, queue, _)) = common::gpu() else { return; };
+    let mut store = FontStore::new(&device);
+    let font = store.load_from_bytes(&device, &queue, ROBOTO, "ab\u{00AD}\u{200B}").unwrap();
+    let mut writer = TypeWriter::new();
+    let plain = writer.shape_text(&store, font, [24.; 2], 32., [0., 0., 0., 1.], "ab").unwrap();
+    for text in ["a\u{00AD}b", "a\u{200B}b"] {
+        let paragraph = writer.shape_text(&store, font, [24.; 2], 32., [0., 0., 0., 1.], text).unwrap();
+        assert_eq!(paragraph.glyphs(), plain.glyphs());
+        assert_eq!(paragraph.width(), plain.width());
+        assert_eq!(pixels(&device, &queue, &store, &paragraph), pixels(&device, &queue, &store, &plain));
+    }
+}
+
+#[test]
+fn visible_ligature_starting_at_missing_default_ignorable_is_retained() {
+    use swash::{shape::ShapeContext, text::Script};
+    let bytes = common::missing_ignorable_ligature_font();
+    let face = swash::FontRef::from_index(&bytes, 0).unwrap();
+    let charmap = face.charmap();
+    assert_eq!(charmap.map('\u{034F}'), 0);
+    assert_ne!(charmap.map('a'), 0);
+    let output = GlyphId(charmap.map('H'));
+    assert_ne!(output, GlyphId(0));
+    let mut context = ShapeContext::new();
+    let mut shaper = context.builder(face).script(Script::Latin).size(32.).build();
+    shaper.add_str("\u{034F}a");
+    let mut expected = Vec::new();
+    shaper.shape_with(|cluster| expected.extend(cluster.glyphs.iter().map(|g| crate::ShapedGlyph {
+        glyph: GlyphId(g.id), advance: g.advance, offset: [g.x, -g.y],
+    })));
+    assert_eq!(expected.len(), 1, "fixture must form a ligature");
+    assert_eq!(expected[0].glyph, output);
+    let Some((device, queue, _)) = common::gpu() else { return; };
+    let mut store = FontStore::new(&device);
+    let font = store.load_from_bytes(&device, &queue, &bytes, "aH\u{034F}").unwrap();
+    let paragraph = TypeWriter::new().shape_text(&store, font, [24.; 2], 32., [0., 0., 0., 1.], "\u{034F}a").unwrap();
+    assert_eq!(paragraph.glyphs(), expected, "a visible ligature must survive its source marker");
+    assert_eq!(paragraph.width(), expected[0].advance);
+    assert!(pixels(&device, &queue, &store, &paragraph).iter().any(|&value| value != 255));
 }

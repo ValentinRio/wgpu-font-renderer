@@ -26,7 +26,8 @@
 //! without bidi reordering. Glyphs absent from the cache selected by `chars` are skipped during drawing.
 //!
 //! Glyph zero is cached if it has an outline, so missing letters and symbols draw `.notdef`.
-//! Controls (Cc) and default-ignorables mapped to glyph zero are omitted without advance.
+//! Output glyph zero from controls (Cc) or default-ignorables is omitted without advance;
+//! visible substitutions and ligatures are retained.
 //! An empty `.notdef` advances without drawing. Loads that exhaust the atlas
 //! return [`LoadingError::AtlasFull`] without adding the font or affecting earlier
 //! fonts. An outline or its bands must fit a layer, and allocation must stay

@@ -85,8 +85,10 @@ retained. Script runs are shaped in logical order; bidi reordering and line
 wrapping are not implemented.
 
 Glyph zero is always cached when it has an outline, so characters the font lacks
-draw `.notdef`; an empty `.notdef` advances without drawing. Controls (Cc) and
-default-ignorable characters mapped to glyph zero are omitted without advance. Other uncached
+draw `.notdef`; an empty `.notdef` advances without drawing. Output glyph zero from controls (Cc) or
+default-ignorable characters is omitted without advance; visible substitutions
+and ligatures are retained. Swash also hides mapped default-ignorables such as
+Roboto’s soft hyphen, preserving 0.2 behaviour. Other uncached
 outlines are skipped. Loads that exhaust the atlas return `LoadingError::AtlasFull`
 with the glyph IDs that did not fit, leaving earlier fonts usable.
 Glyph ink is positioned at the pen plus its shaped offset plus the cached left

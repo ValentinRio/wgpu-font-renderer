@@ -17,7 +17,7 @@ below 1.0, a minor bump (0.x) may break the API.
 ### Changed
 
 - Variable fonts shape at their normalized location even when all coordinates are zero. Unlike 0.2, FeatureVariations whose condition ranges cover the default location now apply there.
-- General-category Cc controls and default-ignorable characters mapped to glyph zero are omitted from `Paragraph::glyphs()` and contribute no advance or ink. Missing letters and symbols still draw `.notdef` when it has an outline.
+- Output glyph zero (`.notdef`) is omitted from `Paragraph::glyphs()` only when its source is a Cc control or default-ignorable character, contributing no advance or ink. Nonzero output glyphs, including substitutions and ligatures with such a source, retain swash’s glyphs and positioning. Mapped Cc controls enter ordinary glyph shaping to retain their font glyphs; swash’s control handling would otherwise hide them before output. Missing letters and symbols still draw `.notdef` when it has an outline. Swash’s existing hiding of mapped default-ignorables (for example Roboto’s U+00AD), like HarfBuzz’s default, is retained from 0.2.
 
 - Loading checks glyph dimensions and enforces per-glyph work limits, found by a seeded robustness test over random and corrupted fonts, rejecting a glyph past them with the new `LoadingError::GlyphTooComplex`; a valid but very complex glyph can be refused. A `VARC` table is ignored in favour of `glyf` or CFF outlines. Glyphs whose bounding box spans more than 32,767 font units, which OpenType allows, now load.
 - Grayscale text now honours colour alpha, including the LCD fallback; in 0.2 it ignored alpha. LCD continues to scale coverage by alpha. Alpha one preserves existing output.

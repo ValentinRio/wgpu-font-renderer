@@ -130,9 +130,15 @@ impl TypeWriter {
     ///
     /// Returns `None` for an unknown font or a size that is not finite or is <= 0.0.
     /// Retains glyphs and offsets, shaping each script run independently.
-    /// General-category Cc controls and default-ignorable characters mapped to
-    /// glyph zero are omitted from `Paragraph::glyphs()` and contribute no advance.
-    /// Other missing characters still draw `.notdef` if it has an outline.
+    /// Output glyph zero (`.notdef`) is omitted when its source is a Cc control
+    /// or default-ignorable character, contributing no advance. Every other
+    /// output stays as swash shaped it, including visible substitutions and
+    /// ligatures originating at those characters. Other missing characters
+    /// still draw `.notdef` if it has an outline. Mapped Cc controls enter ordinary
+    /// glyph shaping so swash emits their font glyphs instead of hiding them.
+    /// Swash also hides default-ignorables mapped to visible glyphs (for example
+    /// Roboto's soft hyphen), as HarfBuzz does by default. This existing behaviour
+    /// is retained from 0.2.
     /// Common and inherited characters join the preceding run, or the following
     /// run at the start. Runs stay in logical order; bidi and line wrapping are
     /// not implemented. Text with no strong script is shaped as Latin.
@@ -177,21 +183,23 @@ impl TypeWriter {
         let mut glyphs = Vec::new();
         for (run, script) in script_runs(text) {
             let mut shaper = self.context.builder(font).script(script).size(size).normalized_coords(coords.clone()).build();
-            // Preserve shaping context (including joiners). Carry an invisible-source
-            // marker through normalization and substitution, then omit its output.
+            // Carry the source category through normalization and substitution.
+            // Only .notdef is hidden: a ligature may inherit this marker and be visible.
             let charmap = font.charmap();
             let mut cluster = CharCluster::new();
             let mut parser = Parser::new(script, run.char_indices().map(|(offset, ch)| Token {
                 ch, offset: offset as u32, len: ch.len_utf8() as u8,
-                info: ch.into(), data: u32::from(ch.is_control()
-                    || (is_default_ignorable(ch) && charmap.map(ch) == 0)),
+                // Swash otherwise discards mapped Cc before emitting any glyph.
+                // Give them ordinary properties while keeping the actual cmap character.
+                info: if ch.is_control() && charmap.map(ch) != 0 { ' '.into() } else { ch.into() },
+                data: u32::from(ch.is_control() || is_default_ignorable(ch)),
             }));
             while parser.next(&mut cluster) {
                 cluster.map(|ch| charmap.map(ch));
                 shaper.add_cluster(&cluster);
             }
             shaper.shape_with(|cluster| {
-                glyphs.extend(cluster.glyphs.iter().filter(|glyph| glyph.data == 0).map(|glyph| ShapedGlyph {
+                glyphs.extend(cluster.glyphs.iter().filter(|glyph| glyph.id != 0 || glyph.data == 0).map(|glyph| ShapedGlyph {
                     glyph: GlyphId(glyph.id),
                     advance: glyph.advance,
                     offset: [glyph.x, -glyph.y],

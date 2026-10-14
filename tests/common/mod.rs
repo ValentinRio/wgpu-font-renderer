@@ -175,3 +175,29 @@ pub fn two_axis_font() -> Vec<u8> {
     replace_font_table(&mut bytes, b"avar", &avar);
     bytes
 }
+
+// GSUB liga: nominal glyph zero followed by 'a' becomes visible 'H'. CGJ is
+// unmapped in Roboto, so the ligature retains a default-ignorable source marker.
+#[allow(dead_code)]
+pub fn missing_ignorable_ligature_font() -> Vec<u8> {
+    let mut bytes = include_bytes!("../../fonts/Roboto-Regular.ttf").to_vec();
+    let font = swash::FontRef::from_index(&bytes, 0).unwrap();
+    let charmap = font.charmap();
+    assert_eq!(charmap.map('\u{034F}'), 0);
+    let (letter, output) = (charmap.map('a'), charmap.map('H'));
+    assert_ne!(letter, 0);
+    assert_ne!(output, 0);
+    let u16s = |values: &[u16]| values.iter().flat_map(|v| v.to_be_bytes()).collect::<Vec<_>>();
+    let mut table = u16s(&[1, 0, 10, 30, 44]);
+    table.extend(u16s(&[1]));
+    table.extend(b"latn");
+    table.extend(u16s(&[8, 4, 0, 0, 0xffff, 1, 0]));
+    assert_eq!(table.len(), 30);
+    table.extend(u16s(&[1]));
+    table.extend(b"liga");
+    table.extend(u16s(&[8, 0, 1, 0]));
+    assert_eq!(table.len(), 44);
+    table.extend(u16s(&[1, 4, 4, 0, 1, 8, 1, 18, 1, 8, 1, 4, output, 2, letter, 1, 1, 0]));
+    replace_font_table(&mut bytes, b"GSUB", &table);
+    bytes
+}
