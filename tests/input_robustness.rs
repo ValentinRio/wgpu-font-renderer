@@ -205,7 +205,7 @@ fn seeded_loader_and_shaper_never_panic() {
             no_panic(seed, case, &format!("shape_text font {font}"), || {
                 assert!(writer
                     .shape_text(&store, key, [0.; 2], 32., [1.; 4], &text)
-                    .is_some());
+                    .is_ok());
             });
         }
     }

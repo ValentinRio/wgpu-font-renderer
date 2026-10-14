@@ -18,7 +18,7 @@ use common::centre::CentreModel;
 use common::coverage_limits::{C3_DENSE_MEAN_ERRORS, C3_MAX_ERROR, C3_MEAN_ERRORS, READBACK_ERROR};
 
 #[test]
-fn c3_every_cached_glyph_matches_method_and_box_error_bounds() {
+fn c3_preset_glyphs_match_method_and_box_error_bounds() {
     let Some((device, queue, _config)) = common::gpu() else {
         return;
     };
@@ -85,7 +85,14 @@ fn c3_every_cached_glyph_matches_method_and_box_error_bounds() {
         "#);
         let source = format!("@group(0) @binding(2) var<uniform> probe_inputs: array<vec4<f32>, 9>;\n{source}");
         let probe = probe::Probe::new(&device, wgpu_font_renderer::internals::atlas_view(&store), &source, None);
-        let mut glyphs: Vec<_> = font.glyph_cache.iter().collect();
+        // These frozen coverage bounds describe the original preset corpus.
+        // GSUB closure can add other shapes; its drawing is tested in text_pipeline.
+        let face = font.face();
+        let preset_ids: std::collections::BTreeSet<_> = preset.chars()
+            .filter_map(|ch| face.charmap().map(ch).map(|id| id.to_u32()))
+            .chain(std::iter::once(0)).collect();
+        let mut glyphs: Vec<_> = font.glyph_cache.iter()
+            .filter(|(id, glyph)| preset_ids.contains(id) && glyph.allocation.size() > 0).collect();
         glyphs.sort_by_key(|(id, _)| **id);
         for (size, mean_limit) in mean_errors {
             let scale = size / font.face().metrics(Size::unscaled(), LocationRef::default()).units_per_em as f32;

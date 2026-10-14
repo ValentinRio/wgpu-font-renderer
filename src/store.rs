@@ -79,7 +79,13 @@ impl FontStore {
         self.load_from_bytes(device, queue, &data, chars)
     }
 
-    /// Load face zero from font bytes and upload outlines for `chars`.
+    /// Load face zero from font bytes and upload outlines for `chars` and every
+    /// glyph GSUB shaping can produce from them in a well-formed font (ligatures,
+    /// contextual forms, normalized accents). `morx` substitutions are not cached.
+    ///
+    /// Malformed GSUB tables return [`LoadingError::InvalidFont`], and closure
+    /// work past the policy caps returns [`LoadingError::SubstitutionTooComplex`].
+    /// Crafted fonts can still reach swash bugs listed in the crate docs.
     ///
     /// Returns a fresh font key, or [`LoadingError::InvalidFont`] for invalid data.
     /// Glyph zero is always cached if it has an outline, so missing characters

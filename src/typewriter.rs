@@ -7,6 +7,46 @@ use swash::{
 
 use crate::{FontId, FontStore};
 
+/// Failure to shape or lay out text.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub enum LayoutError {
+    /// The font ID does not belong to this store.
+    UnknownFont,
+    /// The font size must be finite and positive.
+    InvalidSize,
+    /// The input or derived line position is not finite.
+    NonFinitePosition,
+    /// The maximum width must be finite and nonnegative.
+    InvalidMaxWidth,
+    /// The line height must be finite and positive, including after scaling.
+    InvalidLineHeight,
+    /// A shaped line width is not finite.
+    NonFiniteLineWidth,
+    /// The derived text block size is not finite.
+    NonFiniteBlockSize,
+    /// The input exceeds u32::MAX bytes.
+    TextTooLong,
+}
+
+impl std::fmt::Display for LayoutError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::UnknownFont => "The font ID does not belong to this store.",
+            Self::InvalidSize => "The font size must be finite and positive.",
+            Self::NonFinitePosition => "The input or derived line position is not finite.",
+            Self::InvalidMaxWidth => "The maximum width must be finite and nonnegative.",
+            Self::InvalidLineHeight => {
+                "The line height must be finite and positive, including after scaling."
+            }
+            Self::NonFiniteLineWidth => "A shaped line width is not finite.",
+            Self::NonFiniteBlockSize => "The derived text block size is not finite.",
+            Self::TextTooLong => "The input exceeds u32::MAX bytes.",
+        })
+    }
+}
+impl std::error::Error for LayoutError {}
+
 /// Glyph index within a font.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct GlyphId(
@@ -275,6 +315,19 @@ impl<'a> IntoIterator for &'a TextBlock {
     }
 }
 
+fn validate_input(length: usize, size: f32, position: [f32; 2]) -> Result<(), LayoutError> {
+    if length > u32::MAX as usize {
+        return Err(LayoutError::TextTooLong);
+    }
+    if !size.is_finite() || size <= 0. {
+        return Err(LayoutError::InvalidSize);
+    }
+    if position.iter().any(|value| !value.is_finite()) {
+        return Err(LayoutError::NonFinitePosition);
+    }
+    Ok(())
+}
+
 struct ShapedCluster {
     source: std::ops::Range<usize>,
     glyphs: Vec<ShapedGlyph>,
@@ -301,8 +354,8 @@ impl TypeWriter {
 
     /// Shape text at a top-left pixel anchor, with size in pixels per em.
     ///
-    /// Returns `None` for an unknown font, a size that is not finite or is <= 0.0,
-    /// or input longer than `u32::MAX` bytes.
+    /// Returns [`LayoutError`] for an unknown font, invalid size, non-finite
+    /// position, or input longer than `u32::MAX` bytes.
     /// Retains glyphs and offsets, shaping each script run independently.
     /// Output glyph zero (`.notdef`) is omitted when its source is a Cc control
     /// or default-ignorable character, contributing no advance. Every other
@@ -327,10 +380,8 @@ impl TypeWriter {
         size: f32,
         color: [f32; 4],
         text: &str,
-    ) -> Option<Paragraph> {
-        if text.len() > u32::MAX as usize || !size.is_finite() || size <= 0.0 {
-            return None;
-        }
+    ) -> Result<Paragraph, LayoutError> {
+        validate_input(text.len(), size, position)?;
         let mut paragraph = Paragraph::new(font, position, size, color);
         if let Some(font) = store.get(font) {
             for glyph in self.shape_glyphs_at(font.as_ref(), font.location.coords().iter().map(|c| c.to_bits()), size, text) {
@@ -338,9 +389,9 @@ impl TypeWriter {
                 paragraph.glyphs.push(glyph);
             }
 
-            Some(paragraph)
+            Ok(paragraph)
         } else {
-            None
+            Err(LayoutError::UnknownFont)
         }
     }
 
@@ -365,7 +416,7 @@ impl TypeWriter {
     /// Baselines use the same font ascent as [`Self::shape_text`]. Bidi
     /// reordering is not performed. Empty text produces zero lines.
     ///
-    /// Returns `None` in the same cases as [`Self::shape_text`] (including input
+    /// Returns [`LayoutError`] in the same cases as [`Self::shape_text`] (including input
     /// longer than `u32::MAX` bytes), or for a
     /// non-finite or negative maximum width or a non-finite/nonpositive
     /// `Scale` or `Pixels` line height, or a non-finite origin, line width or block size.
@@ -379,15 +430,11 @@ impl TypeWriter {
         color: [f32; 4],
         text: &str,
         layout: &TextLayout,
-    ) -> Option<TextBlock> {
-        if text.len() > u32::MAX as usize {
-            return None;
-        }
-        let metrics = store.metrics(font, size)?;
-        if position.iter().any(|value| !value.is_finite())
-            || layout.max_width.is_some_and(|w| !w.is_finite() || w < 0.)
-        {
-            return None;
+    ) -> Result<TextBlock, LayoutError> {
+        validate_input(text.len(), size, position)?;
+        let metrics = store.metrics(font, size).ok_or(LayoutError::UnknownFont)?;
+        if layout.max_width.is_some_and(|w| !w.is_finite() || w < 0.) {
+            return Err(LayoutError::InvalidMaxWidth);
         }
         let font_height = metrics.ascent + metrics.descent + metrics.line_gap;
         let font_height = if font_height.is_finite() && font_height > 0. {
@@ -399,12 +446,12 @@ impl TypeWriter {
             LineHeight::Font => font_height,
             LineHeight::Scale(k) if k.is_finite() && k > 0. => font_height * k,
             LineHeight::Pixels(p) if p.is_finite() && p > 0. => p,
-            _ => return None,
+            _ => return Err(LayoutError::InvalidLineHeight),
         };
-        if !line_height.is_finite() {
-            return None;
+        if !line_height.is_finite() || line_height <= 0. {
+            return Err(LayoutError::InvalidLineHeight);
         }
-        let instance = store.get(font)?;
+        let instance = store.get(font).ok_or(LayoutError::UnknownFont)?;
         let mut lines = Vec::new();
         for (source, hard) in hard_sections(text) {
             let piece = &text[source.clone()];
@@ -436,7 +483,7 @@ impl TypeWriter {
             );
         }
         if lines.iter().any(|line| !line.width.is_finite()) {
-            return None;
+            return Err(LayoutError::NonFiniteLineWidth);
         }
         let width = layout
             .max_width
@@ -451,15 +498,15 @@ impl TypeWriter {
             let offset = [shift, n as f32 * line_height];
             line.position = [position[0] + offset[0], position[1] + offset[1]];
             if line.position.iter().any(|value| !value.is_finite()) {
-                return None;
+                return Err(LayoutError::NonFinitePosition);
             }
             offsets.push(offset);
         }
         let height = lines.len() as f32 * line_height;
         if !height.is_finite() {
-            return None;
+            return Err(LayoutError::NonFiniteBlockSize);
         }
-        Some(TextBlock {
+        Ok(TextBlock {
             lines,
             offsets,
             position,
@@ -1242,7 +1289,7 @@ mod layout_tests {
                     "Hi",
                     &TextLayout::default().with_max_width(value)
                 )
-                .is_none());
+                .is_err_and(|error| error == LayoutError::InvalidMaxWidth));
         }
         for value in [0., -1., f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             for height in [LineHeight::Scale(value), LineHeight::Pixels(value)] {
@@ -1256,7 +1303,7 @@ mod layout_tests {
                         "Hi",
                         &TextLayout::default().with_line_height(height)
                     )
-                    .is_none());
+                    .is_err_and(|error| error == LayoutError::InvalidLineHeight));
             }
             assert!(writer
                 .layout_text(
@@ -1268,7 +1315,7 @@ mod layout_tests {
                     "Hi",
                     &TextLayout::default()
                 )
-                .is_none());
+                .is_err_and(|error| error == LayoutError::InvalidSize));
         }
         let mut other = FontStore::new(&device);
         let foreign = other
@@ -1284,7 +1331,7 @@ mod layout_tests {
                 "Hi",
                 &TextLayout::default()
             )
-            .is_none());
+            .is_err_and(|error| error == LayoutError::UnknownFont));
         let huge_metrics = store.metrics(font, f32::MAX).unwrap();
         assert!(!(huge_metrics.ascent + huge_metrics.descent + huge_metrics.line_gap).is_finite());
         let huge = writer
@@ -1561,7 +1608,7 @@ mod round2_tests {
                         "WWWW",
                         &TextLayout::default().with_align(align)
                     )
-                    .is_none(),
+                    .is_err_and(|error| error == LayoutError::NonFiniteLineWidth),
                 "{align:?}"
             );
         }
@@ -1575,7 +1622,7 @@ mod round2_tests {
                 "W",
                 &TextLayout::default()
             )
-            .is_none());
+            .is_err_and(|error| error == LayoutError::NonFinitePosition));
         assert!(writer
             .layout_text(
                 &store,
@@ -1586,7 +1633,7 @@ mod round2_tests {
                 "W\nW",
                 &TextLayout::default().with_line_height(LineHeight::Pixels(f32::MAX))
             )
-            .is_none());
+            .is_err_and(|error| error == LayoutError::NonFinitePosition));
     }
 }
 
@@ -1701,7 +1748,7 @@ mod round3_tests {
                     "",
                     &TextLayout::default()
                 )
-                .is_none());
+                .is_err_and(|error| error == LayoutError::NonFinitePosition));
         }
     }
 
@@ -1722,7 +1769,7 @@ mod round3_tests {
                 "W\nW",
                 &TextLayout::default().with_line_height(LineHeight::Pixels(f32::MAX))
             )
-            .is_none());
+            .is_err_and(|error| error == LayoutError::NonFiniteBlockSize));
     }
 }
 
@@ -2094,5 +2141,87 @@ mod source_tests {
         assert_sources(text, &glyphs, &['\n', '\r']);
         assert_eq!(block.lines()[1].glyphs()[0].source(), Some(3..4));
         assert_eq!(block.lines()[3].glyphs()[0].source(), Some(10..13));
+    }
+}
+
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+
+    #[test]
+    fn input_length_and_error_traits() {
+        if usize::BITS > 32 {
+            assert_eq!(
+                validate_input(u32::MAX as usize + 1, 32., [0.; 2]),
+                Err(LayoutError::TextTooLong)
+            );
+        }
+        let error = LayoutError::InvalidSize;
+        assert_eq!(error.clone(), error);
+        assert!(!error.to_string().is_empty());
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn shape_origin_and_derived_line_height_errors() {
+        let Some((device, queue, _)) = crate::atlas_tests::common::gpu() else {
+            return;
+        };
+        let mut store = FontStore::new(&device);
+        let font = store
+            .load_from_bytes(
+                &device,
+                &queue,
+                include_bytes!("../fonts/Roboto-Regular.ttf"),
+                "W",
+            )
+            .unwrap();
+        let mut writer = TypeWriter::new();
+        assert_eq!(
+            writer
+                .shape_text(&store, font, [f32::NAN, 0.], 32., [1.; 4], "")
+                .unwrap_err(),
+            LayoutError::NonFinitePosition
+        );
+        assert_eq!(
+            writer
+                .layout_text(
+                    &store,
+                    font,
+                    [0.; 2],
+                    32.,
+                    [1.; 4],
+                    "",
+                    &TextLayout::default().with_line_height(LineHeight::Scale(f32::MAX))
+                )
+                .unwrap_err(),
+            LayoutError::InvalidLineHeight
+        );
+    }
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn round2_scaled_line_height_underflow_is_rejected() {
+        let Some((device, queue, _)) = crate::atlas_tests::common::gpu() else {
+            return;
+        };
+        let mut store = FontStore::new(&device);
+        let font = store
+            .load_from_bytes(
+                &device,
+                &queue,
+                include_bytes!("../fonts/Roboto-Regular.ttf"),
+                "H",
+            )
+            .unwrap();
+        let result = TypeWriter::new().layout_text(
+            &store,
+            font,
+            [0.; 2],
+            f32::from_bits(1),
+            [1.; 4],
+            "H",
+            &TextLayout::default().with_line_height(LineHeight::Scale(0.25)),
+        );
+        assert_eq!(result.unwrap_err(), LayoutError::InvalidLineHeight);
     }
 }

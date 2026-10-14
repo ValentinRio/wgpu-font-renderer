@@ -2,8 +2,12 @@
 //! Render scalable font outlines with wgpu on native platforms and WebGPU.
 //!
 //! [`FontStore`] loads a font and writes the selected glyph outlines into a float
-//! atlas. [`TypeWriter`] shapes text by script into paragraphs containing glyph IDs
-//! and pixel advances and offsets. [`TypeWriter::layout_text`] shapes and wraps
+//! atlas. For a well-formed font that shapes with GSUB, every glyph shaping can
+//! produce from the preset characters is cached, including ligatures, contextual
+//! forms and normalized accents; `morx` substitutions are not cached.
+//! [`TypeWriter`] shapes text by script into paragraphs containing glyph IDs
+//! and pixel advances and offsets, returning [`LayoutError`] on invalid input.
+//! [`TypeWriter::layout_text`] shapes and wraps
 //! hard-break-delimited paragraphs into a [`TextBlock`] using [`TextLayout`], Unicode break opportunities and font
 //! metrics. [`TextRenderer`] prepares glyph instances and draws them
 //! with shader-computed coverage, without rasterizing glyphs on the CPU.
@@ -27,7 +31,7 @@
 //! both x and y. Shaping retains every glyph and its offsets in logical run order
 //! without bidi reordering. Glyphs absent from the cache selected by `chars` are skipped during drawing.
 //!
-//! Glyph zero is cached if it has an outline, so missing letters and symbols draw `.notdef`.
+//! Glyph zero is cached, so missing letters and symbols draw `.notdef` if it has an outline.
 //! Output glyph zero from controls (Cc) or default-ignorables is omitted without advance;
 //! visible substitutions and ligatures are retained.
 //! An empty `.notdef` advances without drawing. Loads that exhaust the atlas
@@ -42,9 +46,14 @@
 //! enforces per-glyph work limits (65,535 points and 16,384 contours after
 //! composite expansion, 4,096 component references, 16,384 encoded segments);
 //! a glyph past them gives [`LoadingError::GlyphTooComplex`]. The limits are
-//! loader policy, so a valid but very complex glyph can be refused. Upstream, swash's `cmap` lookup can
-//! panic on crafted data in debug builds, and skrifa does not bound total CFF
-//! work, so a crafted CFF glyph can load slowly with bounded memory.
+//! loader policy, so a valid but very complex glyph can be refused. Malformed GSUB tables are rejected
+//! at load or stopped by the closure cap ([`LoadingError::SubstitutionTooComplex`]).
+//! The cache guarantee does not extend to crafted fonts. Known upstream limits:
+//! swash's `cmap` and `ClassDef` arithmetic can panic in debug builds on crafted
+//! data; swash misreads null FeatureVariations substitution offsets and can
+//! compose an unexpected Hangul character, emitting glyphs the closure did not
+//! cache (they draw nothing); skrifa does not bound total CFF work, so a crafted
+//! CFF glyph can load slowly with bounded memory.
 //! Glyph ink is placed at the pen plus its shaped offset plus the cached left
 //! side bearing scaled to pixels. In 0.2, each glyph's ink was anchored at the
 //! pen; text now shifts by each glyph's bearing. TrueType outlines apply
@@ -144,12 +153,13 @@ mod store;
 mod atlas;
 mod renderer;
 mod typewriter;
+mod gsub;
 mod ortho;
 pub use renderer::{SubpixelOrder, TextRenderer};
 pub use store::{Axis, FontId, FontMetrics, FontStore};
 pub use loader::LoadingError;
 pub use typewriter::TypeWriter;
-pub use typewriter::{Align, GlyphId, LineHeight, Paragraph, ShapedGlyph, TextBlock, TextLayout};
+pub use typewriter::{Align, GlyphId, LayoutError, LineHeight, Paragraph, ShapedGlyph, TextBlock, TextLayout};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod atlas_tests;

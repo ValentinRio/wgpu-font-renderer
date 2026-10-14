@@ -1,6 +1,6 @@
 use super::allocator::Region;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 /// A contiguous row-major run of floats in one atlas layer.
 pub struct Allocation {
     /// Zero-based texture array layer.
