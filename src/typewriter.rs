@@ -138,14 +138,16 @@ pub enum LineHeight {
 ///
 /// Defaults to no maximum width, left alignment and the font line height.
 ///
-/// Whitespace follows CSS `white-space: pre-wrap`: leading spaces are kept and
-/// count toward their line's width, so `"   abc"` can overflow a maximum width
-/// that fits `"abc"`. Trailing breakable spaces hang at every line end and do
-/// not count toward width or alignment. No-break spaces never hang.
+/// Whitespace is close to CSS `white-space: pre-wrap`, with one difference:
+/// leading spaces are kept, count toward their line's width and never wrap
+/// onto a line of their own, so `"   abc"` overflows a maximum width that fits
+/// `"abc"` instead of breaking after the spaces. Breakable spaces (Unicode line
+/// break class SP or BA, which includes tab) hang at every line end and do not
+/// count toward width or alignment. No-break spaces never hang.
 ///
 /// Hard breaks split text into independently shaped paragraphs, including
-/// independent script detection. For `"ع\n12"`, `12` uses the Latin fallback
-/// rather than continuing the Arabic run. Hard breaks are LF, CR, CRLF (one
+/// independent script detection. For `"ع\n12"`, `12` is shaped with the Latin
+/// script tag rather than continuing the Arabic run; the font does not change. Hard breaks are LF, CR, CRLF (one
 /// break), VT, FF, NEL, U+2028 and U+2029.
 #[non_exhaustive]
 #[derive(Clone, Debug, Default)]
@@ -294,16 +296,17 @@ impl TypeWriter {
     /// at Unicode line-break opportunities.
     ///
     /// Breaks fall between clusters; words wider than the box overflow intact.
-    /// Whitespace follows CSS `white-space: pre-wrap`: leading spaces are kept
-    /// and count toward their line's width, so `"   abc"` can overflow a maximum
-    /// width that fits `"abc"`. Trailing breakable spaces hang at every line end:
-    /// their glyphs remain but do not count toward width or alignment. No-break
-    /// spaces never hang. Reordered source spans stay intact.
+    /// Whitespace is close to CSS `white-space: pre-wrap`, except that leading
+    /// spaces never wrap onto a line of their own: they count toward their
+    /// line's width, so `"   abc"` overflows a maximum width that fits `"abc"`.
+    /// Breakable spaces (line break class SP or BA, which includes tab) hang at
+    /// every line end: their glyphs remain but do not count toward width or
+    /// alignment. No-break spaces never hang. Reordered source spans stay intact.
     ///
     /// Hard breaks are LF, CR, CRLF (one break), VT, FF, NEL, U+2028 and U+2029.
     /// They are never passed to the shaper. Each paragraph is shaped on its own,
-    /// including independent script detection: for `"ع\n12"`, `12` uses the
-    /// Latin fallback rather than continuing the Arabic run. A final hard break
+    /// including independent script detection: for `"ع\n12"`, `12` is shaped
+    /// with the Latin script tag rather than continuing the Arabic run. A final hard break
     /// adds no extra line.
     ///
     /// Without a maximum width the box is as wide as its widest line.
