@@ -337,7 +337,8 @@ impl TextRenderer {
             let mut glyph_x = paragraph.position()[0];
 
             paragraph.glyphs().iter().for_each(|shaped| {
-                if let Some(glyph) = font.glyph_cache.get(&(shaped.glyph.0 as u32)) {
+                if let Some(glyph) = font.glyph_cache.get(&(shaped.glyph.0 as u32))
+                    .filter(|glyph| glyph.bbox.width() > 0 && glyph.bbox.height() > 0) {
                     let glyph_y = paragraph.position()[1] + ((glyph.y_offset as f32 + font.ascender_delta) / units_per_em * paragraph.size()) + (f32::abs(glyph.descent as f32) / units_per_em * paragraph.size());
 
                     let size = [

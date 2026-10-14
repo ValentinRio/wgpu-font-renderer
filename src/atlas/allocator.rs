@@ -6,7 +6,7 @@ pub struct Allocator {
     allocations: usize,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 /// Contiguous linear run of float slots, potentially spanning several rows.
 pub struct Region {
     position: [u32; 2],

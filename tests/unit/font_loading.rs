@@ -112,7 +112,11 @@ fn bundled_unicode_and_presets_agree_with_swash() {
         let mut store = FontStore::new(&device);
         let key = store.load_from_bytes(&device, &queue, bytes, &preset).unwrap();
         let cached: BTreeSet<_> = store.get(key).unwrap().glyph_cache.keys().copied().collect();
-        assert_eq!(cached, expected, "{name}: cached keys match loader-selected outlined glyphs");
+        assert!(expected.is_subset(&cached), "{name}: every loader-selected outlined glyph is cached");
+        let face = SkFontRef::new(bytes).unwrap();
+        let closed: BTreeSet<_> = closure_glyph_ids(&face, FontRef::from_index(bytes, 0).unwrap(), &preset).unwrap()
+            .into_iter().filter(|&id| face.gsub().is_ok() || glyph_bounding_box(&face, id).is_some()).map(|id| id.to_u32()).collect();
+        assert_eq!(cached, closed, "{name}: cache keys exactly match closure");
         if glyph_bounding_box(&SkFontRef::new(bytes).unwrap(), GlyphId::new(0)).is_some() {
             assert!(cached.contains(&0), "{name}: outlined .notdef must be cached");
         }
@@ -154,7 +158,10 @@ fn macintosh_cmap_before_unicode_still_caches_the_shaped_glyph() {
     assert_eq!(paragraph.glyphs().len(), 1);
     assert_eq!(paragraph.glyphs()[0].glyph.0 as u32, loaded);
     let cached: BTreeSet<_> = store.get(key).unwrap().glyph_cache.keys().copied().collect();
-    assert_eq!(cached, BTreeSet::from([0, unicode]), "loader must cache the Unicode glyph swash shaped");
+    let expected: BTreeSet<_> = closure_glyph_ids(&face, font, "A").unwrap().into_iter().map(|id| id.to_u32()).collect();
+    assert_eq!(cached, expected, "loader must cache the Unicode glyph and its GSUB closure");
+    assert!(cached.contains(&unicode));
+    assert!(cached.contains(&0));
 }
 
 #[test]

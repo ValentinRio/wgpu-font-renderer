@@ -16,6 +16,28 @@ fn pixels(
     draw::draw_pixels(device, queue, &mut renderer, [128, 128], wgpu::Color::WHITE)
 }
 
+fn cached_ids(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    preset: &str,
+    include_notdef: bool,
+) -> Vec<u32> {
+    let mut store = FontStore::new(device);
+    let font = store
+        .load_from_bytes(device, queue, ROBOTO, preset)
+        .unwrap();
+    let mut ids: Vec<_> = store
+        .get(font)
+        .unwrap()
+        .glyph_cache
+        .iter()
+        .filter(|(id, glyph)| (include_notdef || **id != 0) && glyph.allocation.size() > 0)
+        .map(|(&id, _)| id)
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
 #[test]
 fn missing_character_draws_notdef_and_empty_notdef_only_advances() {
     let Some((device, queue, _)) = common::gpu() else {
@@ -50,7 +72,7 @@ fn missing_character_draws_notdef_and_empty_notdef_only_advances() {
     let mut bytes = ROBOTO.to_vec();
     bytes.copy_within(offset + entry_size..offset + 2 * entry_size, offset);
     let key = store.load_from_bytes(&device, &queue, &bytes, "").unwrap();
-    assert!(!store.get(key).unwrap().glyph_cache.contains_key(&0));
+    assert_eq!(store.get(key).unwrap().glyph_cache[&0].allocation.size(), 0);
     let paragraph = TypeWriter::new()
         .shape_text(&store, key, [24.; 2], 32., [0., 0., 0., 1.], "\u{10ffff}")
         .unwrap();
@@ -95,9 +117,11 @@ fn failed_load_names_glyphs_rolls_back_and_preserves_earlier_font() {
     let error = store
         .load_from_bytes(&device, &queue, ROBOTO, "\u{10ffff}BCB")
         .unwrap_err();
-    let cmap = swash::FontRef::from_index(ROBOTO, 0).unwrap().charmap();
-    assert!(matches!(error, LoadingError::AtlasFull(ref ids)
-        if ids == &[GlyphId(cmap.map('B')), GlyphId(cmap.map('C'))]));
+    let expected = cached_ids(&device, &queue, "BC", false);
+    let LoadingError::AtlasFull(ids) = error else { panic!("expected atlas exhaustion: {error}"); };
+    let mut actual: Vec<_> = ids.iter().map(|id| id.0 as u32).collect();
+    actual.sort_unstable();
+    assert_eq!(actual, expected, "every outlined closure glyph that did not fit is reported");
     assert_eq!(store.cache.len(), count);
     assert_eq!(pixels(&device, &queue, &store, &paragraph), before);
     // A subsequent successful load proves the failed load reclaimed its allocation.
@@ -182,8 +206,11 @@ fn band_exhaustion_fails_and_rolls_back_curve_allocations() {
     let used = store.atlas.used_floats();
     let count = store.cache.len();
     let error = store.load_from_bytes(&device, &queue, ROBOTO, "BB").unwrap_err();
-    let cmap = swash::FontRef::from_index(ROBOTO, 0).unwrap().charmap();
-    assert!(matches!(error, LoadingError::AtlasFull(ref ids) if ids == &[GlyphId(cmap.map('B')), GlyphId(0)]));
+    let expected = cached_ids(&device, &queue, "B", true);
+    let LoadingError::AtlasFull(ids) = error else { panic!("expected atlas exhaustion: {error}"); };
+    let mut actual: Vec<_> = ids.iter().map(|id| id.0 as u32).collect();
+    actual.sort_unstable();
+    assert_eq!(actual, expected, "band exhaustion reports every outlined closure glyph");
     assert_eq!(store.cache.len(), count);
     assert_eq!(store.atlas.used_floats(), used);
     assert_eq!(pixels(&device, &queue, &store, &paragraph), before);

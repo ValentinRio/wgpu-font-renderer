@@ -11,7 +11,7 @@ The shader has two CPU oracles in `tests/common`, and no frozen shader files.
 `centre.rs` is a separate CPU model of the shader's own method: two centre rays
 over the glyph's full, unbanded curve list.
 
-`tests/analytic_coverage.rs` renders every cached glyph of Roboto (TrueType),
+`tests/analytic_coverage.rs` renders every outlined preset glyph of Roboto (TrueType),
 Cantarell (CFF2) and the Noto Serif SC subset (CFF) at 12, 16, 24, 48 and 200 px.
 Each pixel must equal the centre-ray model within readback precision, which also catches band and
 early-exit mistakes. Against the box-filter reference, the mean and maximum
@@ -41,6 +41,19 @@ Another regression forces their band allocations to start at column 2045 and
 wrap a row. They compare banded and forced full-list RGBA8 output at all twelve
 sampled sizes and instrument band use at size 400. Every reference size tile
 must contain at least 64 black pixels with alpha >= 32 before pixel comparison.
+
+`tests/text_pipeline.rs` shapes "office fluffy" in Roboto and Cantarell for
+both default and variation loads. Every output must be cached, and GPU readback
+must contain ink strictly inside each ffi/ffl box. Loading only "f" must omit
+those ligatures because i/l are outside the preset. Removing GSUB closure makes
+both cache membership and ink checks fail. Empty cached glyphs allocate no atlas
+storage and produce no coverage samples.
+
+`src/gsub.rs` tests every output-producing lookup type, extension lookups,
+context/chained-context targets, and ligatures' all-components rule. Crafted
+single-substitution cycles and large coverage tables exercise the iteration and
+work caps, including through the GPU loader. `LayoutError` tests assert each
+validation cause.
 
 Run the full suite with `REQUIRE_GPU=1 cargo test --offline --all-features`.
 The `unstable-internals` feature enables integration targets that inspect fonts

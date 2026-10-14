@@ -2,8 +2,10 @@
 //! Render scalable font outlines with wgpu on native platforms and WebGPU.
 //!
 //! [`FontStore`] loads a font and writes the selected glyph outlines into a float
-//! atlas. [`TypeWriter`] shapes text by script into paragraphs containing glyph IDs
-//! and pixel advances and offsets. [`TypeWriter::layout_text`] shapes and wraps
+//! atlas, including their bounded GSUB closure across all lookups.
+//! [`TypeWriter`] shapes text by script into paragraphs containing glyph IDs
+//! and pixel advances and offsets, returning [`LayoutError`] on invalid input.
+//! [`TypeWriter::layout_text`] shapes and wraps
 //! hard-break-delimited paragraphs into a [`TextBlock`] using [`TextLayout`], Unicode break opportunities and font
 //! metrics. [`TextRenderer`] prepares glyph instances and draws them
 //! with shader-computed coverage, without rasterizing glyphs on the CPU.
@@ -144,12 +146,13 @@ mod store;
 mod atlas;
 mod renderer;
 mod typewriter;
+mod gsub;
 mod ortho;
 pub use renderer::{SubpixelOrder, TextRenderer};
 pub use store::{Axis, FontId, FontMetrics, FontStore};
 pub use loader::LoadingError;
 pub use typewriter::TypeWriter;
-pub use typewriter::{Align, GlyphId, LineHeight, Paragraph, ShapedGlyph, TextBlock, TextLayout};
+pub use typewriter::{Align, GlyphId, LayoutError, LineHeight, Paragraph, ShapedGlyph, TextBlock, TextLayout};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod atlas_tests;

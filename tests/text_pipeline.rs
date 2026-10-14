@@ -1,7 +1,7 @@
 #![cfg(not(target_arch = "wasm32"))]
 
-use skrifa::{MetadataProvider, instance::{Size, LocationRef}};
-use wgpu_font_renderer::{FontStore, LoadingError, TextRenderer, TypeWriter};
+use skrifa::{raw::TableProvider, MetadataProvider, instance::{Size, LocationRef}};
+use wgpu_font_renderer::{FontStore, LayoutError, LoadingError, TextRenderer, TypeWriter};
 
 mod common;
 
@@ -64,7 +64,7 @@ fn shape_text_preserves_glyphs_advances_and_rejects_unknown_font() {
         include_bytes!("../fonts/Roboto-Regular.ttf"), "Hi").unwrap();
     assert_ne!(key, unknown, "font IDs from different stores must differ");
     for size in [0.0, -1.0, f32::NAN, f32::INFINITY] {
-        assert!(writer.shape_text(&store, key, [0., 0.], size, [1.; 4], "Hi").is_none());
+        assert!(writer.shape_text(&store, key, [0., 0.], size, [1.; 4], "Hi").is_err_and(|error| error == LayoutError::InvalidSize));
     }
     assert!(writer
         .shape_text(
@@ -75,7 +75,7 @@ fn shape_text_preserves_glyphs_advances_and_rejects_unknown_font() {
             [0., 0., 0., 1.],
             "Hi"
         )
-        .is_none());
+        .is_err_and(|error| error == LayoutError::UnknownFont));
 }
 
 // Read actual render output: GPU validation alone cannot detect a stale uniform binding.
@@ -655,6 +655,104 @@ fn centred_text_block_has_three_ink_bands_at_the_line_pitch() {
         assert!(
             (centre - 120.).abs() <= 1.,
             "ink must centre within one pixel: {band:?}"
+        );
+    }
+}
+
+#[test]
+fn roboto_gsub_ligatures_are_cached_and_have_gpu_ink() {
+    check_gsub_ligatures(
+        "Roboto",
+        include_bytes!("../fonts/Roboto-Regular.ttf"),
+        [445, 446],
+    );
+}
+
+#[test]
+fn cantarell_gsub_ligatures_are_cached_and_have_gpu_ink() {
+    check_gsub_ligatures(
+        "Cantarell",
+        include_bytes!("../fonts/Cantarell-VF.otf"),
+        [489, 490],
+    );
+}
+
+fn check_gsub_ligatures(name: &str, bytes: &[u8], ligatures: [u16; 2]) {
+    let Some((device, queue, config)) = gpu() else {
+        return;
+    };
+    let mut store = FontStore::new(&device);
+    let base = store
+        .load_from_bytes(&device, &queue, bytes, "office fluffy")
+        .unwrap();
+    let variation = store.load_variation(&device, &queue, base, &[]).unwrap();
+    for id in [base, variation] {
+        let paragraph = TypeWriter::new()
+            .shape_text(
+                &store,
+                id,
+                [16., 16.],
+                48.,
+                [0., 0., 0., 1.],
+                "office fluffy",
+            )
+            .unwrap();
+        let font = wgpu_font_renderer::internals::font(&store, id).unwrap();
+        let missing: Vec<_> = paragraph
+            .glyphs()
+            .iter()
+            .filter(|g| !font.glyph_cache.contains_key(&(g.glyph.0 as u32)))
+            .map(|g| g.glyph.0)
+            .collect();
+        let mut missing_ink = Vec::new();
+        let mut renderer = TextRenderer::new(&device, config.format, &store);
+        renderer.prepare(&device, &queue, [&paragraph], &store);
+        let image = draw_pixels(&device, &queue, &mut renderer, [384, 128]);
+        let metrics = store.metrics(id, paragraph.size()).unwrap();
+        let scale = paragraph.size() / font.face().head().unwrap().units_per_em() as f32;
+        let mut pen = paragraph.position()[0];
+        let mut seen = Vec::new();
+        for shaped in paragraph.glyphs() {
+            if ligatures.contains(&shaped.glyph.0) {
+                seen.push(shaped.glyph.0);
+                // Compute the box independently of the cache so removing closure
+                // reports missing ink as well as missing cache members.
+                let glyph_metrics = font
+                    .face()
+                    .glyph_metrics(Size::unscaled(), LocationRef::default());
+                let gid = skrifa::GlyphId::new(shaped.glyph.0.into());
+                let bbox = glyph_metrics.bounds(gid).unwrap();
+                let x =
+                    pen + shaped.offset[0] + glyph_metrics.left_side_bearing(gid).unwrap() * scale;
+                let y = paragraph.position()[1] + metrics.ascent - bbox.y_max * scale
+                    + shaped.offset[1];
+                // Stay strictly inside the glyph's box to exclude neighbour ink.
+                let xmin = (x + 1.).ceil().max(0.) as u32;
+                let xmax = (x + (bbox.x_max - bbox.x_min) * scale - 1.)
+                    .floor()
+                    .min(384.) as u32;
+                let ymin = (y + 1.).ceil().max(0.) as u32;
+                let ymax = (y + (bbox.y_max - bbox.y_min) * scale - 1.)
+                    .floor()
+                    .min(128.) as u32;
+                if !(ymin..ymax)
+                    .any(|yy| (xmin..xmax).any(|xx| image[((yy * 384 + xx) * 4) as usize] < 240))
+                {
+                    missing_ink.push((shaped.glyph.0, [xmin, ymin, xmax, ymax]));
+                }
+            }
+            pen += shaped.advance;
+        }
+        assert!(missing.is_empty() && missing_ink.is_empty(), "{name}: shaped output missing from cache: {missing:?}; no ink inside ligature boxes: {missing_ink:?}");
+        seen.sort_unstable();
+        assert_eq!(seen, ligatures, "{name}: fixture must shape ffi and ffl");
+    }
+    let partial = store.load_from_bytes(&device, &queue, bytes, "f").unwrap();
+    let font = wgpu_font_renderer::internals::font(&store, partial).unwrap();
+    for ligature in ligatures {
+        assert!(
+            !font.glyph_cache.contains_key(&(ligature as u32)),
+            "{name}: ligature {ligature} requires an uncached i/l component"
         );
     }
 }

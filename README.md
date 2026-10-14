@@ -44,12 +44,13 @@ let mut text_renderer = TextRenderer::new(&device, config.format, &font_store);
 text_renderer.resize(&queue, [config.width, config.height]);
 
 // Whenever the text changes: shape paragraphs.
-// Arguments: font, position on screen, font size, linear RGBA color, text.
+// Arguments: font, position on screen, font size, RGBA color, text.
+// The shader does no colour conversion; the target format decides encoding.
 let mut type_writer = TypeWriter::new();
 let mut paragraphs = Vec::new();
-if let Some(paragraph) = type_writer.shape_text(&font_store, font_key, [100., 100.], 72., [0.68, 0.5, 0.12, 1.], "Salut, c'est cool!") {
-    paragraphs.push(paragraph);
-}
+let paragraph = type_writer.shape_text(&font_store, font_key, [100., 100.], 72., [0.68, 0.5, 0.12, 1.], "Salut, c'est cool!")
+    .expect("valid font, size and position");
+paragraphs.push(paragraph);
 // Once per queue submit, prepare every paragraph of the frame.
 text_renderer.prepare(&device, &queue, &paragraphs, &font_store);
 
@@ -80,6 +81,9 @@ On wasm, or to embed a font in the binary, use `FontStore::load_from_bytes`. Lay
 
 ## Limits
 
+- The pipeline targets one colour attachment, no depth/stencil attachment and sample count 1. It cannot draw inside a pass with depth/stencil, MSAA or several colour targets.
+- Characters outside the preset string draw nothing unless their glyph is already cached. Loading includes GSUB substitutions reachable from preset glyphs (including ligatures only when all components are cached) and glyph zero. Empty outlines draw no ink.
+- Shaping and layout return `Result<_, LayoutError>` with the specific validation failure. GSUB closure is capped at 128 passes and 4,000,000 work units; exceeding either returns `LoadingError::SubstitutionTooComplex`.
 - Fonts are never unloaded. Each load, and each variable-font instance, adds its outlines to the atlas for good, so creating instances per frame eventually returns `LoadingError::AtlasFull`.
 - No bidi reordering and no font fallback: script runs are shaped in logical order, and characters the font lacks draw `.notdef`.
 - Untrusted fonts: the loader caps per-glyph work and refuses glyphs past the caps with `LoadingError::GlyphTooComplex`. Two upstream limits remain: a crafted `cmap` panics swash in debug builds, and a crafted CFF glyph can load slowly. Details are in the crate docs.

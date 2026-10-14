@@ -56,7 +56,8 @@ pub struct Font {
     pub(crate) offset: u32,
     /// Unique swash cache key identifying this loaded face.
     pub(crate) key: CacheKey,
-    /// Outlines successfully cached for the requested characters, by glyph ID.
+    /// Cached preset and GSUB-closure outlines, by glyph ID. GSUB fonts include
+    /// empty glyph entries with zero-sized allocations and boxes.
     pub glyph_cache: HashMap<u32, Glyph>,
 }
 
@@ -80,11 +81,14 @@ pub enum LoadingError {
     /// These are loader policy, not font validity rules: a valid but very
     /// complex glyph can exceed them. The font was not loaded.
     GlyphTooComplex(crate::GlyphId),
+    /// GSUB closure exceeded 128 passes or 4,000,000 work units.
+    SubstitutionTooComplex,
 }
 
 impl fmt::Display for LoadingError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
+            Self::SubstitutionTooComplex => write!(f, "GSUB closure exceeds the loader's limits"),
             Self::Io(error) => write!(f, "Could not read font: {error}"),
             Self::UnknownFont => write!(f, "Unknown font ID"),
             Self::InvalidFont => write!(f, "Invalid font data"),
@@ -98,7 +102,7 @@ impl std::error::Error for LoadingError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
-            Self::UnknownFont | Self::InvalidFont | Self::AtlasFull(_) | Self::GlyphTooComplex(_) => None,
+            Self::SubstitutionTooComplex | Self::UnknownFont | Self::InvalidFont | Self::AtlasFull(_) | Self::GlyphTooComplex(_) => None,
         }
     }
 }
@@ -131,9 +135,10 @@ impl Font {
         let metrics = face_line_metrics(&face, (&location).into());
         let ascender_delta = metrics.ascent - f32::from(face_ascender(&face));
         let font = FontRef { data: &data, offset, key };
+        let ids = closure_glyph_ids(&face, font, &characters)?;
         let checkpoint = atlas.checkpoint();
         let glyph_cache = create_glyph_cache(device, encoder, queue, &face,
-            glyph_ids(font, &characters), (&location).into(), atlas);
+            ids.into_iter(), (&location).into(), atlas);
         let glyph_cache = match glyph_cache {
             Ok(cache) => cache,
             Err(error) => { atlas.restore(checkpoint); return Err(error); }
@@ -243,6 +248,14 @@ fn glyph_ids<'a>(font: FontRef<'a>, characters: &'a str) -> impl Iterator<Item =
     }).chain(std::iter::once(GlyphId::new(0))).filter(move |id| seen.insert(*id))
 }
 
+fn closure_glyph_ids(face: &SkFontRef<'_>, font: FontRef<'_>, characters: &str) -> Result<Vec<GlyphId>> {
+    // Missing GSUB is normal; a present but malformed table is a loading error.
+    let gsub = if face.table_data(skrifa::raw::types::Tag::new(b"GSUB")).is_some() {
+        Some(face.gsub().map_err(|_| LoadingError::InvalidFont)?)
+    } else { None };
+    crate::gsub::closure(gsub, glyph_ids(font, characters))
+}
+
 fn create_glyph_cache(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
@@ -254,6 +267,7 @@ fn create_glyph_cache(
 ) -> Result<HashMap<u32, Glyph>> {
     let mut glyph_cache = HashMap::new();
     let mut failed = Vec::new();
+    let has_gsub = face.table_data(skrifa::raw::types::Tag::new(b"GSUB")).is_some();
 
     for glyph_id in glyph_ids {
         check_composite_budget(face, glyph_id)?;
@@ -297,6 +311,16 @@ fn create_glyph_cache(
                 let id = crate::GlyphId(glyph_id.to_u32() as u16);
                 failed.push(id);
             }
+        } else if has_gsub {
+            // Record empty closure members (e.g. spaces) without atlas storage.
+            // The renderer skips their zero-area boxes while retaining advance.
+            glyph_cache.insert(glyph_id.to_u32(), Glyph {
+                #[cfg(feature = "unstable-internals")]
+                curves: Vec::new(),
+                allocation: Allocation::default(), bands: Allocation::default(),
+                bbox: Rect { x_min: 0, y_min: 0, x_max: 0, y_max: 0 },
+                descent: 0, y_offset: 0, left_side_bearing: 0,
+            });
         }
     }
 
@@ -334,7 +358,7 @@ pub(crate) fn check_font_bytes(data: &[u8], characters: &str) -> Result<usize> {
     let (face, offset, key) = parse_font(data, 0)?;
     let _metrics = face_line_metrics(&face, LocationRef::default());
     let mut prepared = 0;
-    for id in glyph_ids(FontRef { data, offset, key }, characters) {
+    for id in closure_glyph_ids(&face, FontRef { data, offset, key }, characters)? {
         check_composite_budget(&face, id)?;
         if let Some(bbox) = glyph_bounding_box(&face, id) {
             prepare_glyph(&face, id, bbox)?;
@@ -906,3 +930,51 @@ mod ray_review;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "../tests/unit/font_loading.rs"]
 mod font_loading_tests;
+
+#[cfg(test)]
+mod closure_counts {
+    use super::*;
+
+    #[test]
+    fn bundled_cache_counts_before_and_after_closure() {
+        let ascii: String = (' '..='~').collect();
+        for (name, bytes, preset) in [
+            (
+                "Roboto ASCII",
+                include_bytes!("../fonts/Roboto-Regular.ttf").as_slice(),
+                ascii.as_str(),
+            ),
+            (
+                "Cantarell ASCII",
+                include_bytes!("../fonts/Cantarell-VF.otf").as_slice(),
+                ascii.as_str(),
+            ),
+            (
+                "CJK subset",
+                include_bytes!("../fonts/NotoSerifSC-Subset.otf").as_slice(),
+                "龍鬱齉直接从轮廓渲染字形文本",
+            ),
+        ] {
+            let (face, offset, key) = parse_font(bytes, 0).unwrap();
+            let font = FontRef {
+                data: bytes,
+                offset,
+                key,
+            };
+            let before = glyph_ids(font, preset)
+                .filter(|&id| glyph_bounding_box(&face, id).is_some())
+                .count();
+            let ids = closure_glyph_ids(&face, font, preset).unwrap();
+            let outlined = ids
+                .iter()
+                .filter(|&&id| glyph_bounding_box(&face, id).is_some())
+                .count();
+            let has_gsub = face
+                .table_data(skrifa::raw::types::Tag::new(b"GSUB"))
+                .is_some();
+            let after = if has_gsub { ids.len() } else { outlined };
+            eprintln!("{name}: cached {before} -> {after} ({outlined} outlined after closure)");
+            assert!(after >= before);
+        }
+    }
+}

@@ -9,6 +9,13 @@ below 1.0, a minor bump (0.x) may break the API.
 
 ### Added
 
+- GSUB glyph closure caches substitutions reachable from preset glyphs across every lookup, including ligatures whose components are all cached. Closure glyphs receive the existing outline safety checks; bounded closure work fails with `LoadingError::SubstitutionTooComplex`.
+- Public, non-exhaustive `LayoutError` identifies shaping and layout failures and implements `Debug`, `Display`, `Error`, `Clone` and `PartialEq`.
+
+- `TextRenderer::render_range` draws subsets of the prepared paragraphs with stable indices.
+- CI checks for GPU tests on Mesa lavapipe, lint warnings, documentation, MSRV,
+  wasm builds, packaged tests and semantic versioning.
+
 - `ShapedGlyph::source()` exposes cluster byte ranges in the original shaping or layout input for caret placement, hit testing and selection. Hand-pushed glyphs have no source.
 
 - `TypeWriter::layout_text`, `TextLayout`, `Align`, `LineHeight` and `TextBlock` add greedy Unicode wrapping, hard breaks, hanging trailing spaces, alignment and block movement. Layout preserves each paragraph’s shaping and uses each font instance’s metrics; `shape_text` remains single-line.
@@ -19,6 +26,19 @@ below 1.0, a minor bump (0.x) may break the API.
 - `LoadingError::UnknownFont` distinguishes a foreign variation base from invalid font data.
 
 ### Changed
+
+- `TypeWriter::shape_text` and `layout_text` return `Result<_, LayoutError>` instead of `Option`; handle the error or use `?`. Both reject non-finite positions.
+
+- Fonts are read with skrifa instead of ttf-parser. swash is at 0.2 without its scaler and rasteriser.
+- `.notdef` is now drawn for every character a font lacks, if glyph zero has an outline. In 0.2 it was drawn only after a loaded character had been explicitly mapped to glyph zero. An empty `.notdef` still advances without drawing.
+- Glyph ink is now positioned at the pen plus shaped offset plus its scaled left side bearing. In 0.2, each glyph's ink was anchored at the pen; text now shifts by each glyph's bearing. TrueType outlines apply `hmtx.lsb - glyf.xMin`, so the cached box and bearing follow `hmtx`, while 0.2 cached raw `glyf` coordinates. CFF outline coordinates are unchanged; their bearings also position the ink.
+- Shaping keeps every glyph of each cluster with its advance and offsets, and shapes script runs under their own script. Runs remain in logical order; bidi reordering is not implemented, and `layout_text` provides wrapping.
+- Repeated characters select and upload each glyph only once per load, including an empty `.notdef`.
+- Text with no strong script retains Latin shaping; common, inherited and unknown-script characters otherwise join neighbouring script runs.
+- Atlas exhaustion of either curves or bands fails the load with `LoadingError::AtlasFull(Vec<GlyphId>)`, naming every outlined glyph that did not fit. Earlier fonts remain usable and no half-loaded font is added. Exhaustion means an allocation cannot fit one layer or would exceed the device texture array layer limit: default layers use 16 MiB each (32 MiB initially; 4 GiB at 256 layers).
+- Glyph IDs now follow the shaper's cmap selection: Windows symbol subtables take priority, and format 12 is preferred. In 0.2, Windows symbol subtables were skipped and each character used the first mapping found across Unicode subtables in record order; symbol-only fonts now draw, and conflicting format 4/12 mappings now agree with shaping, avoiding wrong or missing glyphs.
+- `TextRenderer::prepare` accepts any iterator of borrowed paragraphs, including slices, borrowed vectors, and chained lists.
+- `TypeWriter` implements `Default`, equivalent to `TypeWriter::new()`.
 
 - `ShapedGlyph` stores source ranges in two `u32` fields, limiting its size to 24 bytes. Shaping and layout reject input longer than `u32::MAX` bytes. Swash caps clusters at 32 internal parser characters, counting decomposed components but not emoji variation selectors U+FE0E/U+FE0F that follow an emoji base. Shaping keeps swash’s cluster stream over the crate’s tokens, including its pending components and its repeated cap-boundary character (drawn twice, with overlapping source ranges); restarting at a source byte boundary would lose pending components.
 
@@ -53,6 +73,8 @@ below 1.0, a minor bump (0.x) may break the API.
 - `Font`, `Glyph`, `Atlas`, `Allocation`, `Resolution`, `Params`, `FontStore::get`, and `FontStore::atlas` leave the stable API; limited inspection is available only through the hidden, semver-exempt `internals` module with `unstable-internals`.
 
 ### Migrating from 0.2
+
+`shape_text` and the new `layout_text` return `Result`, so replace `Some`/`None` matching with `Ok`/`Err`. Use `LayoutError` to inspect the cause. When propagating loading and layout errors together, return an error type that accepts both. Preset caches now include GSUB closure and may require more atlas space.
 
 Before (0.2):
 
@@ -98,7 +120,7 @@ fn migrate(
     device: &wgpu::Device, queue: &wgpu::Queue,
     config: &wgpu::SurfaceConfiguration, bytes: &[u8],
     error: LoadingError, pass: &mut wgpu::RenderPass<'_>,
-) -> Result<(), LoadingError> {
+) -> Result<(), Box<dyn std::error::Error>> {
 let mut store = FontStore::new(device);
 let font: FontId = store.load(device, queue, "font.otf", "Hi")?;
 let memory_font = store.load_from_bytes(device, queue, bytes, "Hi")?;
@@ -113,7 +135,7 @@ paragraph.set_position([40., 24.]);
 paragraph.set_color([1.; 4]);
 let metrics = (paragraph.font(), paragraph.position(), paragraph.size(),
     paragraph.color(), paragraph.width(), paragraph.glyphs());
-let shaped = writer.shape_text(&store, memory_font, [24., 24.], 32., [1.; 4], "Hi");
+let shaped = writer.shape_text(&store, memory_font, [24., 24.], 32., [1.; 4], "Hi")?;
 let mut gray = TextRenderer::new(device, config.format, &store);
 let mut renderer = TextRenderer::with_subpixel_order(
     device, config.format, &store, SubpixelOrder::Rgb); // None and Bgr unchanged
@@ -158,25 +180,6 @@ replacement: identify fonts with `FontId` and pass the render target format
 to `TextRenderer::new`. `LoadingError` retains its `Display` implementation.
 
 Run tests and benchmarks with `--all-features` to enable inspection targets.
-
-### Added
-
-- `TextRenderer::render_range` draws subsets of the prepared paragraphs with stable indices.
-- CI checks for GPU tests on Mesa lavapipe, lint warnings, documentation, MSRV,
-  wasm builds, packaged tests and semantic versioning.
-
-### Changed
-
-- Fonts are read with skrifa instead of ttf-parser. swash is at 0.2 without its scaler and rasteriser.
-- `.notdef` is now drawn for every character a font lacks, if glyph zero has an outline. In 0.2 it was drawn only after a loaded character had been explicitly mapped to glyph zero. An empty `.notdef` still advances without drawing.
-- Glyph ink is now positioned at the pen plus shaped offset plus its scaled left side bearing. In 0.2, each glyph's ink was anchored at the pen; text now shifts by each glyph's bearing. TrueType outlines apply `hmtx.lsb - glyf.xMin`, so the cached box and bearing follow `hmtx`, while 0.2 cached raw `glyf` coordinates. CFF outline coordinates are unchanged; their bearings also position the ink.
-- Shaping keeps every glyph of each cluster with its advance and offsets, and shapes script runs under their own script. Runs remain in logical order; bidi reordering and line wrapping are not implemented.
-- Repeated characters select and upload each glyph only once per load, including an empty `.notdef`.
-- Text with no strong script retains Latin shaping; common, inherited and unknown-script characters otherwise join neighbouring script runs.
-- Atlas exhaustion of either curves or bands fails the load with `LoadingError::AtlasFull(Vec<GlyphId>)`, naming every outlined glyph that did not fit. Earlier fonts remain usable and no half-loaded font is added. Exhaustion means an allocation cannot fit one layer or would exceed the device texture array layer limit: default layers use 16 MiB each (32 MiB initially; 4 GiB at 256 layers).
-- Glyph IDs now follow the shaper's cmap selection: Windows symbol subtables take priority, and format 12 is preferred. In 0.2, Windows symbol subtables were skipped and each character used the first mapping found across Unicode subtables in record order; symbol-only fonts now draw, and conflicting format 4/12 mappings now agree with shaping, avoiding wrong or missing glyphs.
-- `TextRenderer::prepare` accepts any iterator of borrowed paragraphs, including slices, borrowed vectors, and chained lists.
-- `TypeWriter` implements `Default`, equivalent to `TypeWriter::new()`.
 
 ## [0.2.1] - 2026-10-13
 
