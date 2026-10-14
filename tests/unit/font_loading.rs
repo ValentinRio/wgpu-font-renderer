@@ -78,13 +78,13 @@ fn bundled_unicode_and_presets_agree_with_swash() {
         let expected: BTreeSet<_> = glyph_ids(font, &preset)
             .filter(|&id| glyph_bounding_box(&face, id).is_some())
             .map(|id| id.to_u32()).collect();
-        assert!(!expected.contains(&0), "{name}: glyph zero is deliberately skipped");
+
         let mut writer = TypeWriter::new();
         let mut shaped_characters = Vec::new();
         for &ch in &characters {
             let text = ch.to_string();
             let id = charmap.map(ch);
-            let mapped = (id != 0).then_some(id as u32);
+            let mapped = Some(id as u32);
             let actual = glyph_ids(font, &text).next().map(|id| id.to_u32());
             assert_eq!(actual, mapped,
                 "{name} U+{:04X}: loader and charmap IDs", ch as u32);
@@ -95,7 +95,7 @@ fn bundled_unicode_and_presets_agree_with_swash() {
             if !expected.contains(&id) { continue; }
             let shaped = writer.shape_glyphs(font, 32., &text);
             let first = shaped.first().unwrap_or_else(||
-                panic!("{name} U+{:04X}: outlined character shapes a glyph", ch as u32)).0.0 as u32;
+                panic!("{name} U+{:04X}: outlined character shapes a glyph", ch as u32)).glyph.0 as u32;
             if shaped.len() == 1 {
                 assert_eq!(first, id,
                     "{name} U+{:04X}: shaped and loader IDs for this character", ch as u32);
@@ -113,11 +113,14 @@ fn bundled_unicode_and_presets_agree_with_swash() {
         let key = store.load_from_bytes(&device, &queue, bytes, &preset).unwrap();
         let cached: BTreeSet<_> = store.get(key).unwrap().glyph_cache.keys().copied().collect();
         assert_eq!(cached, expected, "{name}: cached keys match loader-selected outlined glyphs");
+        if glyph_bounding_box(&SkFontRef::new(bytes).unwrap(), GlyphId::new(0)).is_some() {
+            assert!(cached.contains(&0), "{name}: outlined .notdef must be cached");
+        }
         let mut writer = TypeWriter::new();
         for (ch, id) in characters {
             let text = ch.to_string();
             let paragraph = writer.shape_text(&store, key, [0.; 2], 32., [1.; 4], &text).unwrap();
-            let first = paragraph.glyphs().first().unwrap().0.0 as u32;
+            let first = paragraph.glyphs().first().unwrap().glyph.0 as u32;
             if paragraph.glyphs().len() == 1 {
                 assert_eq!(first, id,
                     "{name} U+{:04X}: shaped and loader IDs for this character", ch as u32);
@@ -143,15 +146,15 @@ fn macintosh_cmap_before_unicode_still_caches_the_shaped_glyph() {
     assert_eq!(loaded, unicode);
     let shaped = TypeWriter::new().shape_glyphs(font, 32., "A");
     assert_eq!(shaped.len(), 1);
-    assert_eq!(shaped[0].0.0 as u32, loaded);
+    assert_eq!(shaped[0].glyph.0 as u32, loaded);
     let Some((device, queue, _)) = common::gpu() else { return; };
     let mut store = FontStore::new(&device);
     let key = store.load_from_bytes(&device, &queue, &bytes, "A").unwrap();
     let paragraph = TypeWriter::new().shape_text(&store, key, [0.; 2], 32., [1.; 4], "A").unwrap();
     assert_eq!(paragraph.glyphs().len(), 1);
-    assert_eq!(paragraph.glyphs()[0].0.0 as u32, loaded);
+    assert_eq!(paragraph.glyphs()[0].glyph.0 as u32, loaded);
     let cached: BTreeSet<_> = store.get(key).unwrap().glyph_cache.keys().copied().collect();
-    assert_eq!(cached, BTreeSet::from([unicode]), "loader must cache the Unicode glyph swash shaped");
+    assert_eq!(cached, BTreeSet::from([0, unicode]), "loader must cache the Unicode glyph swash shaped");
 }
 
 #[test]
@@ -217,41 +220,71 @@ fn ascender_reads_legacy_table_values_including_the_version_gate() {
 }
 
 #[test]
-fn raw_bounds_ignore_a_changed_g_bearing() {
+fn changed_hmtx_bearing_shifts_g_box_and_outline_exactly() {
     let mut bytes = ROBOTO.to_vec();
     let face = SkFontRef::new(&bytes).unwrap();
     let id = face.charmap().map('g').unwrap();
     let original = face.hmtx().unwrap().side_bearing(id).unwrap();
+    assert_eq!(original, 96);
+    let original_bbox = glyph_bounding_box(&face, id).unwrap();
+    assert_eq!(original_bbox, Rect { x_min: 96, y_min: -426, x_max: 1010, y_max: 1102 });
+    let mut original_outline = BezierBuilder::new(original_bbox.y_max as f32);
+    assert_eq!(outline_glyph(&face, id, &mut original_outline), Some(original_bbox));
+    original_outline.finish();
+
     patch_u16(&mut bytes, b"hmtx", id.to_u32() as usize * 4 + 2, (original - 17) as u16);
     let face = SkFontRef::new(&bytes).unwrap();
     let raw = face.glyph_metrics(Size::unscaled(), LocationRef::default()).bounds(id).unwrap();
+    assert_eq!([raw.x_min, raw.y_min, raw.x_max, raw.y_max], [96., -426., 1010., 1102.]);
     let glyf = face.glyf().unwrap();
     let glyph = face.loca(None).unwrap().get_glyf(id, &glyf).unwrap().unwrap();
-    let shift = (face.hmtx().unwrap().side_bearing(id).unwrap() - glyph.x_min()) as f32;
-    assert_ne!(shift, 0.);
+    let bearing = face.hmtx().unwrap().side_bearing(id).unwrap();
+    assert_eq!(bearing, 79);
+    let shift = (bearing - glyph.x_min()) as f32;
+    assert_eq!(shift, -17.);
     let placed = glyph_bounding_box(&face, id).unwrap();
-    assert_eq!([raw.x_min, raw.y_min, raw.x_max, raw.y_max],
+    assert_eq!(placed, Rect { x_min: 79, y_min: -426, x_max: 993, y_max: 1102 });
+    assert_eq!([raw.x_min + shift, raw.y_min, raw.x_max + shift, raw.y_max],
         [placed.x_min, placed.y_min, placed.x_max, placed.y_max].map(f32::from));
+
+    let mut outline = BezierBuilder::new(placed.y_max as f32);
+    assert_eq!(outline_glyph(&face, id, &mut outline), Some(placed));
+    outline.finish();
+    assert!(!original_outline.curves.is_empty());
+    assert_eq!(outline.curves.len(), original_outline.curves.len());
+    for (before, after) in original_outline.curves.as_chunks::<8>().0.iter()
+        .zip(outline.curves.as_chunks::<8>().0) {
+        let mut expected = *before;
+        for x in [0, 2, 4] { expected[x] -= 17.; }
+        assert_eq!(*after, expected, "each outline x moves by exactly the bearing change");
+    }
 }
 
 #[test]
-fn roboto_mismatched_bearings_preserve_raw_bounds_and_outline() {
+fn roboto_935_box_outline_and_cache_apply_standard_hmtx_placement() {
     let face = SkFontRef::new(ROBOTO).unwrap();
     let glyf = face.glyf().unwrap();
     let loca = face.loca(None).unwrap();
     let id = GlyphId::new(935);
     let glyph = loca.get_glyf(id, &glyf).unwrap().unwrap();
-    assert_ne!(face.hmtx().unwrap().side_bearing(id).unwrap(), glyph.x_min());
+    assert_eq!([glyph.x_min(), glyph.y_min(), glyph.x_max(), glyph.y_max()],
+        [90, -436, 1140, 1097]);
+    let bearing = face.hmtx().unwrap().side_bearing(id).unwrap();
+    assert_eq!(bearing, 41);
+    let shift = bearing - glyph.x_min();
+    assert_eq!(shift, -49);
     let bbox = glyph_bounding_box(&face, id).unwrap();
     assert_eq!([bbox.x_min, bbox.y_min, bbox.x_max, bbox.y_max],
-        [glyph.x_min(), glyph.y_min(), glyph.x_max(), glyph.y_max()]);
+        [41, -436, 1091, 1097]);
+    assert_eq!(bbox.x_min, glyph.x_min() + shift);
+    assert_eq!(bbox.x_max, glyph.x_max() + shift);
     let mut builder = BezierBuilder::new(bbox.y_max as f32);
     assert_eq!(outline_glyph(&face, id, &mut builder), Some(bbox));
     builder.finish();
     let xs: Vec<_> = builder.curves.as_chunks::<8>().0.iter()
         .flat_map(|s| [s[0], s[2], s[4]]).collect();
-    assert_eq!(xs.iter().copied().reduce(f32::min).unwrap(), glyph.x_min() as f32);
-    assert_eq!(xs.iter().copied().reduce(f32::max).unwrap(), glyph.x_max() as f32);
+    assert_eq!(xs.iter().copied().reduce(f32::min).unwrap(), 41.);
+    assert_eq!(xs.iter().copied().reduce(f32::max).unwrap(), 1091.);
     let ch = face.charmap().mappings().find(|&(_, mapped)| mapped == id).unwrap().0;
     let text = char::from_u32(ch).unwrap().to_string();
     let Some((device, queue, _)) = common::gpu() else { return; };
@@ -259,6 +292,15 @@ fn roboto_mismatched_bearings_preserve_raw_bounds_and_outline() {
     let key = store.load_from_bytes(&device, &queue, ROBOTO, &text).unwrap();
     let cached = &store.get(key).unwrap().glyph_cache[&id.to_u32()];
     assert_eq!(cached.bbox, bbox);
+    assert_eq!(cached.left_side_bearing, 41);
     #[cfg(feature = "unstable-internals")]
     assert_eq!(cached.curves, builder.curves);
+}
+
+#[test]
+fn glyph_selection_deduplicates_before_outline_lookup() {
+    let font = FontRef::from_index(ROBOTO, 0).unwrap();
+    let ids: Vec<_> = glyph_ids(font, "HelloHello\u{ffff}\u{10ffff}").collect();
+    assert_eq!(ids.len(), ids.iter().collect::<std::collections::HashSet<_>>().len());
+    assert_eq!(ids.iter().filter(|id| id.to_u32() == 0).count(), 1);
 }

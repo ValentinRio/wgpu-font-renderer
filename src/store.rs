@@ -50,7 +50,13 @@ impl FontStore {
     /// Load face zero from font bytes and upload outlines for `chars`.
     ///
     /// Returns a fresh font key, or [`LoadingError::InvalidFont`] for invalid data.
-    /// Unsupported characters and glyphs without bounding boxes are not cached.
+    /// Glyph zero is always cached if it has an outline, so missing characters
+    /// draw `.notdef`. Glyphs without outlines still advance without drawing.
+    /// Returns [`LoadingError::AtlasFull`] if an outline or its bands cannot fit
+    /// one layer or allocation exceeds the device texture array layer limit.
+    /// Each default layer uses 16 MiB (initially 32 MiB; 4 GiB at 256 layers).
+    /// Growth temporarily retains both old and new textures. Previous
+    /// fonts remain usable and the failed font is not added.
     /// Device and queue must belong together; GPU failures follow wgpu validation.
     /// Outline coordinates in the atlas are font units, not screen pixels.
     pub fn load_from_bytes(
@@ -73,6 +79,18 @@ impl FontStore {
         Ok(cache_key)
     }
 
+    #[cfg(feature = "unstable-internals")]
+    pub(crate) fn pad_atlas(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, floats: [u32; 2]) {
+        let mut encoder = device.create_command_encoder(&Default::default());
+        if floats[0] > 0 {
+            self.atlas.upload(floats[0], &vec![0; floats[0] as usize * 4], device, &mut encoder, queue).expect("curve padding fits");
+        }
+        if floats[1] > 0 {
+            self.atlas.upload_bands(floats[1], &vec![0; floats[1] as usize * 4], device, &mut encoder, queue).expect("band padding fits");
+        }
+        queue.submit(Some(encoder.finish()));
+    }
+
     /// Borrow the shared GPU outline atlas for renderer construction.
     pub(crate) fn atlas(&self) -> &Atlas {
         &self.atlas
@@ -83,3 +101,7 @@ impl FontStore {
         self.cache.get(&font_key)
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "../tests/unit/store_behaviour.rs"]
+mod behaviour_tests;

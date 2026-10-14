@@ -118,6 +118,7 @@ impl State {
 
         let mut paragraphs = Vec::new();
         let mut type_writer = TypeWriter::new();
+        // Shape each script run in logical order, including the Han text below.
         for (font, position, size, color, text) in [
             (roboto, [40., 30.], 72., [0.68, 0.5, 0.12, 1.], roboto_text),
             (

@@ -201,5 +201,5 @@ fn analytic_coverage(input: VertexOutput, offsets: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    return vec4(input.color.rgb, analytic_coverage(input, vec3(0.)).y);
+    return vec4(input.color.rgb, analytic_coverage(input, vec3(0.)).y * input.color.a);
 }

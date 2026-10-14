@@ -1,11 +1,14 @@
 use std::{collections::HashMap, fmt};
 use skrifa::{
     instance::{LocationRef, Size},
-    outline::{pen::{PathStyle, ControlBoundsPen, PathElement}, DrawSettings, OutlinePen},
+    outline::{pen::{PathStyle, ControlBoundsPen}, DrawSettings, OutlineGlyphCollection, OutlineGlyphFormat, OutlinePen},
     raw::TableProvider,
-    FontRef as SkFontRef, GlyphId, MetadataProvider,
+    FontRef as SkFontRef, GlyphId,
 };
 use swash::{CacheKey, FontRef};
+// Only the unit-test modules below use skrifa metadata through `super::*`.
+#[cfg(test)]
+use skrifa::MetadataProvider;
 
 use crate::atlas::{allocation::Allocation, Atlas};
 
@@ -24,8 +27,8 @@ pub struct Glyph {
     pub curves: Vec<f32>,
     /// Atlas location and float-texel count for the encoded segments.
     pub allocation: Allocation,
-    /// Atlas band header, descriptors and duplicated curves; absent if it did not fit.
-    pub bands: Option<Allocation>,
+    /// Atlas band header, descriptors and duplicated curves. Loaded glyphs have bands.
+    pub bands: Allocation,
     /// Original font-unit bounding box, with y increasing upward.
     pub bbox: Rect,
     /// Nonpositive bottom extent below the baseline, in font units.
@@ -33,7 +36,7 @@ pub struct Glyph {
     /// `ascender - max(bbox.y_min, 0) - bbox.height()`, in font units.
     /// When `y_min < 0`, this is `ascender - y_max + y_min`; the renderer adds
     /// `abs(descent)` back before scaling to pixels and adding paragraph y.
-    pub y_offset: i16,
+    pub y_offset: i32,
     /// Bounding-box left edge in font units, used by the shader.
     pub left_side_bearing: i16,
 }
@@ -53,13 +56,21 @@ pub struct Font {
 type Result<T> = std::result::Result<T, LoadingError>;
 
 #[derive(Debug)]
-/// Failure to read or parse a font. GPU errors are handled by wgpu instead.
+/// Failure to read, parse or cache a font. GPU errors are handled by wgpu instead.
 #[non_exhaustive]
 pub enum LoadingError {
     /// The file could not be read, including permission and other I/O failures.
     Io(std::io::Error),
     /// Invalid font bytes or a face index absent from the font collection.
     InvalidFont,
+    /// Outlined glyphs that could not fit in the atlas. The font was not loaded.
+    AtlasFull(Vec<crate::GlyphId>),
+    /// A glyph's outline exceeds the loader's work limits: more than 65,535
+    /// points or 16,384 contours after composite expansion, more than 4,096
+    /// composite component references, or more than 16,384 encoded segments.
+    /// These are loader policy, not font validity rules: a valid but very
+    /// complex glyph can exceed them. The font was not loaded.
+    GlyphTooComplex(crate::GlyphId),
 }
 
 impl fmt::Display for LoadingError {
@@ -67,6 +78,8 @@ impl fmt::Display for LoadingError {
         match self {
             Self::Io(error) => write!(f, "Could not read font: {error}"),
             Self::InvalidFont => write!(f, "Invalid font data"),
+            Self::AtlasFull(glyphs) => write!(f, "Glyphs did not fit in the atlas: {glyphs:?}"),
+            Self::GlyphTooComplex(glyph) => write!(f, "Glyph outline exceeds the loader's limits: {glyph:?}"),
         }
     }
 }
@@ -75,7 +88,7 @@ impl std::error::Error for LoadingError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
-            Self::InvalidFont => None,
+            Self::InvalidFont | Self::AtlasFull(_) | Self::GlyphTooComplex(_) => None,
         }
     }
 }
@@ -83,9 +96,9 @@ impl std::error::Error for LoadingError {
 impl Font {
     /// Parse owned font bytes at a zero-based face index and upload preset outlines.
     /// Variable fonts use the default variation instance.
-    /// Returns `InvalidFont` for invalid data or an absent face. Unsupported
-    /// characters and outlines without bounding boxes are skipped. A glyph is
-    /// also silently skipped if `atlas.upload` returns `None`. Submit the encoder
+    /// Returns `InvalidFont` for invalid data or an absent face. Glyph zero is always selected;
+    /// outlines without bounding boxes are skipped. Atlas exhaustion returns
+    /// `AtlasFull` and restores allocation bookkeeping. Submit the encoder
     /// afterward; device, queue, and atlas must match. GPU failures follow wgpu validation.
     pub(crate) fn from_bytes(
         device: &wgpu::Device,
@@ -100,8 +113,13 @@ impl Font {
 
         // Generate glyph cache for each glyph present in the font file
         let font = FontRef { data: &data, offset, key };
+        let checkpoint = atlas.checkpoint();
         let glyph_cache = create_glyph_cache(device, encoder, queue, &face,
             glyph_ids(font, cache_preset), atlas);
+        let glyph_cache = match glyph_cache {
+            Ok(cache) => cache,
+            Err(error) => { atlas.restore(checkpoint); return Err(error); }
+        };
 
         Ok(Self { data, index: index as u32, offset, key, glyph_cache })
     }
@@ -172,13 +190,11 @@ fn face_ascender(face: &SkFontRef<'_>) -> i16 {
 }
 
 fn glyph_ids<'a>(font: FontRef<'a>, characters: &'a str) -> impl Iterator<Item = GlyphId> + 'a {
-    // Use the shaper's Unicode/symbol cmap selection. Deliberately skip glyph
-    // zero, including explicit .notdef mappings; 0.2 could cache its outline.
     let charmap = font.charmap();
-    characters.chars().filter_map(move |ch| {
-        let id = charmap.map(ch);
-        (id != 0).then_some(GlyphId::new(id as u32))
-    })
+    let mut seen = std::collections::HashSet::new();
+    characters.chars().map(move |ch| {
+        GlyphId::new(charmap.map(ch) as u32)
+    }).chain(std::iter::once(GlyphId::new(0))).filter(move |id| seen.insert(*id))
 }
 
 fn create_glyph_cache(
@@ -188,49 +204,39 @@ fn create_glyph_cache(
     face: &SkFontRef<'_>,
     glyph_ids: impl Iterator<Item = GlyphId>,
     atlas: &mut Atlas
-) -> HashMap<u32, Glyph> {
+) -> Result<HashMap<u32, Glyph>> {
     let mut glyph_cache = HashMap::new();
-
-    let ascender = face_ascender(face);
+    let mut failed = Vec::new();
 
     for glyph_id in glyph_ids {
+        check_composite_budget(face, glyph_id)?;
         if let Some(bbox) = glyph_bounding_box(face, glyph_id) {
-            let height = bbox.height();
+            let (descent, y_offset, curves, band_data) = prepare_glyph(face, glyph_id, bbox)?;
             let left_side_bearing = bbox.x_min;
-    
-            let (descent, distance_from_baseline) = if bbox.y_min <= 0 {
-                (bbox.y_min, 0)
-            } else {
-                (0, bbox.y_min)
-            };
-    
-            let total_height = height + descent + distance_from_baseline;
-            let y_offset = ascender - distance_from_baseline - height;
-    
-            let mut builder = BezierBuilder::new(total_height as f32);
-    
-            outline_glyph(face, glyph_id, &mut builder);
-            // Close the final contour before winding normalization.
-            builder.finish();
 
             // Each eight-float segment occupies two RGBA32F texels, including
             // the original index and sort-key padding slots.
-            let curves_count = builder.curves.len() as u32;
+            let too_complex = || LoadingError::GlyphTooComplex(crate::GlyphId(glyph_id.to_u32() as u16));
+            let curves_count = u32::try_from(curves.len()).map_err(|_| too_complex())?;
+            let bands_count = u32::try_from(band_data.len()).map_err(|_| too_complex())?;
     
             let bytes = unsafe {
-                std::slice::from_raw_parts(builder.curves.as_ptr() as *const u8, builder.curves.len() * 4)
+                std::slice::from_raw_parts(curves.as_ptr() as *const u8, curves.len() * 4)
             };
 
             if let Some(allocation) = atlas.upload(curves_count, bytes, device, encoder, queue) {
-                let band_data = build_slug_bands(&builder.curves);
                 let bands = atlas.upload_bands(
-                    band_data.len() as u32,
+                    bands_count,
                     bytemuck::cast_slice(&band_data),
                     device, encoder, queue,
                 );
+                let Some(bands) = bands else {
+                    failed.push(crate::GlyphId(glyph_id.to_u32() as u16));
+                    continue;
+                };
                 let glyph = Glyph {
                     #[cfg(feature = "unstable-internals")]
-                    curves: builder.curves,
+                    curves,
                     allocation,
                     bands,
                     bbox,
@@ -240,11 +246,98 @@ fn create_glyph_cache(
                 };
         
                 glyph_cache.insert(glyph_id.to_u32(), glyph);
+            } else {
+                let id = crate::GlyphId(glyph_id.to_u32() as u16);
+                failed.push(id);
             }
         }
     }
 
-    glyph_cache
+    if failed.is_empty() { Ok(glyph_cache) } else { Err(LoadingError::AtlasFull(failed)) }
+}
+
+fn prepare_glyph(
+    face: &SkFontRef<'_>, id: GlyphId, bbox: Rect,
+) -> Result<(i16, i32, Vec<f32>, Vec<f32>)> {
+    // Any legal i16 box spans at most 65,535 units, so i32 holds every derived value.
+    let height = bbox.height();
+    let descent = bbox.y_min.min(0);
+    let distance = i32::from(bbox.y_min.max(0));
+    let total_height = height + i32::from(descent) + distance;
+    let y_offset = i32::from(face_ascender(face)) - distance - height;
+    let mut builder = BezierBuilder::new(total_height as f32);
+    outline_glyph(face, id, &mut builder);
+    if builder.over_budget {
+        return Err(LoadingError::GlyphTooComplex(crate::GlyphId(id.to_u32() as u16)));
+    }
+    builder.finish();
+    let bands = build_slug_bands(&builder.curves);
+    Ok((descent, y_offset, builder.curves, bands))
+}
+
+// Exercise exactly the parsing, selection, metrics, outlines and bands used by
+// the GPU loader, without allocating an atlas.
+#[cfg(feature = "unstable-internals")]
+pub(crate) fn check_font_bytes(data: &[u8], characters: &str) -> Result<usize> {
+    let (face, offset, key) = parse_font(data, 0)?;
+    let mut prepared = 0;
+    for id in glyph_ids(FontRef { data, offset, key }, characters) {
+        check_composite_budget(&face, id)?;
+        if let Some(bbox) = glyph_bounding_box(&face, id) {
+            prepare_glyph(&face, id, bbox)?;
+            prepared += 1;
+        }
+    }
+    Ok(prepared)
+}
+
+const MAX_GLYPH_POINTS: usize = 65_535;
+const MAX_COMPONENT_REFERENCES: usize = 4_096;
+const MAX_GLYPH_SEGMENTS: usize = 16_384;
+// skrifa stops composite recursion past this depth; deeper references never draw.
+const MAX_COMPOSITE_DEPTH: usize = 32;
+
+// skrifa expands a TrueType composite and sizes its scratch memory before any
+// point limit applies, and bounds only recursion depth, not fan-out. Walk the
+// component graph first with a fixed budget so a crafted composite is
+// rejected before skrifa is asked to draw it. Parse errors are left to skrifa.
+fn check_composite_budget(face: &SkFontRef<'_>, id: GlyphId) -> Result<()> {
+    use skrifa::raw::tables::glyf::Glyph as Outline;
+    let (Ok(glyf), Ok(loca)) = (face.glyf(), face.loca(None)) else {
+        return Ok(());
+    };
+    let too_complex = || LoadingError::GlyphTooComplex(crate::GlyphId(id.to_u32() as u16));
+    let mut pending = vec![(id, 0)];
+    let (mut points, mut contours, mut references) = (0usize, 0usize, 0usize);
+    while let Some((glyph, depth)) = pending.pop() {
+        match loca.get_glyf(glyph, &glyf) {
+            Ok(Some(Outline::Simple(simple))) => {
+                // skrifa sizes points from the last endpoint and contours from
+                // the endpoint count, so a malformed glyph can claim few points
+                // and many contours; budget both.
+                points += simple.num_points();
+                contours += simple.end_pts_of_contours().len();
+                if points > MAX_GLYPH_POINTS || contours > MAX_GLYPH_SEGMENTS {
+                    return Err(too_complex());
+                }
+            }
+            Ok(Some(Outline::Composite(composite))) => {
+                // skrifa sizes a composite at the depth limit before failing on
+                // its children, so count its references; descend only below it.
+                for (component, _) in composite.component_glyphs_and_flags() {
+                    references += 1;
+                    if references > MAX_COMPONENT_REFERENCES {
+                        return Err(too_complex());
+                    }
+                    if depth < MAX_COMPOSITE_DEPTH {
+                        pending.push((component.into(), depth + 1));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 const SLUG_BAND_EPSILON: f32 = 0.05;
@@ -263,10 +356,10 @@ pub struct Rect {
 }
 
 impl Rect {
-    /// Width in font units.
-    pub fn width(&self) -> i16 { self.x_max - self.x_min }
-    /// Height in font units.
-    pub fn height(&self) -> i16 { self.y_max - self.y_min }
+    /// Width in font units; i32 because a legal i16 box can span 65,535 units.
+    pub fn width(&self) -> i32 { i32::from(self.x_max) - i32::from(self.x_min) }
+    /// Height in font units; i32 for the same reason as [`Self::width`].
+    pub fn height(&self) -> i32 { i32::from(self.y_max) - i32::from(self.y_min) }
 }
 
 fn draw_settings() -> DrawSettings<'static> {
@@ -274,22 +367,17 @@ fn draw_settings() -> DrawSettings<'static> {
         .with_path_style(PathStyle::HarfBuzz)
 }
 
-// Restore raw TrueType coordinates using the actual phantom-point shift,
-// including USE_MY_METRICS on composite glyphs. CFF outlines have no shift.
+// skrifa prefers VARC outlines when present. They bypass the glyf budget below
+// and can panic inside skrifa, and swash shapes without them, so draw glyf, then
+// CFF2, then CFF, the order skrifa uses without VARC.
+fn outlines<'a>(face: &SkFontRef<'a>) -> Option<OutlineGlyphCollection<'a>> {
+    [OutlineGlyphFormat::Glyf, OutlineGlyphFormat::Cff2, OutlineGlyphFormat::Cff]
+        .into_iter()
+        .find_map(|format| OutlineGlyphCollection::with_format(face, format))
+}
+
 fn draw_glyph(face: &SkFontRef<'_>, id: GlyphId, pen: &mut impl OutlinePen) -> Option<()> {
-    let mut path = Vec::new();
-    let metrics = face.outline_glyphs().get(id)?.draw(draw_settings(), &mut path).ok()?;
-    let shift = metrics.lsb.unwrap_or(0.);
-    for element in path {
-        match element {
-            PathElement::MoveTo { x, y } => pen.move_to(x + shift, y),
-            PathElement::LineTo { x, y } => pen.line_to(x + shift, y),
-            PathElement::QuadTo { cx0, cy0, x, y } => pen.quad_to(cx0 + shift, cy0, x + shift, y),
-            PathElement::CurveTo { cx0, cy0, cx1, cy1, x, y } =>
-                pen.curve_to(cx0 + shift, cy0, cx1 + shift, cy1, x + shift, y),
-            PathElement::Close => pen.close(),
-        }
-    }
+    outlines(face)?.get(id)?.draw(draw_settings(), pen).ok()?;
     Some(())
 }
 
@@ -392,6 +480,8 @@ struct BezierBuilder {
     contours: Vec<usize>,
     pub curves: Vec<f32>,
     total_height: f32,
+    /// Set once the glyph exceeds `MAX_GLYPH_SEGMENTS`; further commands are dropped.
+    over_budget: bool,
 }
 
 const CUBIC_TOLERANCE: f32 = 0.25;
@@ -405,6 +495,15 @@ impl BezierBuilder {
             contours: Vec::new(),
             curves: Vec::new(),
             total_height,
+            over_budget: false,
+        }
+    }
+
+    fn push_segment(&mut self, segment: [f32; 8]) {
+        if self.curves.len() >= MAX_GLYPH_SEGMENTS * 8 {
+            self.over_budget = true;
+        } else {
+            self.curves.extend_from_slice(&segment);
         }
     }
 
@@ -455,8 +554,11 @@ impl BezierBuilder {
         let d: [f32; 2] = std::array::from_fn(|i| -p[0][i] + 3. * p[1][i] - 3. * p[2][i] + p[3][i]);
         // Degree reduction has error D*t*(t-0.5)*(t-1), whose maximum
         // magnitude is |D|/(12*sqrt(3)). Use the conservative bound |D|/12.
+        if self.over_budget {
+            return;
+        }
         if !(d[0].hypot(d[1]) > 12. * CUBIC_TOLERANCE) || depth >= 10 {
-            self.curves.extend_from_slice(&[
+            self.push_segment([
                 p[0][0], p[0][1], control[0], control[1], p[3][0], p[3][1], 0., 0.,
             ]);
         } else {
@@ -475,6 +577,10 @@ impl BezierBuilder {
 
 impl OutlinePen for BezierBuilder {
     fn move_to(&mut self, x: f32, y: f32) {
+        if self.contours.len() >= MAX_GLYPH_SEGMENTS {
+            self.over_budget = true;
+            return;
+        }
         self.last_position = [x, self.total_height - y];
         self.contour_position = [x, y];
         self.contours.push(self.curves.len());
@@ -483,7 +589,7 @@ impl OutlinePen for BezierBuilder {
 
     fn line_to(&mut self, x: f32, y: f32) {
         let [x0, y0] = self.last_position;
-        self.curves.extend_from_slice(&[
+        self.push_segment([
             x0,
             y0,
             x,
@@ -498,7 +604,7 @@ impl OutlinePen for BezierBuilder {
 
     fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
         let [x0, y0] = self.last_position;
-        self.curves.extend_from_slice(&[
+        self.push_segment([
             x0,
             y0,
             x1,
@@ -661,8 +767,10 @@ mod tests {
         let mut builder = BezierBuilder::new(height);
         assert_eq!(outline_glyph(&face, id, &mut builder), Some(bbox));
         let bounds = face.glyph_metrics(Size::unscaled(), LocationRef::default()).bounds(id).unwrap();
+        let bearing = face.hmtx().unwrap().side_bearing(id).unwrap() as f32;
+        let shift = bearing - bounds.x_min;
         assert_eq!(
-            [bounds.x_min, bounds.y_min, bounds.x_max, bounds.y_max],
+            [bearing, bounds.y_min, bounds.x_max + shift, bounds.y_max],
             [bbox.x_min, bbox.y_min, bbox.x_max, bbox.y_max].map(f32::from),
         );
         assert!(!builder.curves.is_empty());

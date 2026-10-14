@@ -61,3 +61,7 @@ required-features = ["unstable-internals"]
 [[test]]
 name = "benchmark_helpers"
 required-features = ["unstable-internals"]
+
+[[test]]
+name = "input_robustness"
+required-features = ["unstable-internals"]

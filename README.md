@@ -78,7 +78,48 @@ text_renderer.render_range(&mut pass, body.len()..); // Text on top.
 
 Font sizes are `f32` physical pixels per em. Fonts loaded after renderer construction
 are picked up by the next `prepare` call. Paragraph fields are read through getters;
-use `set_position`, `set_color`, and `push` to edit a run.
+use `set_position`, `set_color`, `push` (zero offset), and `push_at` to edit a run.
+`glyphs()` returns `ShapedGlyph` values with a glyph ID, advance, and `[x, y]`
+offset in physical pixels, x rightward and y downward. Every shaped glyph is
+retained. Script runs are shaped in logical order; bidi reordering and line
+wrapping are not implemented.
+
+Glyph zero is always cached when it has an outline, so characters the font lacks
+draw `.notdef`; an empty `.notdef` advances without drawing. Other uncached
+outlines are skipped. Loads that exhaust the atlas return `LoadingError::AtlasFull`
+with the glyph IDs that did not fit, leaving earlier fonts usable.
+Glyph ink is positioned at the pen plus its shaped offset plus the cached left
+side bearing scaled to pixels. In 0.2, each glyph's ink was anchored at the pen;
+text now shifts by each glyph's bearing. TrueType outlines apply the standard
+`hmtx.lsb - glyf.xMin` shift, so their cached box and bearing follow `hmtx`.
+CFF outline coordinates are unchanged; their bearings also position the ink.
+
+Atlas-full errors arise when an outline or its bands cannot fit a layer, or
+allocation would exceed the device's `max_texture_array_layers`. The default
+512 × 2048 RGBA32Float layers use 16 MiB each, initially 32 MiB for two layers;
+a 256-layer device limit allows a 4 GiB atlas. Growth temporarily keeps both
+the old and new textures in memory. A load that grows the atlas and then fails
+restores allocation bookkeeping but keeps the larger texture.
+
+### Untrusted fonts
+
+Font bytes are parsed by skrifa and swash. Outlines come from `glyf`, then
+`CFF2`, then `CFF`; a `VARC` table is ignored. The loader enforces per-glyph
+work limits before and while drawing an outline: at most 65,535 points and
+16,384 contours after composite expansion, 4,096 composite component references
+and 16,384 encoded segments. A glyph past a limit fails the load with
+`LoadingError::GlyphTooComplex`. The limits are loader policy, not font
+validity rules, so a valid but very complex glyph can be refused. Measured: the
+outlines of every Unicode-mapped character plus glyph zero load within them for
+28 fonts (DejaVu and Liberation families, Noto Color Emoji, Roboto, Cantarell and
+a Noto Serif SC subset); unmapped glyphs and full CJK fonts were not measured.
+A seeded robustness test over random and corrupted fonts found no panic in this
+crate after the fixes above; that is tested behaviour, not a proof. Two limits
+remain upstream: swash's `cmap` lookup uses unchecked
+arithmetic, so a crafted `cmap` panics in debug builds (release builds map the
+character to a wrong glyph instead), and skrifa bounds CFF subroutine nesting
+but not total work, so a crafted CFF glyph can take a long time to load even
+though its memory stays bounded.
 
 `FontStore::load` reads the font from a file path. On wasm, or to embed the font in the binary, use `FontStore::load_from_bytes`.
 
@@ -88,7 +129,7 @@ A complete program is in [`examples/simple.rs`](examples/simple.rs).
 
 For subpixel (LCD) anti-aliasing, create the renderer with `TextRenderer::with_subpixel_order(&device, config.format, &font_store, SubpixelOrder::Rgb)` (or `SubpixelOrder::Bgr`), and request `wgpu::Features::DUAL_SOURCE_BLENDING` when creating the device. Without that feature the renderer stays grayscale and `lcd_active()` returns `false`. `TextRenderer::new` is always grayscale.
 
-In LCD mode the horizontal ray is evaluated once and its coverage is taken at three positions a third of a pixel apart, one per channel; the vertical ray is shared. LCD output assumes a horizontal RGB or BGR panel, text drawn over an opaque background, and no rotation or scaling after rendering. It scales each channel's coverage by `color.a`; grayscale ignores `color.a`. There is no LCD filter yet, so small sizes show some colour fringing.
+In LCD mode the horizontal ray is evaluated once and its coverage is taken at three positions a third of a pixel apart, one per channel; the vertical ray is shared. LCD output assumes a horizontal RGB or BGR panel, text drawn over an opaque background, and no rotation or scaling after rendering. Both LCD and grayscale (including the LCD fallback) scale coverage by `color.a`. Alpha zero draws nothing; alpha one preserves full coverage. There is no LCD filter yet, so small sizes show some colour fringing.
 
 ## Running the examples
 
@@ -168,7 +209,7 @@ See the [open issues](https://github.com/ValentinRio/wgpu-font-renderer/issues) 
 ## Built with
 
 - [swash](https://github.com/dfrg/swash) for text shaping
-- [ttf-parser](https://github.com/RazrFalcon/ttf-parser) to read TrueType and OpenType files
+- [skrifa](https://github.com/googlefonts/fontations) to read TrueType and OpenType files
 - [wgpu](https://wgpu.rs/) 30 as graphics API
 
 ## Contributing

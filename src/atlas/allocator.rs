@@ -1,4 +1,4 @@
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 /// Append-only row-major allocator for a square float-slot layer.
 pub struct Allocator {
     offset: u32,
@@ -6,7 +6,7 @@ pub struct Allocator {
     allocations: usize,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 /// Contiguous linear run of float slots, potentially spanning several rows.
 pub struct Region {
     position: [u32; 2],
@@ -35,6 +35,9 @@ impl Allocator {
             allocations: 0,
         }
     }
+
+    #[cfg(test)]
+    pub(super) fn used(&self) -> u32 { self.offset }
 
     /// Reserve a contiguous run of `size` float slots, or return `None` if full.
     /// Failed requests leave the allocator unchanged.

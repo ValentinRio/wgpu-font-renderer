@@ -1,6 +1,6 @@
 use super::allocator::Allocator;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 /// Logical allocation state of an atlas layer.
 pub enum Layer {
     /// No regions have been allocated.

@@ -7,6 +7,11 @@ below 1.0, a minor bump (0.x) may break the API.
 
 ## [Unreleased]
 
+### Changed
+
+- Loading checks glyph dimensions and enforces per-glyph work limits, found by a seeded robustness test over random and corrupted fonts, rejecting a glyph past them with the new `LoadingError::GlyphTooComplex`; a valid but very complex glyph can be refused. A `VARC` table is ignored in favour of `glyf` or CFF outlines. Glyphs whose bounding box spans more than 32,767 font units, which OpenType allows, now load.
+- Grayscale text now honours colour alpha, including the LCD fallback; in 0.2 it ignored alpha. LCD continues to scale coverage by alpha. Alpha one preserves existing output.
+
 ### Breaking
 
 - The library no longer enables any `wgpu` backend. Applications must enable the backends they want on their own `wgpu` dependency; a plain `wgpu = "30"` enables the defaults.
@@ -15,10 +20,10 @@ below 1.0, a minor bump (0.x) may break the API.
 - `FontStore::new` takes only a device.
 - `FontStore::load` accepts any `AsRef<Path>` path and returns `FontId`.
 - `FontStore::load_from_bytes` returns `FontId`.
-- `LoadingError` is non-exhaustive, with `Io(std::io::Error)` and `InvalidFont`; it implements `Error` and preserves the I/O source.
+- `LoadingError` is non-exhaustive, with `Io(std::io::Error)`, `InvalidFont`, and `AtlasFull(Vec<GlyphId>)` and `GlyphTooComplex(GlyphId)`; it implements `Error` and preserves the I/O source.
 - `Paragraph` fields are private; use getters, `set_position`, and `set_color`.
 - `Paragraph::new` takes the font first, followed by position, size, and color.
-- `Paragraph::append` is renamed to `push`.
+- `Paragraph::append` is renamed to `push` (zero offset); `push_at` accepts an offset. `glyphs()` now returns `&[ShapedGlyph]`, a non-exhaustive, `Copy` struct with public `glyph`, `advance`, and `offset` fields in physical pixels, x rightward and y downward.
 - Font sizes in `Paragraph` and `TypeWriter::shape_text` are `f32` pixels per em.
 - `SubpixelOrder` is non-exhaustive; include a fallback arm when matching.
 - `TextRenderer::new` takes a texture format and `&FontStore` instead of a surface configuration and atlas.
@@ -81,6 +86,10 @@ let memory_font = store.load_from_bytes(device, queue, bytes, "Hi")?;
 let mut writer = TypeWriter::default(); // new() remains available
 let mut paragraph = Paragraph::new(font, [24., 24.], 32., [0., 0., 0., 1.]);
 paragraph.push(GlyphId(1), 12.);
+paragraph.push_at(GlyphId(2), 0., [-4., -2.]);
+for glyph in paragraph.glyphs() {
+    let placement = (glyph.glyph, glyph.advance, glyph.offset);
+}
 paragraph.set_position([40., 24.]);
 paragraph.set_color([1.; 4]);
 let metrics = (paragraph.font(), paragraph.position(), paragraph.size(),
@@ -97,6 +106,7 @@ renderer.render(pass);
 match error {
     LoadingError::Io(error) => { /* std::error::Error::source preserves this */ },
     LoadingError::InvalidFont => {},
+    LoadingError::AtlasFull(glyphs) => { /* font was not loaded */ },
     _ => {},
 }
 // Tests/benchmarks only, with unstable-internals enabled:
@@ -139,7 +149,12 @@ Run tests and benchmarks with `--all-features` to enable inspection targets.
 ### Changed
 
 - Fonts are read with skrifa instead of ttf-parser. swash is at 0.2 without its scaler and rasteriser.
-- Glyph 0 (`.notdef`) is never cached or drawn now. In 0.2, loading a character explicitly mapped to glyph 0 cached its outline, allowing it to draw for any character the shaper resolved to glyph 0; characters with no cmap mapping were skipped during loading.
+- `.notdef` is now drawn for every character a font lacks, if glyph zero has an outline. In 0.2 it was drawn only after a loaded character had been explicitly mapped to glyph zero. An empty `.notdef` still advances without drawing.
+- Glyph ink is now positioned at the pen plus shaped offset plus its scaled left side bearing. In 0.2, each glyph's ink was anchored at the pen; text now shifts by each glyph's bearing. TrueType outlines apply `hmtx.lsb - glyf.xMin`, so the cached box and bearing follow `hmtx`, while 0.2 cached raw `glyf` coordinates. CFF outline coordinates are unchanged; their bearings also position the ink.
+- Shaping keeps every glyph of each cluster with its advance and offsets, and shapes script runs under their own script. Runs remain in logical order; bidi reordering and line wrapping are not implemented.
+- Repeated characters select and upload each glyph only once per load, including an empty `.notdef`.
+- Text with no strong script retains Latin shaping; common, inherited and unknown-script characters otherwise join neighbouring script runs.
+- Atlas exhaustion of either curves or bands fails the load with `LoadingError::AtlasFull(Vec<GlyphId>)`, naming every outlined glyph that did not fit. Earlier fonts remain usable and no half-loaded font is added. Exhaustion means an allocation cannot fit one layer or would exceed the device texture array layer limit: default layers use 16 MiB each (32 MiB initially; 4 GiB at 256 layers).
 - Glyph IDs now follow the shaper's cmap selection: Windows symbol subtables take priority, and format 12 is preferred. In 0.2, Windows symbol subtables were skipped and each character used the first mapping found across Unicode subtables in record order; symbol-only fonts now draw, and conflicting format 4/12 mappings now agree with shaping, avoiding wrong or missing glyphs.
 - `TextRenderer::prepare` accepts any iterator of borrowed paragraphs, including slices, borrowed vectors, and chained lists.
 - `TypeWriter` implements `Default`, equivalent to `TypeWriter::new()`.
