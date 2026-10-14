@@ -20,14 +20,14 @@ GPU-centered font rendering for [wgpu](https://wgpu.rs/). Glyphs are drawn strai
 
 ```toml
 [dependencies]
-wgpu-font-renderer = "0.2"
+wgpu-font-renderer = "1"
 ```
 
 Enable the backends you want on your own `wgpu` dependency; a plain `wgpu = "30"` enables the defaults.
 
 ## Usage
 
-These examples target the upcoming 1.0 API. For changes from 0.2, see [the migration guide](CHANGELOG.md#migrating-from-02).
+Coming from 0.2? See [the migration guide](CHANGELOG.md#migrating-from-02).
 
 ```rust
 use wgpu_font_renderer::{FontStore, TextRenderer, TypeWriter};
@@ -88,6 +88,13 @@ On wasm, or to embed a font in the binary, use `FontStore::load_from_bytes`. Lay
 - No bidi reordering and no font fallback: script runs are shaped in logical order, and characters the font lacks draw `.notdef`.
 - Untrusted fonts: the loader caps per-glyph work and refuses glyphs past the caps with `LoadingError::GlyphTooComplex`. Malformed GSUB tables are rejected or capped (`LoadingError::SubstitutionTooComplex`). Some crafted fonts still hit swash bugs: debug-build panics in `cmap` and `ClassDef` handling, slow CFF glyph loads, and glyphs that shape but are not cached, so they draw nothing. Details are in the crate docs.
 - LCD mode has no filter yet, so small sizes show some colour fringing.
+
+## Stability
+
+- The crate follows semantic versioning from 1.0: breaking API changes come only with a new major version.
+- wgpu types appear in the public API, so moving to a new wgpu major version is a major version of this crate. 1.x uses wgpu 30.
+- The minimum supported Rust version is 1.88. Raising it is not a breaking change, but it is listed in the changelog. Some dependencies publish patch releases that need a newer Rust, so on 1.88 use a resolver that honours `rust-version` (`resolver = "3"`, the default for edition 2024) or pin those versions in your lockfile.
+- Complex scripts and emoji are covered by synthetic tests only: no Indic, Myanmar, right-to-left or emoji font ships with the test suite.
 
 ## Running the examples
 
