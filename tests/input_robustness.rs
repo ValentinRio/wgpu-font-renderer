@@ -334,3 +334,42 @@ fn encoded_segments_are_bounded() {
     let font = with_glyphs(&[simple_glyph(16_386, 0, 0)]);
     assert!(too_complex(internals::check_font_bytes(&font, "")));
 }
+
+// A malformed simple glyph claiming `contours` contours that all end at point zero.
+fn degenerate_contours(contours: u16) -> Vec<u8> {
+    let mut glyph = glyph_header(contours as i16, [0, 0, 1, 1]);
+    glyph.extend(std::iter::repeat_n([0u8, 0], contours as usize).flatten());
+    glyph.extend_from_slice(&0u16.to_be_bytes());
+    glyph.push(0x01);
+    glyph.extend_from_slice(&[0; 4]);
+    glyph
+}
+
+#[test]
+fn expanded_contour_count_is_bounded() {
+    // One point each, so the point budget never sees them.
+    let font = with_glyphs(&[composite_glyph(1, 2), degenerate_contours(10_000)]);
+    assert!(too_complex(internals::check_font_bytes(&font, "")));
+}
+
+#[test]
+fn references_at_the_depth_limit_are_counted() {
+    // A chain of 32 single references ends in a composite at depth 32 with
+    // 5,000 references to an empty glyph; skrifa still counts those.
+    let mut glyphs: Vec<_> = (1..=32).map(|next| composite_glyph(next, 1)).collect();
+    glyphs.push(composite_glyph(33, 5_000));
+    assert!(too_complex(internals::check_font_bytes(&with_glyphs(&glyphs), "")));
+}
+
+#[test]
+#[ignore = "scans fonts listed in ROBUSTNESS_CORPUS (newline-separated paths)"]
+fn corpus_fonts_stay_within_limits() {
+    let all: String = (0..0x11_0000).filter_map(char::from_u32).collect();
+    let list = std::env::var("ROBUSTNESS_CORPUS").unwrap();
+    for path in list.lines().filter(|l| !l.is_empty()) {
+        let bytes = std::fs::read(path).unwrap();
+        let result = internals::check_font_bytes(&bytes, &all);
+        eprintln!("{path}: {:?}", result.as_ref().map_err(|e| e.to_string()));
+        assert!(!too_complex(result), "{path}");
+    }
+}

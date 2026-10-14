@@ -103,13 +103,17 @@ restores allocation bookkeeping but keeps the larger texture.
 
 ### Untrusted fonts
 
-Font bytes are parsed by skrifa and swash. For any input, `load_from_bytes`
-returns a font or a `LoadingError`, within fixed per-glyph work limits: at
-most 65,535 points after composite expansion, 4,096 composite component
-references and 16,384 encoded segments. A glyph past a limit fails the load with
-`LoadingError::GlyphTooComplex`; real glyphs stay far below them. These
-guarantees are exercised by a seeded robustness test over random and corrupted
-fonts. Two limits remain upstream: swash's `cmap` lookup uses unchecked
+Font bytes are parsed by skrifa and swash. Outlines come from `glyf`, then
+`CFF2`, then `CFF`; a `VARC` table is ignored. The loader enforces per-glyph
+work limits before and while drawing an outline: at most 65,535 points and
+16,384 contours after composite expansion, 4,096 composite component references
+and 16,384 encoded segments. A glyph past a limit fails the load with
+`LoadingError::GlyphTooComplex`. The limits are loader policy, not font
+validity rules, so a valid but very complex glyph can be refused; every glyph of
+DejaVu, Liberation, Roboto, Cantarell and a Noto Serif SC subset loads within
+them. A seeded robustness test over random and corrupted fonts checks that
+loading returns a font or an error and does not panic in this crate. Two limits
+remain upstream: swash's `cmap` lookup uses unchecked
 arithmetic, so a crafted `cmap` panics in debug builds (release builds map the
 character to a wrong glyph instead), and skrifa bounds CFF subroutine nesting
 but not total work, so a crafted CFF glyph can take a long time to load even

@@ -1,11 +1,14 @@
 use std::{collections::HashMap, fmt};
 use skrifa::{
     instance::{LocationRef, Size},
-    outline::{pen::{PathStyle, ControlBoundsPen}, DrawSettings, OutlinePen},
+    outline::{pen::{PathStyle, ControlBoundsPen}, DrawSettings, OutlineGlyphCollection, OutlineGlyphFormat, OutlinePen},
     raw::TableProvider,
-    FontRef as SkFontRef, GlyphId, MetadataProvider,
+    FontRef as SkFontRef, GlyphId,
 };
 use swash::{CacheKey, FontRef};
+// Only the unit-test modules below use skrifa metadata through `super::*`.
+#[cfg(test)]
+use skrifa::MetadataProvider;
 
 use crate::atlas::{allocation::Allocation, Atlas};
 
@@ -63,9 +66,10 @@ pub enum LoadingError {
     /// Outlined glyphs that could not fit in the atlas. The font was not loaded.
     AtlasFull(Vec<crate::GlyphId>),
     /// A glyph's outline exceeds the loader's work limits: more than 65,535
-    /// points after composite expansion, more than 4,096 composite component
-    /// references, or more than 16,384 encoded segments. Real glyphs stay far
-    /// below these. The font was not loaded.
+    /// points or 16,384 contours after composite expansion, more than 4,096
+    /// composite component references, or more than 16,384 encoded segments.
+    /// These are loader policy, not font validity rules: a valid but very
+    /// complex glyph can exceed them. The font was not loaded.
     GlyphTooComplex(crate::GlyphId),
 }
 
@@ -304,22 +308,30 @@ fn check_composite_budget(face: &SkFontRef<'_>, id: GlyphId) -> Result<()> {
     };
     let too_complex = || LoadingError::GlyphTooComplex(crate::GlyphId(id.to_u32() as u16));
     let mut pending = vec![(id, 0)];
-    let (mut points, mut references) = (0usize, 0usize);
+    let (mut points, mut contours, mut references) = (0usize, 0usize, 0usize);
     while let Some((glyph, depth)) = pending.pop() {
         match loca.get_glyf(glyph, &glyf) {
             Ok(Some(Outline::Simple(simple))) => {
+                // skrifa sizes points from the last endpoint and contours from
+                // the endpoint count, so a malformed glyph can claim few points
+                // and many contours; budget both.
                 points += simple.num_points();
-                if points > MAX_GLYPH_POINTS {
+                contours += simple.end_pts_of_contours().len();
+                if points > MAX_GLYPH_POINTS || contours > MAX_GLYPH_SEGMENTS {
                     return Err(too_complex());
                 }
             }
-            Ok(Some(Outline::Composite(composite))) if depth < MAX_COMPOSITE_DEPTH => {
+            Ok(Some(Outline::Composite(composite))) => {
+                // skrifa sizes a composite at the depth limit before failing on
+                // its children, so count its references; descend only below it.
                 for (component, _) in composite.component_glyphs_and_flags() {
                     references += 1;
                     if references > MAX_COMPONENT_REFERENCES {
                         return Err(too_complex());
                     }
-                    pending.push((component.into(), depth + 1));
+                    if depth < MAX_COMPOSITE_DEPTH {
+                        pending.push((component.into(), depth + 1));
+                    }
                 }
             }
             _ => {}
@@ -355,8 +367,17 @@ fn draw_settings() -> DrawSettings<'static> {
         .with_path_style(PathStyle::HarfBuzz)
 }
 
+// skrifa prefers VARC outlines when present. They bypass the glyf budget below
+// and can panic inside skrifa, and swash shapes without them, so draw glyf, then
+// CFF2, then CFF, the order skrifa uses without VARC.
+fn outlines<'a>(face: &SkFontRef<'a>) -> Option<OutlineGlyphCollection<'a>> {
+    [OutlineGlyphFormat::Glyf, OutlineGlyphFormat::Cff2, OutlineGlyphFormat::Cff]
+        .into_iter()
+        .find_map(|format| OutlineGlyphCollection::with_format(face, format))
+}
+
 fn draw_glyph(face: &SkFontRef<'_>, id: GlyphId, pen: &mut impl OutlinePen) -> Option<()> {
-    face.outline_glyphs().get(id)?.draw(draw_settings(), pen).ok()?;
+    outlines(face)?.get(id)?.draw(draw_settings(), pen).ok()?;
     Some(())
 }
 

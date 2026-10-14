@@ -30,10 +30,11 @@
 //! Growth temporarily retains both old and new textures. A load that grows the
 //! atlas and then fails restores allocations but keeps the larger texture.
 //!
-//! For any font bytes, loading returns a font or a [`LoadingError`] within fixed
-//! per-glyph work limits (65,535 points after composite expansion, 4,096
-//! composite component references, 16,384 encoded segments); a glyph past them
-//! gives [`LoadingError::GlyphTooComplex`]. Upstream, swash's `cmap` lookup can
+//! Outlines come from `glyf`, then `CFF2`, then `CFF`; `VARC` is ignored. Loading
+//! enforces per-glyph work limits (65,535 points and 16,384 contours after
+//! composite expansion, 4,096 component references, 16,384 encoded segments);
+//! a glyph past them gives [`LoadingError::GlyphTooComplex`]. The limits are
+//! loader policy, so a valid but very complex glyph can be refused. Upstream, swash's `cmap` lookup can
 //! panic on crafted data in debug builds, and skrifa does not bound total CFF
 //! work, so a crafted CFF glyph can load slowly with bounded memory.
 //! Glyph ink is placed at the pen plus its shaped offset plus the cached left
