@@ -9,12 +9,15 @@ below 1.0, a minor bump (0.x) may break the API.
 
 ### Added
 
-- Metric table selection intentionally matches the renderer rather than skrifa’s `Metrics`: typo metrics require OS/2 v4 with USE_TYPO_METRICS; a zero hhea ascender falls back to nonzero typo, then Windows metrics. Instances are never unloaded; every instance uploads its own outlines, so per-frame creation eventually fills the atlas (`AtlasFull`). All-zero locations pass no shaping coordinates to preserve default shaping.
+- Metric table selection intentionally matches the renderer rather than skrifa’s `Metrics`: typo metrics require OS/2 v4 with USE_TYPO_METRICS; a zero hhea ascender falls back to nonzero typo, then Windows metrics. Instances are never unloaded; every instance uploads its own outlines, so per-frame creation eventually fills the atlas (`AtlasFull`).
 - `FontStore::metrics` and non-exhaustive `FontMetrics` expose the anchor ascender (possibly zero or negative), nonnegative descent magnitude and signed line gap; ascent matches the renderer’s baseline anchor, including MVAR deltas.
-- `FontStore::axes` borrows cached variable font ranges as `&[Axis]`; `Axis` is non-exhaustive. `load_variation` shares base bytes and characters, uploads instance outlines, inherits the base location, clamps overrides and ignores unknown tags. One skrifa normalized location drives outlines, placement, metrics and shaping; default output is preserved.
+- `FontStore::axes` borrows cached variable font ranges as `&[Axis]`; `Axis` is non-exhaustive. `load_variation` shares base bytes and characters, uploads instance outlines, inherits the base location, clamps overrides and ignores unknown tags. One skrifa normalized location drives outlines, placement, metrics and shaping.
 - `LoadingError::UnknownFont` distinguishes a foreign variation base from invalid font data.
 
 ### Changed
+
+- Variable fonts shape at their normalized location even when all coordinates are zero. Unlike 0.2, FeatureVariations whose condition ranges cover the default location now apply there.
+- General-category Cc controls and default-ignorable characters mapped to glyph zero are omitted from `Paragraph::glyphs()` and contribute no advance or ink. Missing letters and symbols still draw `.notdef` when it has an outline.
 
 - Loading checks glyph dimensions and enforces per-glyph work limits, found by a seeded robustness test over random and corrupted fonts, rejecting a glyph past them with the new `LoadingError::GlyphTooComplex`; a valid but very complex glyph can be refused. A `VARC` table is ignored in favour of `glyf` or CFF outlines. Glyphs whose bounding box spans more than 32,767 font units, which OpenType allows, now load.
 - Grayscale text now honours colour alpha, including the LCD fallback; in 0.2 it ignored alpha. LCD continues to scale coverage by alpha. Alpha one preserves existing output.

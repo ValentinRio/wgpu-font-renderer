@@ -314,35 +314,43 @@ fn metrics_and_instances_share_bytes_and_preserve_the_character_set() {
 }
 
 #[test]
-fn review_default_shaping_omits_zero_coords_even_with_feature_variations() {
+fn default_shaping_applies_feature_variations_covering_zero() {
     use swash::{shape::ShapeContext, text::Script};
     let Some((device, queue, _)) = common::gpu() else { return; };
-    for bytes in [include_bytes!("../../fonts/Cantarell-VF.otf").to_vec(), common::zero_feature_variation_font()] {
+    for (bytes, has_substitution) in [
+        (include_bytes!("../../fonts/Cantarell-VF.otf").to_vec(), false),
+        (common::zero_feature_variation_font(), true),
+    ] {
         let mut store = FontStore::new(&device);
         let text = "I II AV To fi ffi e\u{301} 0123!? àÅgß";
         let base = store.load_from_bytes(&device, &queue, &bytes, text).unwrap();
         let font = store.get(base).unwrap();
         assert!(!font.location.coords().is_empty());
         assert!(font.location.coords().iter().all(|coord| coord.to_bits() == 0));
-        assert!(font.shaping_coords().is_empty(), "default shaping must omit all-zero coordinates");
-        let expected = TypeWriter::new().shape_glyphs(font.as_ref(), 32., text);
+        let without_coords = TypeWriter::new().shape_glyphs(font.as_ref(), 32., text);
         let actual = TypeWriter::new().shape_text(&store, base, [0.; 2], 32., [1.; 4], text).unwrap();
-        assert_eq!(actual.glyphs(), expected);
-        if bytes == common::zero_feature_variation_font() {
-            let mut context = ShapeContext::new();
-            let mut shaper = context.builder(font.as_ref()).script(Script::Latin).size(32.)
-                .normalized_coords([0i16]).build();
-            shaper.add_str(text);
-            let mut with_zero = Vec::new();
-            shaper.shape_with(|cluster| with_zero.extend(cluster.glyphs.iter().map(|g| GlyphId(g.id))));
-            let without: Vec<_> = expected.iter().map(|g| g.glyph).collect();
-            assert_ne!(with_zero, without, "fixture must distinguish empty from zero coordinates");
+        let mut context = ShapeContext::new();
+        let mut shaper = context.builder(font.as_ref()).script(Script::Latin).size(32.)
+            .normalized_coords([0i16]).build();
+        shaper.add_str(text);
+        let mut with_zero = Vec::new();
+        shaper.shape_with(|cluster| with_zero.extend(cluster.glyphs.iter().map(|g| crate::ShapedGlyph {
+            glyph: GlyphId(g.id), advance: g.advance, offset: [g.x, -g.y],
+        })));
+        assert_eq!(actual.glyphs(), with_zero);
+        if has_substitution {
+            let charmap = font.as_ref().charmap();
+            assert_eq!(without_coords[0].glyph, GlyphId(charmap.map('I')));
+            assert_eq!(actual.glyphs()[0].glyph, GlyphId(charmap.map('H')));
+            assert_ne!(actual.glyphs(), without_coords, "default location must activate I -> H");
+        } else {
+            assert_eq!(actual.glyphs(), without_coords);
         }
     }
 }
 
 #[test]
-fn review_chained_instances_keep_unmodified_axes_and_borrow_cached_axes() {
+fn chained_instances_keep_unmodified_axes_and_borrow_cached_axes() {
     use skrifa::MetadataProvider;
     let Some((device, queue, _)) = common::gpu() else { return; };
     let bytes = common::two_axis_font();
@@ -362,4 +370,53 @@ fn review_chained_instances_keep_unmodified_axes_and_borrow_cached_axes() {
     let reset = store.load_variation(&device, &queue, narrow, &[(*b"wght", 400.)]).unwrap();
     let expected = store.get(base).unwrap().face().axes().location([("wght", 400.), ("wdth", 75.)]);
     assert_eq!(store.get(reset).unwrap().location, expected);
+}
+
+#[test]
+fn controls_and_missing_default_ignorables_draw_only_neighbouring_letters() {
+    let Some((device, queue, _)) = common::gpu() else { return; };
+    let mut store = FontStore::new(&device);
+    let font = store.load_from_bytes(&device, &queue, ROBOTO, "ab").unwrap();
+    let mut writer = TypeWriter::new();
+    let plain = writer.shape_text(&store, font, [24.; 2], 32., [0., 0., 0., 1.], "ab").unwrap();
+    let reference = pixels(&device, &queue, &store, &plain);
+    assert_eq!(plain.glyphs().len(), 2);
+    for text in ["a\nb", "a\rb", "a\tb", "a\0b", "a\u{85}b", "a\u{200B}b", "a\u{200D}b", "a\u{FE0F}b"] {
+        let paragraph = writer.shape_text(&store, font, [24.; 2], 32., [0., 0., 0., 1.], text).unwrap();
+        assert_eq!(paragraph.glyphs(), plain.glyphs(), "invisible source character in {text:?}");
+        assert_eq!(paragraph.width(), plain.width());
+        assert_eq!(pixels(&device, &queue, &store, &paragraph), reference,
+            "only the two letters may draw for {text:?}");
+    }
+    let charmap = store.get(font).unwrap().as_ref().charmap();
+    for ch in ('\0'..='\u{9F}').filter(|ch| ch.is_control()).chain([
+        '\u{034F}', '\u{061C}', '\u{115F}', '\u{1160}', '\u{17B4}', '\u{17B5}',
+        '\u{180B}', '\u{180C}', '\u{180D}', '\u{180E}', '\u{180F}',
+        '\u{200B}', '\u{200C}', '\u{200D}', '\u{200E}', '\u{200F}',
+        '\u{202A}', '\u{2060}', '\u{2065}', '\u{3164}', '\u{FE00}', '\u{FE0F}',
+        '\u{FEFF}', '\u{FFA0}', '\u{FFF0}', '\u{1BCA0}', '\u{1D173}',
+        '\u{E0000}', '\u{E0001}', '\u{E007F}', '\u{E0100}', '\u{E01EF}', '\u{E0FFF}',
+    ]) {
+        if ch.is_control() || charmap.map(ch) == 0 {
+            let text = format!("a{ch}b");
+            let paragraph = writer.shape_text(&store, font, [24.; 2], 32., [0., 0., 0., 1.], &text).unwrap();
+            assert_eq!(paragraph.glyphs(), plain.glyphs(), "invisible source character {ch:?}");
+            assert_eq!(paragraph.width(), plain.width());
+        }
+    }
+    let controls = writer.shape_text(&store, font, [24.; 2], 32., [0., 0., 0., 1.], "\n\r\t\0\u{200B}").unwrap();
+    assert!(controls.glyphs().is_empty());
+    assert_eq!(controls.width(), 0.);
+    assert!(pixels(&device, &queue, &store, &controls).iter().all(|&value| value == 255));
+    let missing = writer.shape_text(&store, font, [24.; 2], 32., [0., 0., 0., 1.], "a龍b").unwrap();
+    assert_eq!(missing.glyphs().len(), 3);
+    assert_eq!(missing.glyphs()[1].glyph, GlyphId(0));
+    assert!(missing.glyphs()[1].advance > 0.);
+    assert!(missing.width() > plain.width());
+    assert_ne!(pixels(&device, &queue, &store, &missing), reference,
+        "missing letters must still draw notdef ink");
+    let missing_only = writer.shape_text(&store, font, [24.; 2], 32., [0., 0., 0., 1.], "龍").unwrap();
+    assert_eq!(missing_only.glyphs()[0].glyph, GlyphId(0));
+    assert!(pixels(&device, &queue, &store, &missing_only).iter().any(|&value| value != 255),
+        "the missing letter's notdef must have ink");
 }

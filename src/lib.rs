@@ -10,7 +10,8 @@
 //! CFF2 outlines can be loaded and converted. [`FontStore::load_variation`] selects
 //! axis overrides from [`FontStore::axes`], inheriting the base location and sharing bytes. One
 //! normalized location drives outlines, placement, metrics and shaping. Default
-//! loads select the default instance; all-zero locations pass no shaping coordinates. [`FontStore::metrics`] reports pixel line
+//! loads select the default instance, including zero coordinates for FeatureVariations.
+//! [`FontStore::metrics`] reports pixel line
 //! metrics; the baseline is paragraph y plus [`FontMetrics::ascent`].
 //! Contours are explicitly closed. Glyphs with negative total signed area in
 //! y-down coordinates have all contours reversed to match the shader's winding.
@@ -24,7 +25,8 @@
 //! both x and y. Shaping retains every glyph and its offsets in logical run order
 //! without bidi reordering. Glyphs absent from the cache selected by `chars` are skipped during drawing.
 //!
-//! Glyph zero is cached if it has an outline, so missing characters draw `.notdef`.
+//! Glyph zero is cached if it has an outline, so missing letters and symbols draw `.notdef`.
+//! Controls (Cc) and default-ignorables mapped to glyph zero are omitted without advance.
 //! An empty `.notdef` advances without drawing. Loads that exhaust the atlas
 //! return [`LoadingError::AtlasFull`] without adding the font or affecting earlier
 //! fonts. An outline or its bands must fit a layer, and allocation must stay

@@ -85,7 +85,8 @@ retained. Script runs are shaped in logical order; bidi reordering and line
 wrapping are not implemented.
 
 Glyph zero is always cached when it has an outline, so characters the font lacks
-draw `.notdef`; an empty `.notdef` advances without drawing. Other uncached
+draw `.notdef`; an empty `.notdef` advances without drawing. Controls (Cc) and
+default-ignorable characters mapped to glyph zero are omitted without advance. Other uncached
 outlines are skipped. Loads that exhaust the atlas return `LoadingError::AtlasFull`
 with the glyph IDs that did not fit, leaving earlier fonts usable.
 Glyph ink is positioned at the pen plus its shaped offset plus the cached left
@@ -125,8 +126,8 @@ Axis values clamp to their ranges, unknown tags are ignored, omitted axes retain
 the base instance’s values, and the last duplicate wins. Non-variable fonts
 produce identical instances. A foreign base returns `LoadingError::UnknownFont`. One skrifa
 normalized location drives outlines, bounds, bearings, MVAR line metrics and
-swash shaping. All-zero locations pass no shaping coordinates, preserving
-pre-variation default shaping. Every instance uploads its own outlines for the
+swash shaping, including all-zero coordinates at the default instance so
+FeatureVariations whose conditions cover zero apply. Every instance uploads its own outlines for the
 base’s character set. Fonts are never unloaded, so creating instances per frame
 (for example when animating weight) fills the atlas and ends in `AtlasFull`.
 

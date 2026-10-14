@@ -358,7 +358,7 @@ fn normalized_location_changes_outlines_bounds_and_metric_deltas() {
 }
 
 #[test]
-fn review_metrics_apply_descent_and_line_gap_mvar_deltas() {
+fn metrics_apply_descent_and_line_gap_mvar_deltas() {
     let Some((device, queue, _)) = common::gpu() else { return; };
     let bytes = common::mvar_anchor_font();
     let mut store = FontStore::new(&device);
@@ -382,7 +382,7 @@ fn review_metrics_apply_descent_and_line_gap_mvar_deltas() {
 }
 
 #[test]
-fn review_store_bounds_and_bearings_use_instance_location() {
+fn store_bounds_and_bearings_use_instance_location() {
     let Some((device, queue, _)) = common::gpu() else { return; };
     let mut store = FontStore::new(&device);
     let base = store.load_from_bytes(&device, &queue, include_bytes!("../../fonts/Cantarell-VF.otf"), "Ig").unwrap();
@@ -408,7 +408,7 @@ fn review_store_bounds_and_bearings_use_instance_location() {
 }
 
 #[test]
-fn review_store_outlines_are_skrifa_instance_outlines() {
+fn store_outlines_are_skrifa_instance_outlines() {
     let Some((device, queue, _)) = common::gpu() else { return; };
     let mut store = FontStore::new(&device);
     let base = store.load_from_bytes(&device, &queue, include_bytes!("../../fonts/Cantarell-VF.otf"), "Ig").unwrap();
@@ -434,7 +434,7 @@ fn review_store_outlines_are_skrifa_instance_outlines() {
 }
 
 #[test]
-fn review_avar_midrange_instance_matches_mapped_location_and_advance() {
+fn avar_midrange_instance_matches_mapped_location_and_advance() {
     let Some((device, queue, _)) = common::gpu() else { return; };
     let mut store = FontStore::new(&device);
     let base = store.load_from_bytes(&device, &queue, include_bytes!("../../fonts/Cantarell-VF.otf"), "II").unwrap();
@@ -453,14 +453,15 @@ fn review_avar_midrange_instance_matches_mapped_location_and_advance() {
 }
 
 #[test]
-fn review_nonvariable_instance_with_axes_has_identical_cached_glyphs() {
+fn nonvariable_instance_with_axes_has_identical_cached_glyphs() {
     let Some((device, queue, _)) = common::gpu() else { return; };
     let mut store = FontStore::new(&device);
     let base = store.load_from_bytes(&device, &queue, ROBOTO, "Ig").unwrap();
     let instance = store.load_variation(&device, &queue, base, &[(*b"wght", 800.), (*b"wdth", 75.)]).unwrap();
     let a = store.get(base).unwrap();
     let b = store.get(instance).unwrap();
-    assert!(a.location.coords().is_empty() && b.location.coords().is_empty());
+    assert!(a.location.coords().is_empty());
+    assert!(b.location.coords().is_empty(), "non-variable instances have no normalized coordinates");
     assert_eq!(a.glyph_cache.len(), b.glyph_cache.len());
     for (id, expected) in &a.glyph_cache {
         let actual = &b.glyph_cache[id];
@@ -474,7 +475,7 @@ fn review_nonvariable_instance_with_axes_has_identical_cached_glyphs() {
 }
 
 #[test]
-fn review_reversed_axis_ranges_keep_default_and_use_skrifa_clamping() {
+fn reversed_axis_ranges_keep_default_and_use_skrifa_clamping() {
     let Some((device, queue, _)) = common::gpu() else { return; };
     let mut bytes = include_bytes!("../../fonts/Cantarell-VF.otf").to_vec();
     let axis = table_range(&bytes, b"fvar").start + 16;
@@ -486,4 +487,6 @@ fn review_reversed_axis_ranges_keep_default_and_use_skrifa_clamping() {
     let instance = store.load_variation(&device, &queue, base, &[(*b"wght", 550.)]).unwrap();
     let expected = store.get(base).unwrap().face().axes().location([("wght", 550.)]);
     assert_eq!(store.get(instance).unwrap().location, expected);
+    assert_eq!(store.get(instance).unwrap().location.coords()[0].to_bits(), 16384,
+        "reversed range clamps to its minimum (800), normalizing to +1");
 }

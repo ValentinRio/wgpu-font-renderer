@@ -142,11 +142,6 @@ impl Font {
             index: 0, offset, key, glyph_cache })
     }
 
-    pub(crate) fn shaping_coords(&self) -> &[skrifa::instance::NormalizedCoord] {
-        if LocationRef::from(&self.location).is_default() { &[] }
-        else { self.location.coords() }
-    }
-
     /// Borrow the original bytes as a swash font reference with the same cache key.
     pub(crate) fn as_ref(&self) -> FontRef<'_> {
         FontRef {
@@ -337,6 +332,7 @@ fn prepare_glyph_at(
 #[cfg(feature = "unstable-internals")]
 pub(crate) fn check_font_bytes(data: &[u8], characters: &str) -> Result<usize> {
     let (face, offset, key) = parse_font(data, 0)?;
+    let _metrics = face_line_metrics(&face, LocationRef::default());
     let mut prepared = 0;
     for id in glyph_ids(FontRef { data, offset, key }, characters) {
         check_composite_budget(&face, id)?;
