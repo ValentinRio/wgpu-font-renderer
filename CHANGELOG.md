@@ -9,6 +9,8 @@ below 1.0, a minor bump (0.x) may break the API.
 
 ### Added
 
+- `ShapedGlyph::source()` exposes cluster byte ranges in the original shaping or layout input for caret placement, hit testing and selection. Hand-pushed glyphs have no source.
+
 - `TypeWriter::layout_text`, `TextLayout`, `Align`, `LineHeight` and `TextBlock` add greedy Unicode wrapping, hard breaks, hanging trailing spaces, alignment and block movement. Layout preserves each paragraph’s shaping and uses each font instance’s metrics; `shape_text` remains single-line.
 
 - Metric table selection intentionally matches the renderer rather than skrifa’s `Metrics`: typo metrics require OS/2 v4 with USE_TYPO_METRICS; a zero hhea ascender falls back to nonzero typo, then Windows metrics. Instances are never unloaded; every instance uploads its own outlines, so per-frame creation eventually fills the atlas (`AtlasFull`).

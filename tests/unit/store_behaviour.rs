@@ -338,6 +338,7 @@ fn default_shaping_applies_feature_variations_covering_zero() {
         let mut with_zero = Vec::new();
         shaper.shape_with(|cluster| with_zero.extend(cluster.glyphs.iter().map(|g| crate::ShapedGlyph {
             glyph: GlyphId(g.id), advance: g.advance, offset: [g.x, -g.y],
+            source: Some([cluster.source.start as usize, cluster.source.end as usize]),
         })));
         assert_eq!(actual.glyphs(), with_zero);
         if has_substitution {
@@ -397,7 +398,9 @@ fn missing_controls_and_default_ignorables_draw_only_neighbouring_letters() {
     assert_eq!(plain.glyphs().len(), 2);
     for text in ["a\nb", "a\tb", "a\u{034F}b", "a\u{FE0F}b"] {
         let paragraph = writer.shape_text(&store, font, [24.; 2], 32., [0., 0., 0., 1.], text).unwrap();
-        assert_eq!(paragraph.glyphs(), plain.glyphs(), "invisible source character in {text:?}");
+        assert_eq!(paragraph.glyphs().iter().map(|g| (g.glyph, g.advance, g.offset)).collect::<Vec<_>>(),
+            plain.glyphs().iter().map(|g| (g.glyph, g.advance, g.offset)).collect::<Vec<_>>(),
+            "invisible source character in {text:?}");
         assert_eq!(paragraph.width(), plain.width());
         assert_eq!(pixels(&device, &queue, &store, &paragraph), reference,
             "only the two letters may draw for {text:?}");
@@ -433,6 +436,7 @@ fn mapped_control_keeps_its_real_glyph_and_swash_positioning() {
     let mut expected = Vec::new();
     shaper.shape_with(|cluster| expected.extend(cluster.glyphs.iter().map(|g| crate::ShapedGlyph {
         glyph: GlyphId(g.id), advance: g.advance, offset: [g.x, -g.y],
+            source: Some([cluster.source.start as usize, cluster.source.end as usize]),
     })));
     assert!(expected.iter().any(|g| g.glyph == GlyphId(3)));
     let Some((device, queue, _)) = common::gpu() else { return; };
@@ -458,7 +462,8 @@ fn swash_hides_mapped_default_ignorables_as_before() {
     let plain = writer.shape_text(&store, font, [24.; 2], 32., [0., 0., 0., 1.], "ab").unwrap();
     for text in ["a\u{00AD}b", "a\u{200B}b"] {
         let paragraph = writer.shape_text(&store, font, [24.; 2], 32., [0., 0., 0., 1.], text).unwrap();
-        assert_eq!(paragraph.glyphs(), plain.glyphs());
+        assert_eq!(paragraph.glyphs().iter().map(|g| (g.glyph, g.advance, g.offset)).collect::<Vec<_>>(),
+            plain.glyphs().iter().map(|g| (g.glyph, g.advance, g.offset)).collect::<Vec<_>>());
         assert_eq!(paragraph.width(), plain.width());
         assert_eq!(pixels(&device, &queue, &store, &paragraph), pixels(&device, &queue, &store, &plain));
     }
@@ -480,6 +485,7 @@ fn visible_ligature_starting_at_missing_default_ignorable_is_retained() {
     let mut expected = Vec::new();
     shaper.shape_with(|cluster| expected.extend(cluster.glyphs.iter().map(|g| crate::ShapedGlyph {
         glyph: GlyphId(g.id), advance: g.advance, offset: [g.x, -g.y],
+            source: Some([cluster.source.start as usize, cluster.source.end as usize]),
     })));
     assert_eq!(expected.len(), 1, "fixture must form a ligature");
     assert_eq!(expected[0].glyph, output);
