@@ -2,10 +2,12 @@
 
 All notable changes to this crate are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the crate follows
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html). While the version is
-below 1.0, a minor bump (0.x) may break the API.
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html). From 1.0, breaking
+API changes come only with a major version.
 
 ## [Unreleased]
+
+## [1.0.0] - 2026-10-14
 
 ### Added
 
@@ -251,7 +253,8 @@ No API or rendering changes.
 
 Initial release.
 
-[Unreleased]: https://github.com/ValentinRio/wgpu-font-renderer/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/ValentinRio/wgpu-font-renderer/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/ValentinRio/wgpu-font-renderer/compare/v0.2.1...v1.0.0
 [0.2.1]: https://github.com/ValentinRio/wgpu-font-renderer/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ValentinRio/wgpu-font-renderer/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ValentinRio/wgpu-font-renderer/releases/tag/v0.1.0
