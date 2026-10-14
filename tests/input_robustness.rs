@@ -365,11 +365,12 @@ fn references_at_the_depth_limit_are_counted() {
 #[ignore = "scans fonts listed in ROBUSTNESS_CORPUS (newline-separated paths)"]
 fn corpus_fonts_stay_within_limits() {
     let all: String = (0..0x11_0000).filter_map(char::from_u32).collect();
+    // Covers every Unicode-mapped glyph plus glyph zero, not unmapped glyph IDs.
     let list = std::env::var("ROBUSTNESS_CORPUS").unwrap();
     for path in list.lines().filter(|l| !l.is_empty()) {
         let bytes = std::fs::read(path).unwrap();
         let result = internals::check_font_bytes(&bytes, &all);
         eprintln!("{path}: {:?}", result.as_ref().map_err(|e| e.to_string()));
-        assert!(!too_complex(result), "{path}");
+        assert!(result.is_ok(), "{path}");
     }
 }

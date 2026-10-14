@@ -9,7 +9,7 @@ below 1.0, a minor bump (0.x) may break the API.
 
 ### Changed
 
-- Loading never panics on malformed glyph outlines and enforces per-glyph work limits, rejecting a glyph past them with the new `LoadingError::GlyphTooComplex`; a valid but very complex glyph can be refused. A `VARC` table is ignored in favour of `glyf` or CFF outlines. Glyphs whose bounding box spans more than 32,767 font units, which OpenType allows, now load.
+- Loading checks glyph dimensions and enforces per-glyph work limits, found by a seeded robustness test over random and corrupted fonts, rejecting a glyph past them with the new `LoadingError::GlyphTooComplex`; a valid but very complex glyph can be refused. A `VARC` table is ignored in favour of `glyf` or CFF outlines. Glyphs whose bounding box spans more than 32,767 font units, which OpenType allows, now load.
 - Grayscale text now honours colour alpha, including the LCD fallback; in 0.2 it ignored alpha. LCD continues to scale coverage by alpha. Alpha one preserves existing output.
 
 ### Breaking

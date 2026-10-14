@@ -109,10 +109,12 @@ work limits before and while drawing an outline: at most 65,535 points and
 16,384 contours after composite expansion, 4,096 composite component references
 and 16,384 encoded segments. A glyph past a limit fails the load with
 `LoadingError::GlyphTooComplex`. The limits are loader policy, not font
-validity rules, so a valid but very complex glyph can be refused; every glyph of
-DejaVu, Liberation, Roboto, Cantarell and a Noto Serif SC subset loads within
-them. A seeded robustness test over random and corrupted fonts checks that
-loading returns a font or an error and does not panic in this crate. Two limits
+validity rules, so a valid but very complex glyph can be refused. Measured: the
+outlines of every Unicode-mapped character plus glyph zero load within them for
+28 fonts (DejaVu and Liberation families, Noto Color Emoji, Roboto, Cantarell and
+a Noto Serif SC subset); unmapped glyphs and full CJK fonts were not measured.
+A seeded robustness test over random and corrupted fonts found no panic in this
+crate after the fixes above; that is tested behaviour, not a proof. Two limits
 remain upstream: swash's `cmap` lookup uses unchecked
 arithmetic, so a crafted `cmap` panics in debug builds (release builds map the
 character to a wrong glyph instead), and skrifa bounds CFF subroutine nesting
