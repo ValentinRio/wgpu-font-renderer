@@ -7,7 +7,7 @@ API changes come only with a major version.
 
 ## [Unreleased]
 
-## [1.1.0] - Unreleased
+## [1.1.0] - 2026-10-15
 
 ### Added
 
@@ -289,8 +289,8 @@ No API or rendering changes.
 
 Initial release.
 
-[Unreleased]: https://github.com/ValentinRio/wgpu-font-renderer/compare/v1.0.0...HEAD
-[1.1.0]: https://github.com/ValentinRio/wgpu-font-renderer/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/ValentinRio/wgpu-font-renderer/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/ValentinRio/wgpu-font-renderer/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/ValentinRio/wgpu-font-renderer/compare/v0.2.1...v1.0.0
 [0.2.1]: https://github.com/ValentinRio/wgpu-font-renderer/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ValentinRio/wgpu-font-renderer/compare/v0.1.0...v0.2.0
