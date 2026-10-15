@@ -136,23 +136,14 @@ impl Font {
         let ascender_delta = metrics.ascent - f32::from(face_ascender(&face));
         let font = FontRef { data: &data, offset, key };
         let ids = closure_glyph_ids(&face, font, &characters)?;
-        let checkpoint = atlas.checkpoint();
-        atlas.begin_load();
+        let mut load = atlas.begin_load();
         let glyph_cache = create_glyph_cache(device, encoder, queue, &face,
-            ids.into_iter(), (&location).into(), atlas);
-        let glyph_cache = match glyph_cache {
-            Ok(cache) => cache,
-            Err(error) => { atlas.restore(checkpoint); return Err(error); }
-        };
-        if !atlas.commit(device, queue) {
-            atlas.restore(checkpoint);
-            return Err(LoadingError::AtlasFull(
-                glyph_cache
-                    .iter()
-                    .filter(|(_, g)| g.allocation.size() > 0)
-                    .map(|(&id, _)| crate::GlyphId(id as u16))
-                    .collect(),
-            ));
+            ids.into_iter(), (&location).into(), &mut load)?;
+        if !load.finish(device, queue) {
+            // The packed batch could not be committed: none of its glyphs were uploaded.
+            return Err(LoadingError::AtlasFull(glyph_cache.iter()
+                .filter(|(_, g)| g.allocation.size() > 0)
+                .map(|(&id, _)| crate::GlyphId(id as u16)).collect()));
         }
         Ok(Self { data, characters, location, axes: axis_info, settings, metrics, ascender_delta,
             index: 0, offset, key, glyph_cache })

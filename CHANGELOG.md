@@ -19,24 +19,29 @@ API changes come only with a major version.
   Atlas exhaustion and active LCD fall back to analytic drawing.
 - Bitmap resources are lazy: analytic-only renderers create no bitmap texture or
   pipelines. Unchanged cached paragraphs reuse instances without uploads or submits.
-- Three-way glyphon benchmark includes cached GPU/CPU, zoom, memory and quality rows.
 
 ### Changed
 
 - The outline atlas packs only used outline/y-band payloads into 512-wide RGBA32Float
   rows, with at most one 8 KiB row of slack per physical array layer. Stable logical
-  addresses use a small offset buffer; successful loads copy existing payloads,
-  while failed loads leave earlier resources intact. Logical streams retain their
-  16 MiB cap and device array-layer limits.
+  allocations carry permanent packed addresses resolved into instance data, with
+  no storage bindings or per-fetch indirection. Loads append into spare capacity;
+  only growth copies existing payloads. A drop guard rolls back failed or unwinding
+  loads. Logical streams retain their 16 MiB cap and device array-layer limits.
 - Stop storing unread x-band lists and low thresholds; y-band headers and descriptors
   now occupy one texel each. Coverage maths and y-band membership are unchanged.
 - Renderer instance buffers grow to exactly the required byte size and retain their
-  high-water capacity. The memory benchmark splits outlines, bitmaps and buffers,
-  and reports actual outline/band bytes written per loaded font.
+  high-water capacity.
 
 - Coverage is now the analytic box integral of signed winding over each pixel, replacing centre-ray weighting. Almost every anti-aliased pixel changes slightly.
 
 ### Fixed
+
+- Restore analytic rendering speed by removing the GPU atlas offset table and
+  avoiding integer division for single-layer textures; coverage maths is unchanged.
+- Cache keys include the actual rasterized y phase after vertical shaping, and
+  entries retain their raster dimensions. Evict unused bitmaps before growing;
+  cap the resident R8 atlas at 16 MiB and release capacity on reset.
 
 - Coverage is continuous at curve endpoints and extrema, so moving text by whole pixels no longer changes how a glyph looks (within one readback byte in the grayscale and RGB tests). In 1.0, moving a glyph one pixel vertically could change a pixel by up to 17/255.
 - LCD glyph quads now cover the full subpixel filter, so the outer colour fringe of a glyph whose edge falls less than a third of a pixel into its first column is no longer clipped.

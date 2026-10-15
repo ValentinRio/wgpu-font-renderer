@@ -37,7 +37,6 @@ struct VertexOutput {
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var atlas_sampler: sampler;
 @group(1) @binding(0) var atlas_texture: texture_2d_array<f32>;
-@group(1) @binding(1) var<storage, read> atlas_layers: array<u32>;
 
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
@@ -80,9 +79,14 @@ fn atlas_address() -> AtlasAddress {
 }
 
 fn atlas_texel(offset: i32, layer: i32, address: AtlasAddress) -> vec4<f32> {
-    let texel = (atlas_layers[layer] + u32(offset)) >> 2u;
+    let texel = u32(offset) >> 2u;
     let row = texel >> address.shift;
     let layers = textureNumLayers(atlas_texture);
+    // Most stores fit one physical layer. Keep integer division out of their
+    // curve loop; the packed address was already resolved by CPU preparation.
+    if layers == 1u {
+        return textureLoad(atlas_texture, vec2<i32>(i32(texel & address.mask), i32(row)), 0, 0);
+    }
     return textureLoad(atlas_texture,
         vec2<i32>(i32(texel & address.mask), i32(row / layers)), i32(row % layers), 0);
 }

@@ -2,29 +2,37 @@ use super::*;
 use etagere::{size2, Allocation, BucketedAtlasAllocator};
 use std::collections::{HashMap, HashSet};
 
-type Key = (crate::FontId, u16, u32, u8);
+type Key = (crate::FontId, u16, u32, u8, u32);
 
-pub(super) fn key(p: &Paragraph, glyph: u16, x: f32) -> Key {
+// 16 MiB of resident R8 coverage (4096²). Growth copies temporarily retain
+// replaced textures until their queued GPU work completes.
+const MAX_BYTES: u32 = 16 * 1024 * 1024;
+fn max_dimension(device_limit: u32) -> u32 {
+    device_limit.min(MAX_BYTES.isqrt())
+}
+
+fn origin(instance: &Instance, pen: [f32; 2]) -> [f32; 2] {
+    [
+        instance._position[0] + ((pen[0] * 4.).floor() / 4. - pen[0]),
+        instance._position[1] + (pen[1].round() - pen[1]),
+    ]
+}
+pub(super) fn key(p: &Paragraph, glyph: u16, instance: &Instance, pen: [f32; 2]) -> Key {
+    // Include the phase actually rasterized, after baseline snapping AND shaping.
+    // Whole-pixel vertical offsets may share coverage; fractional mark offsets cannot.
+    let y = origin(instance, pen)[1];
     (
         p.font(),
         glyph,
         p.size().to_bits(),
-        ((x * 4.).floor().rem_euclid(4.)) as u8,
+        ((pen[0] * 4.).floor().rem_euclid(4.)) as u8,
+        (y - y.floor()).to_bits(),
     )
 }
-pub(super) fn used_keys(paragraphs: &[&Paragraph], lcd: bool) -> HashSet<Key> {
-    let mut used = HashSet::new();
-    for p in paragraphs
-        .iter()
-        .filter(|p| !lcd && p.render_mode() == RenderMode::Cached)
-    {
-        let mut x = p.position()[0];
-        for g in p.glyphs() {
-            used.insert(key(p, g.glyph.0, x + g.offset[0]));
-            x += g.advance;
-        }
-    }
-    used
+#[derive(Clone, Copy)]
+struct Entry {
+    allocation: Allocation,
+    dims: [f32; 2],
 }
 
 pub(super) struct BitmapCache {
@@ -41,7 +49,7 @@ pub(super) struct BitmapCache {
     // Bucketed allocation supports in-place growth while retaining coordinates.
     // Eviction releases unused buckets; pinned buckets may force analytic fallback.
     allocator: BucketedAtlasAllocator,
-    entries: HashMap<Key, Allocation>,
+    entries: HashMap<Key, Entry>,
     pub size: u32,
     pub max: u32,
 }
@@ -89,7 +97,7 @@ impl BitmapCache {
         self.entries.len()
     }
     pub fn reset(&mut self, device: &Device, initial: u32, max: u32) {
-        self.max = max.clamp(1, device.limits().max_texture_dimension_2d.min(32768));
+        self.max = max.clamp(1, max_dimension(device.limits().max_texture_dimension_2d));
         self.size = initial.clamp(1, self.max);
         let (texture, view, binding, constants) = Self::texture(
             device,
@@ -102,7 +110,7 @@ impl BitmapCache {
         self.view = view;
         self.binding = binding;
         self.constants = constants;
-        self.entries.clear();
+        self.entries = HashMap::new();
         self.allocator = BucketedAtlasAllocator::new(size2(self.size as i32, self.size as i32));
     }
 
@@ -113,12 +121,19 @@ impl BitmapCache {
         textures: &BindGroupLayout,
         sampler: &wgpu::Sampler,
     ) -> Self {
+        let source = include_str!("../shader.wgsl");
+        let vertex_entry = "@vertex\nfn vs_main";
+        assert_eq!(
+            source.matches(vertex_entry).count(),
+            1,
+            "bitmap shader requires exactly one analytic vertex entry"
+        );
         let shader = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("Bitmap coverage shader"),
             source: ShaderSource::Wgsl(
                 format!(
                     "{}\n{}",
-                    include_str!("../shader.wgsl").replace("@vertex\nfn vs_main", "fn vs_main"),
+                    source.replacen(vertex_entry, "fn vs_main", 1),
                     SHADER
                 )
                 .into(),
@@ -187,8 +202,7 @@ impl BitmapCache {
         desc.vertex.entry_point = Some("vs_clear");
         desc.fragment.as_mut().unwrap().entry_point = Some("fs_clear");
         let clear = device.create_render_pipeline(&desc);
-        // Etagere uses u16 coordinates and i32 area accounting.
-        let max = device.limits().max_texture_dimension_2d.min(32768);
+        let max = max_dimension(device.limits().max_texture_dimension_2d);
         let size = 512.min(max);
         let (texture, view, binding, constant_binding) =
             Self::texture(device, size, constants, textures, sampler);
@@ -238,24 +252,13 @@ impl BitmapCache {
             dimension: Some(TextureViewDimension::D2Array),
             ..Default::default()
         });
-        let offsets = device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("Bitmap unused layer offset"),
-            usage: BufferUsages::STORAGE,
-            contents: bytemuck::cast_slice(&[0u32]),
-        });
         let binding = device.create_bind_group(&BindGroupDescriptor {
             label: Some("Bitmap atlas binding"),
             layout: textures,
-            entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::TextureView(&array),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: offsets.as_entire_binding(),
-                },
-            ],
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: BindingResource::TextureView(&array),
+            }],
         });
         let buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("Bitmap uniforms buffer"),
@@ -298,11 +301,7 @@ impl BitmapCache {
         if !pen.iter().all(|x| x.is_finite()) {
             return None;
         }
-        let snapped = [(pen[0] * 4.).floor() / 4., pen[1].round()];
-        let origin = [
-            instance._position[0] + (snapped[0] - pen[0]),
-            instance._position[1] + (snapped[1] - pen[1]),
-        ];
+        let origin = origin(&instance, pen);
         let min = [(origin[0] - 0.5).floor(), (origin[1] - 0.5).floor()];
         let dims = [
             (origin[0] + instance._size[0] + 0.5).ceil() - min[0],
@@ -314,11 +313,23 @@ impl BitmapCache {
         {
             return None;
         }
-        let allocation = if let Some(a) = self.entries.get(&key) {
-            *a
+        let entry = if let Some(entry) = self.entries.get(&key) {
+            *entry
         } else {
             let request = size2(dims[0] as i32 + 2, dims[1] as i32 + 2);
             let mut allocation = self.allocator.allocate(request);
+            // Release previous-frame coverage before retaining a larger texture.
+            if allocation.is_none() {
+                self.entries.retain(|k, entry| {
+                    if used.contains(k) {
+                        true
+                    } else {
+                        self.allocator.deallocate(entry.allocation.id);
+                        false
+                    }
+                });
+                allocation = self.allocator.allocate(request);
+            }
             while allocation.is_none() && self.size < self.max {
                 let next = (self.size * 2).min(self.max);
                 let (texture, view, binding, constants) = Self::texture(
@@ -348,19 +359,12 @@ impl BitmapCache {
                 self.allocator.grow(size2(next as i32, next as i32));
                 allocation = self.allocator.allocate(request);
             }
-            if allocation.is_none() {
-                self.entries.retain(|k, a| {
-                    if used.contains(k) {
-                        true
-                    } else {
-                        self.allocator.deallocate(a.id);
-                        false
-                    }
-                });
-                allocation = self.allocator.allocate(request);
-            }
             let a = allocation?;
-            self.entries.insert(key, a);
+            let entry = Entry {
+                allocation: a,
+                dims,
+            };
+            self.entries.insert(key, entry);
             let mut raster = instance;
             raster._position = [origin[0] - min[0] + 1., origin[1] - min[1] + 1.];
             // Coverage ignores colour; carry the local viewport extent here.
@@ -371,13 +375,13 @@ impl BitmapCache {
                 0.,
             ];
             jobs.push((raster, a));
-            a
+            entry
         };
         instance._position = min;
-        instance._size = dims;
+        instance._size = entry.dims;
         instance._position_in_atlas = [
-            allocation.rectangle.min.x as f32 + 1.,
-            allocation.rectangle.min.y as f32 + 1.,
+            entry.allocation.rectangle.min.x as f32 + 1.,
+            entry.allocation.rectangle.min.y as f32 + 1.,
         ];
         Some(instance)
     }
@@ -436,5 +440,55 @@ impl BitmapCache {
             pass.set_pipeline(&self.bake);
             pass.draw_indexed(0..6, 0, i as u32..i as u32 + 1);
         }
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    #[test]
+    fn byte_cap_applies_even_above_device_test_overrides() {
+        assert_eq!(max_dimension(32768), 4096);
+        assert_eq!(max_dimension(128), 128);
+        assert_eq!(max_dimension(u32::MAX).pow(2), MAX_BYTES);
+    }
+    #[test]
+    fn cache_hit_uses_resident_dimensions() {
+        let Some((device, queue, _)) = crate::atlas_tests::common::gpu() else {
+            return;
+        };
+        let mut store = FontStore::new(&device);
+        let font = store
+            .load_from_bytes(
+                &device,
+                &queue,
+                include_bytes!("../../fonts/Roboto-Regular.ttf"),
+                "g",
+            )
+            .unwrap();
+        let mut p = crate::TypeWriter::new()
+            .shape_text(&store, font, [12., 20.], 24., [0., 0., 0., 1.], "g")
+            .unwrap();
+        p.set_render_mode(RenderMode::Cached);
+        let mut renderer = TextRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm, &store);
+        renderer.prepare(&device, &queue, [&p], &store);
+        let bitmap = renderer.bitmap.as_mut().unwrap();
+        let (&key, &entry) = bitmap.entries.iter().next().unwrap();
+        let mut request = renderer.instances[0];
+        // Request geometry must never override the dimensions of a resident bitmap.
+        request._size = [1., 1.];
+        let mut jobs = Vec::new();
+        let hit = bitmap
+            .glyph(
+                &device,
+                &mut None,
+                &mut jobs,
+                &HashSet::from([key]),
+                key,
+                (request, [12., 20.]),
+            )
+            .unwrap();
+        assert_eq!(hit._size, entry.dims);
+        assert!(jobs.is_empty());
     }
 }

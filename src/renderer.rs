@@ -177,16 +177,6 @@ impl TextRenderer {
                     },
                     count: None,
                 },
-                BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: BindingType::Buffer {
-                        ty: BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: BufferSize::new(4),
-                    },
-                    count: None,
-                },
             ],
         });
 
@@ -273,10 +263,6 @@ impl TextRenderer {
                     binding: 0,
                     resource: BindingResource::TextureView(atlas.view()),
                 },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: atlas.offsets_buffer().as_entire_binding(),
-                },
             ],
         });
 
@@ -347,10 +333,6 @@ impl TextRenderer {
                         binding: 0,
                         resource: BindingResource::TextureView(atlas.view()),
                     },
-                    BindGroupEntry {
-                        binding: 1,
-                        resource: atlas.offsets_buffer().as_entire_binding(),
-                    },
                 ],
             });
             self.texture_version = atlas.version;
@@ -370,7 +352,7 @@ impl TextRenderer {
         }
         self.prepared_cached.clear();
         if has_cached { self.prepared_cached.extend(paragraphs.iter().map(|p| (*p).clone())); }
-        let used = bitmap::used_keys(&paragraphs, !has_cached);
+        let mut requests = Vec::new();
         let mut encoder = None;
         let mut jobs = Vec::new();
         self.cached.clear();
@@ -405,35 +387,24 @@ impl TextRenderer {
                         _left_side_bearing: glyph.left_side_bearing as f32,
                         _font_size: paragraph.size(),
                         _size: size,
-                        _position_in_atlas: [glyph.allocation.position()[0] as f32, glyph.allocation.position()[1] as f32],
+                        _position_in_atlas: [glyph.allocation.packed_position()[0] as f32, glyph.allocation.packed_position()[1] as f32],
                         _size_in_atlas: glyph.allocation.size(),
                         _units_per_em: units_per_em,
                         _layer: glyph.allocation.layer() as u32,
                         _color: paragraph.color(),
                         _bands: [
-                            glyph.bands.position()[0] as f32,
-                            glyph.bands.position()[1] as f32,
+                            glyph.bands.packed_position()[0] as f32,
+                            glyph.bands.packed_position()[1] as f32,
                             glyph.bands.layer() as f32,
                         ],
                     };
 
-                    let cached = paragraph.render_mode() == RenderMode::Cached && !self.lcd_active();
-                    let converted = if cached {
-                        self.bitmap.as_mut().and_then(|bitmap| {
-                            bitmap.glyph(
-                                device,
-                                &mut encoder,
-                                &mut jobs,
-                                &used,
-                                bitmap::key(paragraph, shaped.glyph.0, glyph_x + shaped.offset[0]),
-                                (instance, [glyph_x + shaped.offset[0], baseline]),
-                            )
-                        })
-                    } else {
-                        None
-                    };
-                    self.cached.push(converted.is_some());
-                    self.instances.push(converted.unwrap_or(instance));
+                    if paragraph.render_mode() == RenderMode::Cached && !self.lcd_active() {
+                        let pen = [glyph_x + shaped.offset[0], baseline];
+                        requests.push((self.instances.len(), bitmap::key(paragraph, shaped.glyph.0, &instance, pen), pen));
+                    }
+                    self.cached.push(false);
+                    self.instances.push(instance);
                 }
                 
                 glyph_x += shaped.advance;
@@ -442,6 +413,16 @@ impl TextRenderer {
 
         self.paragraph_offsets.push(self.instances.len() as u32);
 
+        if let Some(bitmap) = self.bitmap.as_mut().filter(|_| has_cached) {
+            let used = requests.iter().map(|&(_, key, _)| key).collect();
+            for (index, key, pen) in requests {
+                if let Some(instance) = bitmap.glyph(device, &mut encoder, &mut jobs, &used,
+                    key, (self.instances[index], pen)) {
+                    self.instances[index] = instance;
+                    self.cached[index] = true;
+                }
+            }
+        }
         if !jobs.is_empty() {
             if let Some(bitmap) = &self.bitmap {
                 bitmap.rasterize(device, encoder.get_or_insert_with(|| device.create_command_encoder(&Default::default())), &jobs, &self.texture, &self.vertices, &self.indices);

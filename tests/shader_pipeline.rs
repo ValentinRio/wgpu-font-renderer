@@ -147,8 +147,8 @@ fn compare_shader_pixels() {
             let a = &glyph.allocation;
             let b = &glyph.bands;
             let input = analytic::glyph_input(
-                (a.position(), a.size(), a.layer()),
-                (b.position(), b.layer()),
+                (a.packed_position(), a.size(), a.layer()),
+                (b.packed_position(), b.layer()),
                 1.,
             );
             let body = format!(
@@ -214,8 +214,8 @@ fn analytic_inside_opaque() {
     let a = &glyph.allocation;
     let b = &glyph.bands;
     let input = analytic::glyph_input(
-        (a.position(), a.size(), a.layer()),
-        (b.position(), b.layer()),
+        (a.packed_position(), a.size(), a.layer()),
+        (b.packed_position(), b.layer()),
         1.,
     );
     let body = format!(

@@ -114,14 +114,14 @@ fn wgsl_is_continuous_at_endpoints_and_interior_extrema() {
                         let b = &glyph.bands;
                         let mut inputs = vec![
                             [
-                                a.position()[0] as f32,
-                                a.position()[1] as f32,
+                                a.packed_position()[0] as f32,
+                                a.packed_position()[1] as f32,
                                 a.size() as f32,
                                 a.layer() as f32,
                             ],
                             [
-                                b.position()[0] as f32,
-                                b.position()[1] as f32,
+                                b.packed_position()[0] as f32,
+                                b.packed_position()[1] as f32,
                                 b.layer() as f32,
                                 0.,
                             ],

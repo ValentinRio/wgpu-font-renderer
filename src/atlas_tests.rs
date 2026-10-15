@@ -108,7 +108,7 @@ fn placement_regression(prefix: u32, band_prefix: u32, check_path: bool) {
             .unwrap();
             queue.submit(Some(encoder.finish()));
             let glyph = &font.glyph_cache[&font.face().charmap().map(c).unwrap().to_u32()];
-            let [x, y] = glyph.allocation.position();
+            let [x, _] = glyph.allocation.position();
             let layer = glyph.allocation.layer();
             if padding == atlas::SIZE * atlas::SIZE {
                 assert!(layer > 0);
@@ -117,13 +117,15 @@ fn placement_regression(prefix: u32, band_prefix: u32, check_path: bool) {
                 assert!(x + glyph.allocation.size() > atlas::SIZE);
             }
             let bands = &glyph.bands;
-            let [bx, by] = bands.position();
+            let [bx, _] = bands.position();
             if band_padding > 0 {
                 assert!(
                     bx > 0 && bx + bands.size() > atlas::SIZE,
                     "glyph {c}: band allocation must start at a nonzero column and wrap"
                 );
             }
+            let [x, y] = glyph.allocation.packed_position();
+            let [bx, by] = bands.packed_position();
             let shader = include_str!("shader.wgsl")
                 .replace("@fragment\nfn fs_main", "fn coverage")
                 .replace(

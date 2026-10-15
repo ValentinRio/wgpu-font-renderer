@@ -45,8 +45,8 @@ pub(super) fn pixels(
         )
         .unwrap();
     queue.submit(Some(encoder.finish()));
-    let [x, y] = a.position();
-    let [bx, by] = b.position();
+    let [x, y] = a.packed_position();
+    let [bx, by] = b.packed_position();
     let mut shader = include_str!("../../src/shader.wgsl").to_owned();
     if !weighted {
         // Keep the old unweighted centre-ray baseline for the thin-stem

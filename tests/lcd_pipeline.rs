@@ -378,9 +378,9 @@ fn c6_lcd_bands_match_full_list_and_are_taken() {
         let font = wgpu_font_renderer::internals::font(&store, key).unwrap();
         for c in "igB@é".chars() {
             let glyph = &font.glyph_cache[&font.face().charmap().map(c).unwrap().to_u32()];
-            let [x, y] = glyph.allocation.position();
+            let [x, y] = glyph.allocation.packed_position();
             let bands = &glyph.bands;
-            let [bx, by] = bands.position();
+            let [bx, by] = bands.packed_position();
             let body = format!(
                 r#"
                 var input: VertexOutput;

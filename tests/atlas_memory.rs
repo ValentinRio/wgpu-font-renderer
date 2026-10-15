@@ -199,3 +199,144 @@ fn font_and_variation_growth_preserve_earlier_pixels() {
     .iter()
     .any(|&v| v < 255));
 }
+
+#[test]
+fn growth_to_depth_two_matches_fresh_fonts_and_variation() {
+    use wgpu_font_renderer::{TextRenderer, TypeWriter};
+    let Some((device, queue, _)) = common::gpu() else {
+        return;
+    };
+    let text = "AgjypfQ@W";
+    // The reference puts the variable font and its variation before Roboto.
+    let mut fresh = FontStore::new(&device);
+    let reference_base = fresh
+        .load_from_bytes(
+            &device,
+            &queue,
+            include_bytes!("../fonts/Cantarell-VF.otf"),
+            LATIN,
+        )
+        .unwrap();
+    let reference_variation = fresh
+        .load_variation(&device, &queue, reference_base, &[(*b"wght", 700.)])
+        .unwrap();
+    let reference_latin = fresh
+        .load_from_bytes(
+            &device,
+            &queue,
+            include_bytes!("../fonts/Roboto-Regular.ttf"),
+            LATIN,
+        )
+        .unwrap();
+    let total_rows = internals::atlas_written_bytes(&fresh).div_ceil(8192) as u32;
+    let max_rows = total_rows.div_ceil(2);
+    let mut store = FontStore::new(&device);
+    internals::set_atlas_height_limit(&mut store, max_rows);
+    let latin = store
+        .load_from_bytes(
+            &device,
+            &queue,
+            include_bytes!("../fonts/Roboto-Regular.ttf"),
+            LATIN,
+        )
+        .unwrap();
+    assert_eq!(
+        internals::atlas_view(&store)
+            .texture()
+            .depth_or_array_layers(),
+        1
+    );
+    let mut writer = TypeWriter::new();
+    let mut renderer = TextRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm, &store);
+    let a = writer
+        .shape_text(
+            &store,
+            latin,
+            [12.25, 20.3],
+            32.,
+            [0.2, 0.4, 0.7, 0.8],
+            text,
+        )
+        .unwrap();
+    renderer.prepare(&device, &queue, [&a], &store);
+    let before = draw::draw_pixels(
+        &device,
+        &queue,
+        &mut renderer,
+        [384, 128],
+        wgpu::Color::WHITE,
+    );
+    let base = store
+        .load_from_bytes(
+            &device,
+            &queue,
+            include_bytes!("../fonts/Cantarell-VF.otf"),
+            LATIN,
+        )
+        .unwrap();
+    let variation = store
+        .load_variation(&device, &queue, base, &[(*b"wght", 700.)])
+        .unwrap();
+    assert_eq!(
+        internals::atlas_view(&store)
+            .texture()
+            .depth_or_array_layers(),
+        2
+    );
+    assert_packed(&store);
+    // Nonzero outline/band payload from the earlier font spans both physical layers.
+    assert!(internals::font(&store, latin)
+        .unwrap()
+        .glyph_cache
+        .values()
+        .any(|g| g.bands.packed_position()[1] > 1));
+    renderer.prepare(&device, &queue, [&a], &store);
+    assert_eq!(
+        before,
+        draw::draw_pixels(
+            &device,
+            &queue,
+            &mut renderer,
+            [384, 128],
+            wgpu::Color::WHITE
+        )
+    );
+    let mut reference_renderer =
+        TextRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm, &fresh);
+    for (font, reference_font, text) in [
+        (latin, reference_latin, text),
+        (variation, reference_variation, text),
+    ] {
+        let p = writer
+            .shape_text(&store, font, [12.25, 20.3], 32., [0.2, 0.4, 0.7, 0.8], text)
+            .unwrap();
+        let reference = writer
+            .shape_text(
+                &fresh,
+                reference_font,
+                [12.25, 20.3],
+                32.,
+                [0.2, 0.4, 0.7, 0.8],
+                text,
+            )
+            .unwrap();
+        renderer.prepare(&device, &queue, [&p], &store);
+        reference_renderer.prepare(&device, &queue, [&reference], &fresh);
+        assert_eq!(
+            draw::draw_pixels(
+                &device,
+                &queue,
+                &mut renderer,
+                [384, 128],
+                wgpu::Color::WHITE
+            ),
+            draw::draw_pixels(
+                &device,
+                &queue,
+                &mut reference_renderer,
+                [384, 128],
+                wgpu::Color::WHITE
+            )
+        );
+    }
+}

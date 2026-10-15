@@ -49,8 +49,11 @@
 //! limit. Their used prefixes are packed together into a 512-texel-wide RGBA32Float
 //! array. Rows are distributed across physical layers, leaving at most one 8 KiB
 //! row unused per physical layer. The empty atlas uses one row, not full layers.
-//! A small storage buffer maps stable logical addresses into packed texture rows.
-//! A successful load replaces the texture and copies earlier payloads; growth
+//! Instances carry permanent packed addresses; neither rendering path uses storage
+//! buffers. Loads append in place when there is room; only growth replaces the
+//! texture and copies earlier payloads. Packed addressing is capped at u32::MAX
+//! float slots (just under 16 GiB), as well as device limits. On commit-time
+//! exhaustion, `AtlasFull` names the entire rejected outlined batch. Growth
 //! temporarily retains both textures. Failed loads discard staged writes and
 //! leave earlier fonts, allocations and GPU resources intact.
 //!
@@ -82,12 +85,15 @@
 //! function into a padded R8 atlas. Cached pens snap x down to a quarter pixel.
 //! Each line’s baseline (paragraph y plus font ascent) snaps to the nearest whole
 //! pixel, with the same vertical correction applied to all its glyphs. Exact sizes
-//! and font variations have separate entries.
-//! The atlas grows by doubling and copying existing coverage, evicts glyphs unused
-//! in the current preparation at its limit, and draws analytically when full.
+//! and font variations have separate entries, as do fractional vertical shaping phases.
+//! Unused coverage is evicted before growth. The R8 atlas doubles up to 16 MiB
+//! (4096², also bounded by device limits), then falls back to analytic drawing.
+//! Growth copies temporarily retain replaced textures until queued GPU work completes.
+//! Resetting the cache releases its retained capacity.
 //!
-//! `RenderMode::Analytic` remains the default, preserving exact positions and existing
-//! output. Prefer it for scaling, animation, large sizes and LCD. When LCD is active,
+//! `RenderMode::Analytic` remains the default and preserves exact positions.
+//! Its box-integrated coverage differs from version 1.0, as described in the changelog.
+//! Prefer it for scaling, animation, large sizes and LCD. When LCD is active,
 //! Cached requests draw analytically. Bitmap coverage uses unfiltered texel loads
 //! and scales by the paragraph colour's alpha.
 //!
@@ -224,8 +230,8 @@ pub mod internals {
     pub fn font(store: &crate::FontStore, id: crate::FontId) -> Option<&Font> {
         store.get(id)
     }
-    /// Atlas texture and logical-address buffer for shader probes.
-    pub fn atlas_resources(store: &crate::FontStore) -> (&wgpu::TextureView, &wgpu::Buffer) {
+    /// Atlas texture for shader probes using packed allocation coordinates.
+    pub fn atlas_resources(store: &crate::FontStore) -> &wgpu::TextureView {
         store.atlas().resources()
     }
     /// Number of bytes of outline and band payload uploaded, excluding row padding.
@@ -245,6 +251,12 @@ pub mod internals {
     /// Inspect the current atlas view.
     pub fn atlas_view(store: &crate::FontStore) -> &wgpu::TextureView {
         store.atlas().view()
+    }
+    /// Current atlas resource version (changes only on texture replacement).
+    pub fn atlas_version(store: &crate::FontStore) -> usize { store.atlas().version }
+    /// Force a small physical row limit to exercise array growth in tests.
+    pub fn set_atlas_height_limit(store: &mut crate::FontStore, rows: u32) {
+        store.set_atlas_height_limit(rows);
     }
     /// Inspect the number of logical atlas layers.
     pub fn atlas_layer_count(store: &crate::FontStore) -> usize {

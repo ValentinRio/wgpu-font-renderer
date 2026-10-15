@@ -94,8 +94,12 @@ impl FontStore {
     /// one logical layer or allocation exceeds the device texture array layer limit.
     /// Logical layers hold up to 16 MiB each. Only their used prefixes occupy GPU
     /// texture storage, with at most one 8 KiB row of slack per physical layer.
-    /// Successful loads copy earlier data into a right-sized texture; both textures
-    /// coexist temporarily. Failed loads leave existing resources and fonts intact.
+    /// Packed addresses use u32 float slots: at most 4,294,967,295 floats
+    /// (just under 16 GiB), additionally bounded by device texture limits.
+    /// Loads append in place when there is room; growth copies existing data.
+    /// Failed loads leave existing resources and fonts intact. On commit-time
+    /// exhaustion, `AtlasFull` names every outlined glyph in the rejected atomic
+    /// batch, since none of that batch was uploaded.
     /// Device and queue must belong together; GPU failures follow wgpu validation.
     /// Outline coordinates in the atlas are font units, not screen pixels.
     pub fn load_from_bytes(
@@ -172,6 +176,11 @@ impl FontStore {
         queue.submit(Some(encoder.finish()));
     }
 
+    /// Restrict physical rows for atlas growth tests.
+    #[cfg(feature = "unstable-internals")]
+    pub(crate) fn set_atlas_height_limit(&mut self, rows: u32) {
+        self.atlas.max_rows = rows.clamp(1, crate::atlas::SIZE);
+    }
     /// Borrow the shared GPU outline atlas for renderer construction.
     pub(crate) fn atlas(&self) -> &Atlas {
         &self.atlas
