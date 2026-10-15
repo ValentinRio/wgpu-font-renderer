@@ -11,6 +11,7 @@ pub enum Layer {
 
 impl Layer {
     /// Whether this layer has no allocator yet.
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         matches!(self, Layer::Empty)
     }

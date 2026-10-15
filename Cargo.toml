@@ -10,6 +10,11 @@ readme = "README.md"
 keywords = ["wgpu", "font", "text", "rendering", "gpu"]
 categories = ["graphics", "rendering"]
 
+[workspace]
+members = ["benches/vs-glyphon"]
+default-members = ["."]
+resolver = "2"
+
 [features]
 unstable-internals = []
 
@@ -21,6 +26,7 @@ skrifa = { version = "0.44", default-features = false, features = ["std"] }
 # Shaping and text analysis only; `scale` and `render` are unused.
 swash = { version = "0.2.10", default-features = false, features = ["std"] }
 bytemuck = { version = "1.25", features = ["derive"] }
+etagere = "0.3.0"
 
 [dev-dependencies]
 winit = "0.30"

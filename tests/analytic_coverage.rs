@@ -84,7 +84,7 @@ fn c3_preset_glyphs_match_method_and_box_error_bounds() {
             return vec4(analytic_coverage(input, vec3(0.)), 1.);
         "#);
         let source = format!("@group(0) @binding(2) var<uniform> probe_inputs: array<vec4<f32>, 9>;\n{source}");
-        let probe = probe::Probe::new(&device, wgpu_font_renderer::internals::atlas_view(&store), &source, None);
+        let probe = probe::Probe::new(&device, wgpu_font_renderer::internals::atlas_resources(&store), &source, None);
         // These frozen coverage bounds describe the original preset corpus.
         // GSUB closure can add other shapes; its drawing is tested in text_pipeline.
         let face = font.face();
@@ -105,8 +105,8 @@ fn c3_preset_glyphs_match_method_and_box_error_bounds() {
                     let a = &glyph.allocation;
                     assert!(a.size() > 0, "cached glyphs must not become empty probe tiles");
                     let b = &glyph.bands;
-                    inputs[tile * 3] = [a.position()[0] as f32, a.position()[1] as f32, a.size() as f32, a.layer() as f32];
-                    inputs[tile * 3 + 1] = [b.position()[0] as f32, b.position()[1] as f32, b.layer() as f32,
+                    inputs[tile * 3] = [a.packed_position()[0] as f32, a.packed_position()[1] as f32, a.size() as f32, a.layer() as f32];
+                    inputs[tile * 3 + 1] = [b.packed_position()[0] as f32, b.packed_position()[1] as f32, b.layer() as f32,
                         (glyph.bbox.width() as f32 * scale).ceil() + 2.];
                     inputs[tile * 3 + 2] = [glyph.left_side_bearing as f32 - 1. / scale, -1. / scale, scale,
                         (glyph.bbox.height() as f32 * scale).ceil() + 2.];
@@ -413,8 +413,8 @@ fn one_pixel_thin_glyph_maximum_matches_total_ink_area() {
         let a = &glyph.allocation;
         let b = &glyph.bands;
         let input = analytic::glyph_input(
-            (a.position(), a.size(), a.layer()),
-            (b.position(), b.layer()),
+            (a.packed_position(), a.size(), a.layer()),
+            (b.packed_position(), b.layer()),
             scale,
         );
         let source = analytic::source(&format!(
@@ -428,7 +428,7 @@ fn one_pixel_thin_glyph_maximum_matches_total_ink_area() {
         let pixels = probe::probe_pixels(
             &device,
             &queue,
-            wgpu_font_renderer::internals::atlas_view(&store),
+            wgpu_font_renderer::internals::atlas_resources(&store),
             &source,
         );
         let max = pixels

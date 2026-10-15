@@ -2,6 +2,9 @@
 fn main() {}
 
 #[cfg(not(target_arch = "wasm32"))]
+mod adapter;
+
+#[cfg(not(target_arch = "wasm32"))]
 fn main() {
     if let Err(error) = native::run() {
         eprintln!("shader benchmark: {error}");
@@ -760,8 +763,7 @@ pub(crate) mod native {
             .transpose()?;
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let adapter =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
+        let adapter = super::adapter::select(&instance)?;
         let info = adapter.get_info();
         let mut features = adapter.features() & wgpu::Features::TIMESTAMP_QUERY;
         if !features.is_empty() {

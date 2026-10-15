@@ -5,7 +5,7 @@ use swash::{
     text::{analyze, cluster::{Boundary, CharCluster, Parser, Token}, Codepoint, LineBreak, Script},
 };
 
-use crate::{FontId, FontStore};
+use crate::{FontId, FontStore, RenderMode};
 
 /// Failure to shape or lay out text.
 #[non_exhaustive]
@@ -131,9 +131,15 @@ pub struct Paragraph {
     /// RGBA color components, normally in 0..=1. Both LCD and
     /// grayscale (including the feature fallback) scale coverage by alpha.
     color: [f32; 4],
+    render_mode: RenderMode,
 }
 
 impl Paragraph {
+    /// Rendering strategy. Cached mode falls back to analytic coverage with LCD.
+    pub fn render_mode(&self) -> RenderMode { self.render_mode }
+    /// Select the rendering strategy.
+    pub fn set_render_mode(&mut self, mode: RenderMode) { self.render_mode = mode; }
+
     /// Create an empty run at a pixel anchor with a pixel-per-em size.
     /// Color is RGBA; no input validation is performed.
     pub fn new(font: FontId, position: [f32; 2], size: f32, color: [f32; 4]) -> Self {
@@ -144,6 +150,7 @@ impl Paragraph {
             size,
             font_key: font,
             color,
+            render_mode: RenderMode::default(),
         }
     }
 
@@ -273,9 +280,18 @@ pub struct TextBlock {
     offsets: Vec<[f32; 2]>,
     position: [f32; 2],
     size: [f32; 2],
+    render_mode: RenderMode,
 }
 
 impl TextBlock {
+    /// Rendering strategy for every line.
+    pub fn render_mode(&self) -> RenderMode { self.render_mode }
+    /// Select the rendering strategy for every line.
+    pub fn set_render_mode(&mut self, mode: RenderMode) {
+        self.render_mode = mode;
+        for line in &mut self.lines { line.set_render_mode(mode); }
+    }
+
     /// Read the lines in logical order.
     pub fn lines(&self) -> &[Paragraph] {
         &self.lines
@@ -511,6 +527,7 @@ impl TypeWriter {
             offsets,
             position,
             size: [width, height],
+            render_mode: RenderMode::default(),
         })
     }
 

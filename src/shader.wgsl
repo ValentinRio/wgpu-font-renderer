@@ -80,8 +80,15 @@ fn atlas_address() -> AtlasAddress {
 
 fn atlas_texel(offset: i32, layer: i32, address: AtlasAddress) -> vec4<f32> {
     let texel = u32(offset) >> 2u;
+    let row = texel >> address.shift;
+    let layers = textureNumLayers(atlas_texture);
+    // Most stores fit one physical layer. Keep integer division out of their
+    // curve loop; the packed address was already resolved by CPU preparation.
+    if layers == 1u {
+        return textureLoad(atlas_texture, vec2<i32>(i32(texel & address.mask), i32(row)), 0, 0);
+    }
     return textureLoad(atlas_texture,
-        vec2<i32>(i32(texel & address.mask), i32(texel >> address.shift)), layer, 0);
+        vec2<i32>(i32(texel & address.mask), i32(row / layers)), i32(row % layers), 0);
 }
 
 struct Roots {
@@ -378,12 +385,11 @@ fn analytic_coverage(input: VertexOutput, offsets: vec3<f32>) -> vec3<f32> {
         let header = i32(input.bands.y) * address.float_width + i32(input.bands.x);
         let layer = i32(input.bands.z);
         let bounds = atlas_texel(header, layer, address);
-        let counts = atlas_texel(header + 4, layer, address);
-        let first = clamp(i32(floor((low.y - bounds.y) / bounds.w)), 0, i32(counts.x) - 1);
-        let last = clamp(i32(floor((high.y - bounds.y) / bounds.w)), 0, i32(counts.x) - 1);
+        let first = clamp(i32(floor((low.y - bounds.x) / bounds.y)), 0, i32(bounds.z) - 1);
+        let last = clamp(i32(floor((high.y - bounds.x) / bounds.y)), 0, i32(bounds.z) - 1);
         var previous_high = -1e20;
         for (var band = first; band <= last; band += 1) {
-            let descriptor = atlas_texel(header + 8 + band * 8, layer, address);
+            let descriptor = atlas_texel(header + 4 + band * 4, layer, address);
             // Consecutive band lists overlap. A curve belongs to the first
             // visited list whose high bound reaches its control-hull minimum.
             let duplicate_y = previous_high;

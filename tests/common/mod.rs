@@ -12,6 +12,16 @@ pub fn gpu() -> Option<(wgpu::Device, wgpu::Queue, wgpu::SurfaceConfiguration)> 
 }
 
 pub fn gpu_with_lcd(enable_lcd: bool) -> Option<(wgpu::Device, wgpu::Queue, wgpu::SurfaceConfiguration)> {
+    gpu_with_limits(enable_lcd, wgpu::Limits::downlevel_defaults())
+}
+
+#[allow(dead_code)]
+pub fn gpu_without_storage() -> Option<(wgpu::Device, wgpu::Queue, wgpu::SurfaceConfiguration)> {
+    let limits = wgpu::Limits { max_storage_buffers_per_shader_stage: 0,
+        max_storage_buffer_binding_size: 0, ..wgpu::Limits::downlevel_defaults() };
+    gpu_with_limits(false, limits)
+}
+fn gpu_with_limits(enable_lcd: bool, limits: wgpu::Limits) -> Option<(wgpu::Device, wgpu::Queue, wgpu::SurfaceConfiguration)> {
     pollster::block_on(async {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let Ok(adapter) = instance
@@ -28,7 +38,7 @@ pub fn gpu_with_lcd(enable_lcd: bool) -> Option<(wgpu::Device, wgpu::Queue, wgpu
         eprintln!("GPU test adapter: {}", adapter.get_info().name);
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                required_limits: wgpu::Limits::downlevel_defaults(),
+                required_limits: limits,
                 required_features: if enable_lcd {
                     adapter.features() & wgpu::Features::DUAL_SOURCE_BLENDING
                 } else {

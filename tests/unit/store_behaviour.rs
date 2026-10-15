@@ -113,6 +113,7 @@ fn failed_load_names_glyphs_rolls_back_and_preserves_earlier_font() {
         .unwrap();
     queue.submit(Some(encoder.finish()));
     let count = store.cache.len();
+    let resources = (store.atlas.view().texture().clone(), store.atlas.view().texture().size(), store.atlas.layer_count(), store.atlas.version);
     // Glyph zero consumes the remaining capacity before the requested glyphs fail.
     let error = store
         .load_from_bytes(&device, &queue, ROBOTO, "\u{10ffff}BCB")
@@ -123,6 +124,7 @@ fn failed_load_names_glyphs_rolls_back_and_preserves_earlier_font() {
     actual.sort_unstable();
     assert_eq!(actual, expected, "every outlined closure glyph that did not fit is reported");
     assert_eq!(store.cache.len(), count);
+    assert_eq!((store.atlas.view().texture().clone(), store.atlas.view().texture().size(), store.atlas.layer_count(), store.atlas.version), resources);
     assert_eq!(pixels(&device, &queue, &store, &paragraph), before);
     // A subsequent successful load proves the failed load reclaimed its allocation.
     let next = store.load_from_bytes(&device, &queue, ROBOTO, "").unwrap();
@@ -205,6 +207,7 @@ fn band_exhaustion_fails_and_rolls_back_curve_allocations() {
     queue.submit(Some(encoder.finish()));
     let used = store.atlas.used_floats();
     let count = store.cache.len();
+    let resources = (store.atlas.view().texture().clone(), store.atlas.view().texture().size(), store.atlas.layer_count(), store.atlas.version);
     let error = store.load_from_bytes(&device, &queue, ROBOTO, "BB").unwrap_err();
     let expected = cached_ids(&device, &queue, "B", true);
     let LoadingError::AtlasFull(ids) = error else { panic!("expected atlas exhaustion: {error}"); };
@@ -212,6 +215,7 @@ fn band_exhaustion_fails_and_rolls_back_curve_allocations() {
     actual.sort_unstable();
     assert_eq!(actual, expected, "band exhaustion reports every outlined closure glyph");
     assert_eq!(store.cache.len(), count);
+    assert_eq!((store.atlas.view().texture().clone(), store.atlas.view().texture().size(), store.atlas.layer_count(), store.atlas.version), resources);
     assert_eq!(store.atlas.used_floats(), used);
     assert_eq!(pixels(&device, &queue, &store, &paragraph), before);
 }
@@ -524,4 +528,29 @@ fn visible_ligature_starting_at_missing_default_ignorable_is_retained() {
     assert_eq!(paragraph.glyphs(), expected, "a visible ligature must survive its source marker");
     assert_eq!(paragraph.width(), expected[0].advance);
     assert!(pixels(&device, &queue, &store, &paragraph).iter().any(|&value| value != 255));
+}
+
+#[test]
+fn commit_exhaustion_keeps_gpu_resources_and_rejects_the_atomic_batch() {
+    let Some((device, queue, _)) = common::gpu() else { return; };
+    let mut store = FontStore::new(&device);
+    let key = store.load_from_bytes(&device, &queue, ROBOTO, "A").unwrap();
+    let paragraph = TypeWriter::new().shape_text(&store, key, [12.,20.], 24., [0.,0.,0.,1.], "A").unwrap();
+    let before = pixels(&device, &queue, &store, &paragraph);
+    let resources = (store.atlas.view().texture().clone(), store.atlas.view().texture().size(), store.atlas.layer_count(), store.atlas.version, store.atlas.used_floats());
+    // Logical allocations succeed; only the pure physical-shape check can reject.
+    store.atlas.max_rows = 1;
+    store.atlas.max_physical_layers = 1;
+    let error = store.load_from_bytes(&device, &queue, ROBOTO, "B").unwrap_err();
+    let LoadingError::AtlasFull(ids) = error else { panic!("expected commit-time AtlasFull"); };
+    let mut actual: Vec<_> = ids.iter().map(|id| u32::from(id.0)).collect();
+    actual.sort_unstable();
+    assert_eq!(actual, cached_ids(&device, &queue, "B", true));
+    assert_eq!(store.cache.len(), 1);
+    assert_eq!((store.atlas.view().texture().clone(), store.atlas.view().texture().size(), store.atlas.layer_count(), store.atlas.version, store.atlas.used_floats()), resources);
+    assert_eq!(pixels(&device, &queue, &store, &paragraph), before);
+    store.atlas.max_rows = atlas::SIZE;
+    store.atlas.max_physical_layers = device.limits().max_texture_array_layers;
+    store.load_from_bytes(&device, &queue, ROBOTO, "B").unwrap();
+    assert_eq!(pixels(&device, &queue, &store, &paragraph), before);
 }

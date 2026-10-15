@@ -1,9 +1,11 @@
 use super::allocator::Region;
 
 #[derive(Debug, Default)]
-/// A contiguous row-major run of floats in one atlas layer.
+/// A contiguous row-major run of floats in one logical atlas layer.
 pub struct Allocation {
-    /// Zero-based texture array layer.
+    /// Permanent packed float offset (committed loads fit u32).
+    pub(crate) packed: u64,
+    /// Zero-based logical atlas layer.
     pub(crate) layer: usize,
     /// Float-slot start and count; a region may span rows.
     pub(crate) region: Region,
@@ -11,8 +13,15 @@ pub struct Allocation {
 
 impl Allocation {
     /// Start float-slot [x, y], origin top left, y downward.
+    #[cfg(any(test, feature = "unstable-internals"))]
     pub fn position(&self) -> [u32; 2] {
         self.region.position()
+    }
+
+    /// Packed float-slot coordinates for shader instances; rows span physical layers.
+    pub fn packed_position(&self) -> [u32; 2] {
+        [(self.packed % u64::from(super::SIZE)) as u32,
+         (self.packed / u64::from(super::SIZE)) as u32]
     }
 
     /// Number of floats, including segment padding.
@@ -20,7 +29,7 @@ impl Allocation {
         self.region.size()
     }
 
-    /// Zero-based texture array layer index.
+    /// Zero-based logical atlas layer index.
     pub fn layer(&self) -> usize {
         self.layer
     }

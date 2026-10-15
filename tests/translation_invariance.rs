@@ -159,11 +159,11 @@ fn coverage_is_continuous_at_shared_extremum() {
     let glyph = &font.glyph_cache[&id];
     let mut body = analytic::glyph_input(
         (
-            glyph.allocation.position(),
+            glyph.allocation.packed_position(),
             glyph.allocation.size(),
             glyph.allocation.layer(),
         ),
-        (glyph.bands.position(), glyph.bands.layer()),
+        (glyph.bands.packed_position(), glyph.bands.layer()),
         24. / 2048.,
     );
     body.push_str(
@@ -178,7 +178,7 @@ fn coverage_is_continuous_at_shared_extremum() {
     let pixels = probe::probe_pixels(
         &device,
         &queue,
-        internals::atlas_view(&store),
+        internals::atlas_resources(&store),
         &analytic::source(&body),
     );
     eprintln!(
