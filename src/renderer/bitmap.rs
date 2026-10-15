@@ -36,6 +36,8 @@ struct Entry {
 }
 
 pub(super) struct BitmapCache {
+    #[cfg(feature = "unstable-internals")]
+    pub timestamps: Option<(wgpu::QuerySet, bool)>,
     pub draw: RenderPipeline,
     bake: RenderPipeline,
     clear: RenderPipeline,
@@ -207,6 +209,8 @@ impl BitmapCache {
         let (texture, view, binding, constant_binding) =
             Self::texture(device, size, constants, textures, sampler);
         Self {
+            #[cfg(feature = "unstable-internals")]
+            timestamps: None,
             draw,
             bake,
             clear,
@@ -394,14 +398,24 @@ impl BitmapCache {
         vertices: &Buffer,
         indices: &Buffer,
     ) {
+        #[cfg(feature = "unstable-internals")]
+        let timestamps = self.timestamps.as_ref();
         let instances: Vec<_> = jobs.iter().map(|j| j.0).collect();
         let buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("Bitmap raster instances"),
             usage: BufferUsages::VERTEX,
             contents: bytemuck::cast_slice(&instances),
         });
+        #[cfg(feature = "unstable-internals")]
+        if let Some((queries, true)) = timestamps { encoder.write_timestamp(queries, 0); }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Rasterize bitmap glyphs"),
+            #[cfg(feature = "unstable-internals")]
+            timestamp_writes: timestamps.filter(|(_, encoder)| !encoder).map(|(queries, _)| wgpu::RenderPassTimestampWrites {
+                query_set: queries,
+                beginning_of_pass_write_index: Some(0),
+                end_of_pass_write_index: Some(1),
+            }),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &self.view,
                 depth_slice: None,
@@ -439,6 +453,11 @@ impl BitmapCache {
             pass.draw_indexed(0..6, 0, i as u32..i as u32 + 1);
             pass.set_pipeline(&self.bake);
             pass.draw_indexed(0..6, 0, i as u32..i as u32 + 1);
+        }
+        #[cfg(feature = "unstable-internals")]
+        {
+            drop(pass);
+            if let Some((queries, true)) = timestamps { encoder.write_timestamp(queries, 1); }
         }
     }
 }

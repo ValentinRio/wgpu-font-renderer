@@ -222,6 +222,11 @@ pub mod internals {
     pub fn set_bitmap_cache_limits(renderer: &mut crate::TextRenderer, device: &wgpu::Device, initial: u32, max: u32) {
         renderer.set_bitmap_cache_limits(device, initial, max);
     }
+    /// Initialize bitmap pipelines outside benchmark samples and optionally time the raster pass.
+    /// The boolean selects encoder timestamps; false uses render-pass timestamps.
+    pub fn benchmark_raster(renderer: &mut crate::TextRenderer, device: &wgpu::Device, queries: Option<(wgpu::QuerySet, bool)>) {
+        renderer.benchmark_raster(device, queries);
+    }
     /// Current bitmap texture dimension (one byte per texel), or zero before initialization.
     pub fn bitmap_cache_size(renderer: &crate::TextRenderer) -> u32 { renderer.bitmap_cache_size() }
     /// Number of resident bitmap glyphs and cached instances in the frame.

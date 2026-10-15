@@ -300,6 +300,10 @@ impl TextRenderer {
     pub(crate) fn bitmap_cache_size(&self) -> u32 { self.bitmap.as_ref().map_or(0, |b| b.size) }
     #[cfg(feature = "unstable-internals")]
     pub(crate) fn bitmap_cache_counts(&self) -> (usize, usize) { (self.bitmap.as_ref().map_or(0, |b| b.count()), self.cached.iter().filter(|&&x| x).count()) }
+    #[cfg(feature = "unstable-internals")]
+    pub(crate) fn benchmark_raster(&mut self, device: &Device, queries: Option<(wgpu::QuerySet, bool)>) {
+        self.bitmap.get_or_insert_with(|| bitmap::BitmapCache::new(device, self.format, &self.constant_layout, &self.texture_layout, &self.sampler)).timestamps = queries;
+    }
     /// Whether this renderer actually uses LCD antialiasing.
     pub fn lcd_active(&self) -> bool {
         self.subpixel_order != SubpixelOrder::None
