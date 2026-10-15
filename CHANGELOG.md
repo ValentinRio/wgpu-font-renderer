@@ -7,6 +7,19 @@ API changes come only with a major version.
 
 ## [Unreleased]
 
+## [1.1.0] - Unreleased
+
+### Changed
+
+- Coverage is now the analytic box integral of signed winding over each pixel, replacing centre-ray weighting. Almost every anti-aliased pixel changes slightly.
+
+### Fixed
+
+- Coverage is continuous at curve endpoints and extrema, so moving text by whole pixels no longer changes how a glyph looks (within one readback byte in the grayscale and RGB tests). In 1.0, moving a glyph one pixel vertically could change a pixel by up to 17/255.
+- LCD glyph quads now cover the full subpixel filter, so the outer colour fringe of a glyph whose edge falls less than a third of a pixel into its first column is no longer clipped.
+- Improved mean accuracy against the independent nonzero reference: in the bundled 12 px corpus, worst Latin mean error fell from 0.014783 to about 0.004088 and Noto Serif SC from 0.026539 to about 0.004704; existing accuracy limits remain unchanged.
+- Very small thin strokes are visibly lighter: their coverage now reflects their true ink area rather than the previous centre-ray approximation. Coverage remains a clamped signed winding integral, not nonzero union area; same-direction contours overlapping partly within a pixel can overcount before clamping.
+
 ## [1.0.0] - 2026-10-14
 
 ### Added
@@ -254,6 +267,7 @@ No API or rendering changes.
 Initial release.
 
 [Unreleased]: https://github.com/ValentinRio/wgpu-font-renderer/compare/v1.0.0...HEAD
+[1.1.0]: https://github.com/ValentinRio/wgpu-font-renderer/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/ValentinRio/wgpu-font-renderer/compare/v0.2.1...v1.0.0
 [0.2.1]: https://github.com/ValentinRio/wgpu-font-renderer/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ValentinRio/wgpu-font-renderer/compare/v0.1.0...v0.2.0

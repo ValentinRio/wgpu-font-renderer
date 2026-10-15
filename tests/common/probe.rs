@@ -27,6 +27,7 @@ pub struct Probe {
     view: wgpu::TextureView,
     readback: wgpu::Buffer,
     inputs: wgpu::Buffer,
+    row_bytes: u32,
 }
 
 impl Probe {
@@ -36,6 +37,34 @@ impl Probe {
         source: &str,
         blend: Option<wgpu::BlendState>,
     ) -> Self {
+        Self::with_format(
+            device,
+            atlas,
+            source,
+            blend,
+            wgpu::TextureFormat::Rgba8Unorm,
+        )
+    }
+
+    #[allow(dead_code)] // Only continuity probes need float readback.
+    pub fn new_float(device: &wgpu::Device, atlas: &wgpu::TextureView, source: &str) -> Self {
+        Self::with_format(
+            device,
+            atlas,
+            source,
+            None,
+            wgpu::TextureFormat::Rgba32Float,
+        )
+    }
+
+    fn with_format(
+        device: &wgpu::Device,
+        atlas: &wgpu::TextureView,
+        source: &str,
+        blend: Option<wgpu::BlendState>,
+        format: wgpu::TextureFormat,
+    ) -> Self {
+        let row_bytes = 256 * format.block_copy_size(None).unwrap();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Band equivalence probe"),
             source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -96,7 +125,7 @@ impl Probe {
                 entry_point: Some("probe_fragment"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    format,
                     blend,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -107,7 +136,7 @@ impl Probe {
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor::default());
         let inputs = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Probe inputs"),
-            size: 9 * 16,
+            size: 1024 * 16,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -143,14 +172,14 @@ impl Probe {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let view = target.create_view(&Default::default());
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: 256 * 768 * 4,
+            size: u64::from(row_bytes) * 768,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -162,6 +191,7 @@ impl Probe {
             view,
             readback,
             inputs,
+            row_bytes,
         }
     }
 
@@ -170,7 +200,7 @@ impl Probe {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         background: wgpu::Color,
-        inputs: Option<&[[f32; 4]; 9]>,
+        inputs: Option<&[[f32; 4]]>,
     ) -> Vec<u8> {
         if let Some(inputs) = inputs {
             queue.write_buffer(&self.inputs, 0, bytemuck::cast_slice(inputs));
@@ -205,7 +235,7 @@ impl Probe {
                 buffer: &self.readback,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(1024),
+                    bytes_per_row: Some(self.row_bytes),
                     rows_per_image: Some(768),
                 },
             },

@@ -139,12 +139,12 @@ fn probe_vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f3
 }}
 @fragment
 fn probe_fragment(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {{
-    let sizes = array(1., 12., 32., 72., 100., 162., 163., 200., 400., 557., 558., 1024.);
+    let sizes = array(2., 12., 32., 72., 100., 162., 163., 200., 400., 557., 558., 1024.);
     var input: VertexOutput;
     input.font_size = sizes[u32(p.y) / 64u];
     input.uv = vec2(p.x / 256., (p.y % 64.) / 64.);
-    input.size = vec2({width}., {height}.) * input.font_size / 2048.;
-    input.units_per_em = 2048.;
+    input.size = vec2({width}., {height}.) * input.font_size / {units_per_em}.;
+    input.units_per_em = {units_per_em}.;
     input.left_side_bearing = {bearing}.;
     input.atlas_pos = vec2({x}., {y}.);
     input.atlas_size = {count};
@@ -160,7 +160,8 @@ fn probe_fragment(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {{
                 height = glyph.bbox.height(),
                 bearing = glyph.left_side_bearing,
                 count = glyph.allocation.size(),
-                band_layer = bands.layer()
+                band_layer = bands.layer(),
+                units_per_em = font.face().metrics(skrifa::instance::Size::unscaled(), &font.location).units_per_em
             );
             let source = format!("{shader}\n{probe}");
             if check_path {

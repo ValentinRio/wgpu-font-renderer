@@ -1,5 +1,5 @@
 use super::{build_slug_bands, BezierBuilder};
-use super::{parse_font, outline_glyph, GlyphId, OutlinePen, MetadataProvider, Size, LocationRef};
+use super::{outline_glyph, parse_font, GlyphId, LocationRef, MetadataProvider, OutlinePen, Size};
 
 fn check_bands(curves: &[f32]) {
     let data = build_slug_bands(curves);
@@ -33,7 +33,15 @@ fn check_bands(curves: &[f32]) {
             let length = data[descriptor + 1] as usize;
             assert_eq!(data[descriptor], offset as f32);
             assert_eq!(data[descriptor + 1], length as f32);
-            assert_eq!(&data[descriptor + 2..descriptor + 8], &[0.; 6]);
+            assert_eq!(
+                data[descriptor + 2].to_bits(),
+                (minimum[axis] + (band + 1) as f32 * size[axis] + 0.05).to_bits()
+            );
+            assert_eq!(
+                data[descriptor + 3].to_bits(),
+                (minimum[axis] + band as f32 * size[axis] - 0.05).to_bits()
+            );
+            assert_eq!(&data[descriptor + 4..descriptor + 8], &[0.; 4]);
             assert_eq!(
                 offset, next,
                 "lists must follow descriptors without overlap"
@@ -87,8 +95,8 @@ fn empty_degenerate_ties_and_epsilon_boundaries() {
     assert_eq!(
         build_slug_bands(&[]),
         [
-            0., 0., 1., 1., 1., 1., 0., 0., 24., 0., 0., 0., 0., 0., 0., 0., 24., 0., 0., 0., 0.,
-            0., 0., 0.,
+            0., 0., 1., 1., 1., 1., 0., 0., 24., 0., 1.05, -0.05, 0., 0., 0., 0., 24., 0., 1.05,
+            -0.05, 0., 0., 0., 0.,
         ]
     );
     check_bands(&[]);
@@ -139,7 +147,10 @@ fn every_bundled_font_outline() {
     ] {
         let face = parse_font(bytes, 0).unwrap().0;
         let mut outlined = 0;
-        for id in 0..face.glyph_metrics(Size::unscaled(), LocationRef::default()).glyph_count() {
+        for id in 0..face
+            .glyph_metrics(Size::unscaled(), LocationRef::default())
+            .glyph_count()
+        {
             let mut builder = BezierBuilder::new(0.);
             if outline_glyph(&face, GlyphId::new(id), &mut builder).is_some() {
                 builder.finish();

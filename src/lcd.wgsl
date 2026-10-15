@@ -1,6 +1,14 @@
 // Appended to the shared analytic shader when dual-source blending is available.
 override LCD_BGR: bool = false;
 
+// Each horizontal subpixel box reaches .5 + 1/3 pixels beyond the ink bounds.
+// At the quad boundary every channel is zero, so raster edge rounding cannot
+// discard a nonzero contribution during an integer translation.
+@vertex
+fn vs_lcd(input: VertexInput) -> VertexOutput {
+    return coverage_vertex(input, vec2(.5 + 1./3., .5));
+}
+
 fn lcd_coverage(input: VertexOutput) -> vec3<f32> {
     let coverage = analytic_coverage(input, vec3(-1./3., 0., 1./3.));
     return select(coverage, coverage.bgr, LCD_BGR);

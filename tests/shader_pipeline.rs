@@ -153,7 +153,7 @@ fn compare_shader_pixels() {
             );
             let body = format!(
                 r#"{input}
-                let sizes = array(1., 12., 16., 24., 48., 100., 163., 200., 400., 557., 558., 1024.);
+                let sizes = array(2., 12., 16., 24., 48., 100., 163., 200., 400., 557., 558., 1024.);
                 input.pixel_scale = sizes[u32(p.y) / 64u] / {upem}.;
                 input.uv = vec2(p.x / 256. * {width}. + {bearing}., (p.y % 64.) / 64. * {height}.);
                 return vec4(0., 0., 0., analytic_coverage(input, vec3(0.)).y);

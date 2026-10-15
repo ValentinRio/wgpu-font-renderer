@@ -14,7 +14,7 @@ use common::reference::reference_coverage;
 const CACHE_PRESET: &str =
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789,;:!ù*^$=)àç_è-('\"é&²<>+°§/.? ";
 const NOTO_PRESET: &str = "龍鬱齉直接从轮廓渲染字形文本";
-use common::centre::CentreModel;
+use common::box_integral::BoxIntegralModel;
 use common::coverage_limits::{C3_DENSE_MEAN_ERRORS, C3_MAX_ERROR, C3_MEAN_ERRORS, READBACK_ERROR};
 
 #[test]
@@ -119,7 +119,8 @@ fn c3_preset_glyphs_match_method_and_box_error_bounds() {
                     let width = (glyph.bbox.width() as f32 * scale).ceil() as u32 + 2;
                     let height = (glyph.bbox.height() as f32 * scale).ceil() as u32 + 2;
                     assert!(width <= 256 && height <= 256);
-                    let reference = reference_coverage(
+                    // Correctness oracle: independent nonzero supersampling.
+    let reference = reference_coverage(
                         &glyph.curves,
                         glyph.left_side_bearing as f32 - 1. / scale,
                         -1. / scale,
@@ -127,7 +128,9 @@ fn c3_preset_glyphs_match_method_and_box_error_bounds() {
                         width,
                         height,
                     );
-                    let centre = CentreModel::new(&glyph.curves).image(
+                    // Supplemental arithmetic parity only; reference_coverage above/below
+                    // remains the independent nonzero correctness oracle.
+                    let model = BoxIntegralModel::new(&glyph.curves).image(
                         [glyph.left_side_bearing as f32 - 1. / scale, -1. / scale],
                         scale,
                         width,
@@ -148,13 +151,13 @@ fn c3_preset_glyphs_match_method_and_box_error_bounds() {
                                     id, reference[index]
                                 );
                             }
-                            let difference = (actual - centre[index]).abs();
+                            let difference = (actual - model[index]).abs();
                             method_size_max = method_size_max.max(difference);
                             if difference > method_max {
                                 method_max = difference;
                                 method_worst = format!(
                                     "{name} {size}, {ch:?}, id {}, pixel {x},{y}: GPU {actual:.8}, CPU {:.8}",
-                                    id, centre[index]
+                                    id, model[index]
                                 );
                             }
                             total += f64::from(error);
@@ -341,22 +344,104 @@ fn variable_instances_shape_and_draw_at_the_same_location() {
             assert!((bounds[0] as f32 - (position[0] + f32::from(expected_left) * scale)).abs() <= 1.,
                 "ink left edge must follow the instance bearing");
             assert!((bounds[1] as f32 - top).abs() <= 1., "ink must follow the instance ascender");
-            // Check the stem stripe against the existing centre-ray readback bound;
+            // Check the stem stripe against the existing integral-model numerical-parity bound;
             // thin instances can intersect both edges within one box-filter sample.
-            let mut centre = vec![0f32; 128 * 128];
+            let mut model = vec![0f32; 128 * 128];
             for pen in [position[0], position[0] + advance] {
-                let image = CentreModel::new(&glyph.curves).image(
+                let image = BoxIntegralModel::new(&glyph.curves).image(
                     [-pen / scale, -top / scale], scale, 128, 128);
-                for (pixel, value) in centre.iter_mut().zip(image) { *pixel = (*pixel + value).min(1.); }
+                for (pixel, value) in model.iter_mut().zip(image) { *pixel = (*pixel + value).min(1.); }
             }
             let y = (top + glyph.bbox.height() as f32 * scale * 0.5) as usize;
             for x in 18..=22 {
                 let coverage = f32::from(actual[(y * 128 + x) * 4]) / 255.;
-                assert!((coverage - centre[y * 128 + x]).abs() <= READBACK_ERROR,
-                    "stem stripe wght {value} at {x},{y}: GPU {coverage}, CPU {}", centre[y * 128 + x]);
+                assert!((coverage - model[y * 128 + x]).abs() <= READBACK_ERROR,
+                    "stem stripe wght {value} at {x},{y}: GPU {coverage}, CPU {}", model[y * 128 + x]);
             }
         }
         assert_ne!(widths[0], widths[1]);
         assert_ne!(outlines[0], outlines[1]);
+    }
+}
+
+#[test]
+fn one_pixel_thin_glyph_maximum_matches_total_ink_area() {
+    let Some((device, queue, _)) = common::gpu() else {
+        return;
+    };
+    let mut store = FontStore::new(&device);
+    let key = store
+        .load_from_bytes(
+            &device,
+            &queue,
+            include_bytes!("../fonts/Roboto-Regular.ttf"),
+            "ilI.",
+        )
+        .unwrap();
+    let font = wgpu_font_renderer::internals::font(&store, key).unwrap();
+    let scale = 1.
+        / f32::from(
+            font.face()
+                .metrics(Size::unscaled(), LocationRef::default())
+                .units_per_em,
+        );
+    for ch in "ilI.".chars() {
+        let glyph = &font.glyph_cache[&font.face().charmap().map(ch).unwrap().to_u32()];
+        // Green's theorem: integrate each cubic x(t)y'(t) polynomial exactly.
+        // A line's control=end encoding has the same geometric line integral.
+        let area: f64 = glyph
+            .curves
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|r| {
+                let [x0, y0, x1, y1, x2, y2] = std::array::from_fn::<_, 6, _>(|i| f64::from(r[i]));
+                (x0 * (-3. * y0 + 2. * y1 + y2)
+                    + 2. * x1 * (y2 - y0)
+                    + x2 * (-y0 - 2. * y1 + 3. * y2))
+                    / 6.
+            })
+            .sum::<f64>()
+            .abs()
+            * f64::from(scale).powi(2);
+        assert!(area > 0. && area < 0.125);
+        assert!(glyph.bbox.width() as f32 * scale < 1. && glyph.bbox.height() as f32 * scale < 1.);
+        let centre = [
+            glyph.left_side_bearing as f32 + glyph.bbox.width() as f32 * 0.5,
+            glyph.bbox.height() as f32 * 0.5,
+        ];
+        let a = &glyph.allocation;
+        let b = &glyph.bands;
+        let input = analytic::glyph_input(
+            (a.position(), a.size(), a.layer()),
+            (b.position(), b.layer()),
+            scale,
+        );
+        let source = analytic::source(&format!(
+            r#"{input}
+            input.uv = vec2({x:?}, {y:?}) + (vec2(p.x, p.y % 256.) - vec2(128.)) / (256. * input.pixel_scale);
+            return vec4(analytic_coverage(input, vec3(0.)), 1.);
+        "#,
+            x = centre[0],
+            y = centre[1]
+        ));
+        let pixels = probe::probe_pixels(
+            &device,
+            &queue,
+            wgpu_font_renderer::internals::atlas_view(&store),
+            &source,
+        );
+        let max = pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| p[0])
+            .max()
+            .unwrap();
+        let actual = f64::from(max) / 255.;
+        assert!((actual - area).abs() <= f64::from(1. / 255. + READBACK_ERROR));
+        eprintln!(
+            "Roboto {ch:?} 1px ink area {area:.12}; GPU tile maximum {max}/255 = {actual:.12}"
+        );
     }
 }

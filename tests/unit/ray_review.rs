@@ -1,6 +1,6 @@
 use super::analytic_regressions::pixels;
 use crate::atlas_tests::{common, probe};
-use common::centre::CentreModel;
+use common::box_integral::BoxIntegralModel;
 use common::coverage_limits::{C5_NO_STREAK_ERROR, READBACK_ERROR};
 #[path = "../common/analytic.rs"]
 #[allow(dead_code)]
@@ -45,7 +45,9 @@ fn non_dyadic_tangents_match_method_and_box_filter_on_rows_and_columns() {
         let Some((actual, _)) = pixels(&curves, [0., 0.], 1., true) else {
             return;
         };
-        let centre = CentreModel::new(&curves).image([0., 0.], 1., 256, 768);
+        // Supplemental arithmetic parity only; reference_coverage above/below
+        // remains the independent nonzero correctness oracle.
+        let model = BoxIntegralModel::new(&curves).image([0., 0.], 1., 256, 768);
         let reference = common::reference::reference_coverage(&curves, 0., 0., 1., 256, 768);
         let vertices: Vec<_> = curves
             .as_chunks::<8>()
@@ -53,17 +55,22 @@ fn non_dyadic_tangents_match_method_and_box_filter_on_rows_and_columns() {
             .iter()
             .map(|r| [r[0], r[1]])
             .collect();
-        method_count += centre.len();
+        method_count += model.len();
         for y in 0..768 {
             for x in 0..256 {
                 let index = y * 256 + x;
                 let observed = actual[index * 4] as f32 / 255.;
-                let difference = (observed - centre[index]).abs();
+                let oracle_error = (observed - reference[index]).abs();
+                assert!(
+                    oracle_error <= C5_NO_STREAK_ERROR,
+                    "nonzero oracle pixel {x},{y}: {oracle_error}"
+                );
+                let difference = (observed - model[index]).abs();
                 method_max = method_max.max(difference);
                 assert!(
                     difference <= READBACK_ERROR,
                     "transpose {transpose}, pixel {x},{y}: GPU {observed}, CPU {}",
-                    centre[index]
+                    model[index]
                 );
                 let on_tangent = [20, 140].contains(&if transpose { x } else { y });
                 let away = vertices.iter().all(|v| {
@@ -86,7 +93,7 @@ fn non_dyadic_tangents_match_method_and_box_filter_on_rows_and_columns() {
     eprintln!("non-dyadic tangents: {method_count} method pixels, method worst {method_max:.8}; {count} vertex-free tangent pixels, box worst {box_max:.8}");
 }
 
-// Measured worst: 17/255 = 0.06666667 for 1/256 px steps (11% headroom).
+// Historical centre-ray worst: 17/255 = 0.06666667 for 1/256 px steps (11% headroom).
 const CONTINUITY_STEP_ERROR: f32 = 0.074;
 
 #[test]
@@ -107,9 +114,15 @@ fn non_dyadic_extrema_move_continuously_across_pixel_centres() {
                 let Some((actual, _)) = pixels(&curves, [0., 0.], 1., true) else {
                     return;
                 };
-                let centre = CentreModel::new(&curves).image([0., 0.], 1., 256, 768);
-                for (index, &expected) in centre.iter().enumerate() {
+                let model = BoxIntegralModel::new(&curves).image([0., 0.], 1., 256, 768);
+                let reference =
+                    common::reference::reference_coverage(&curves, 0., 0., 1., 256, 768);
+                for (index, &expected) in model.iter().enumerate() {
                     let observed = actual[index * 4] as f32 / 255.;
+                    assert!(
+                        (observed - reference[index]).abs() <= C5_NO_STREAK_ERROR,
+                        "nonzero oracle at shifted pixel {index}"
+                    );
                     assert!((observed - expected).abs() <= READBACK_ERROR,
                         "transpose {transpose}, axis {axis}, step {step}, pixel {},{}: GPU {observed}, CPU {expected}", index % 256, index / 256);
                     if let Some(before) = &previous {
@@ -214,19 +227,24 @@ fn differently_rounded_non_dyadic_double_roots_match_method_and_box_filter() {
             let Some((actual, _)) = pixels(&curves, origin, 1., true) else {
                 return;
             };
-            let centre = CentreModel::new(&curves).image(origin, 1., 256, 768);
+            let model = BoxIntegralModel::new(&curves).image(origin, 1., 256, 768);
             let reference =
                 common::reference::reference_coverage(&curves, origin[0], origin[1], 1., 256, 768);
             for y in 0..768 {
                 for x in 0..256 {
                     let index = y * 256 + x;
                     let observed = actual[index * 4] as f32 / 255.;
-                    let difference = (observed - centre[index]).abs();
+                    let oracle_error = (observed - reference[index]).abs();
+                    assert!(
+                        oracle_error <= C5_NO_STREAK_ERROR,
+                        "nonzero oracle pixel {x},{y}: {oracle_error}"
+                    );
+                    let difference = (observed - model[index]).abs();
                     method_max = method_max.max(difference);
                     assert!(
                         difference <= READBACK_ERROR,
                         "m {m}, transpose {transpose}, pixel {x},{y}: GPU {observed}, CPU {}",
-                        centre[index]
+                        model[index]
                     );
                     if (if transpose { x } else { y }) == 20 {
                         // Both endpoints are at least 64 units above this ray.
