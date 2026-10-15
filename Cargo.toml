@@ -10,6 +10,11 @@ readme = "README.md"
 keywords = ["wgpu", "font", "text", "rendering", "gpu"]
 categories = ["graphics", "rendering"]
 
+[workspace]
+members = ["benches/vs-glyphon"]
+default-members = ["."]
+resolver = "2"
+
 [features]
 unstable-internals = []
 
