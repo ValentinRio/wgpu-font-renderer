@@ -4,6 +4,8 @@ mod adapter;
 mod memory;
 #[path = "quality.rs"]
 mod quality;
+#[path = "raster.rs"]
+mod raster;
 #[path = "zoom.rs"]
 mod zoom;
 
@@ -795,6 +797,7 @@ pub fn run() -> Result<()> {
         .filter(|name| scene_enabled && filter.as_ref().is_none_or(|f| f == name))
         .map(|name| Scene::new(name, &gpu))
         .collect::<Result<_>>()?;
+    report["raster"] = if scene_enabled { raster::run(&gpu, &scenes, rounds)? } else { Value::Null };
     let mut states = Vec::new();
     let mut repeats = Vec::new();
     let mut gpu_samples = Vec::new();

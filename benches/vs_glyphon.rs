@@ -16,6 +16,7 @@
 //! runs zoom only. BENCH_SCENE filters static scenes, not zoom or quality.
 //! Zoom uses two 255-frame sweeps (128 sizes) in EACH renderer order; no size knob.
 //! Quality raw grids: target/vs-glyphon/<BENCH_SAVE>/quality_<renderer>_<size>.rgba.
+//! Raster isolates cold unique-key bitmap generation with pipeline setup separate.
 //! Memory requires unstable-internals; sources are allocator_report/computed/unknown.
 #[cfg(target_arch = "wasm32")]
 fn main() {}

@@ -260,6 +260,62 @@ that cosmic-text drops. For the body scene, 8,937 versus 8,829 glyphs differ by
 about 1.22%; those spaces have no ink, and the line counts both equal 159. This
 known whitespace difference does not by itself mean different visible workloads.
 
+## Raster only
+
+The `raster` section runs all four selected static scenes (`BENCH_SCENE` still
+filters them) for `BENCH_ROUNDS` cold samples per renderer, alternating renderer
+order each round. Cells contain median/p95 total milliseconds, then median/p95
+microseconds per unique bitmap glyph. This section is part of `BENCH_SCENES`.
+
+The workload is derived from glyphon 0.12's prepare traversal: visible layout
+runs using the same TextArea offsets/bounds, then `LayoutGlyph::physical` keys.
+Glyphon clips individual glyphs only after raster/upload, so horizontal and ink
+clipping do not remove keys here. Keys retain first-use order and default flags
+(hinted), font size and quarter-pixel bins. Empty/no-image keys (including
+spaces) are counted separately and excluded from both bitmap workloads. Repeated
+empty probes and atlas-growth re-rasterization from a complete glyphon prepare
+are not part of this unique-key measurement. The same font bytes and glyph IDs,
+sizes and X bins are fed through public `Paragraph` construction to our cached
+renderer; there is no independent shaping or layout in either timed interval.
+Current scenes have zero Y bins, checked at runtime. Both bitmap counts must
+match the shared key count, with no fallback, or the benchmark exits with error.
+
+- **Glyphon CPU raster** calls the same
+  `SwashCache::get_image_uncached` as glyphon's atlas-miss path, with a fresh
+  SwashCache per round. Font loading/shape/physical-key discovery are excluded.
+  Images are retained until upload and raster timing includes their collection.
+- **Glyphon CPU upload** measures one `Queue::write_texture` per bitmap with
+  glyphon's R8 mask format, stride and image dimensions. A real atlas is packed
+  ahead of time; packing, texture creation/growth, cache bookkeeping and GPU
+  completion are excluded. This is the CPU write cost, not GPU upload time or
+  full glyphon prepare. Each sample's uploads are submitted and drained outside
+  the interval. Non-mask content is rejected for these bundled-font scenes.
+- **Cached CPU encode** measures cold `prepare` on the unique-key paragraphs:
+  lookup, allocation/growth, temporary raster instance upload, raster encoding,
+  submission and prepared-instance upload. It excludes shaping, outline loading,
+  bitmap pipeline creation, cache reset and GPU completion. The bitmap atlas is
+  empty and starts at its normal 512 dimension each round.
+- **Cached GPU raster** timestamps only the actual bitmap pass (per-glyph
+  clear/bake and attachment load/store), excluding atlas growth copies and
+  submission/readback. As in other GPU sections, encoder timestamps are used
+  when supported, otherwise pass timestamps. Without timestamp queries this
+  cell is `unavailable` and JSON is null; CPU timings still exist. These cold
+  samples are unamortized, one pass per round, with no R repeats or round-p25
+  aggregation.
+
+A separate once-only CPU line measures bitmap shader, draw/bake/clear pipeline
+creation and initial atlas/resources. Base renderer initialization is outside
+that line. Driver pipeline caches may persist across runs; this line measures CPU creation
+API cost. The pipelines survive all raster
+scenes/rounds; no creation enters a raster sample. The `unstable-internals` hook
+only initializes those resources and attaches optional raster timestamps.
+
+JSON `raster` retains pipeline creation time, interval descriptions, clock/source,
+per-scene shared and renderer bitmap counts, excluded key counts, rounds, raw
+samples and both units' median/p95. CPU and GPU columns describe different
+intervals and should be compared with their stated inclusions in mind. Software
+adapter numbers only validate the harness.
+
 ## Zoom stress
 
 `Zoom text` uses Roboto and moves through 128 distinct sizes geometrically from
@@ -424,7 +480,8 @@ above.
 Glyphon uses `Shaping::Advanced`, reuses its Cache/TextAtlas/Viewport/TextRenderer
 across frames, updates its viewport per frame and trims its atlas after each
 frame, following its examples. This crate uses its public rendering API;
-`internals` is only for fallback memory inspection.
+`internals` supplies fallback memory inspection and the raster section’s
+bitmap initialization, cache reset and timestamp hook.
 
 On llvmpipe, lavapipe, SwiftShader or another CPU/software adapter, all these
 numbers only check the harness and say nothing about GPU performance. The
