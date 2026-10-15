@@ -1,5 +1,5 @@
-use swash::CacheKey;
 use skrifa::MetadataProvider;
+use swash::CacheKey;
 use wgpu::CommandEncoderDescriptor;
 
 use std::collections::HashMap;
@@ -91,10 +91,11 @@ impl FontStore {
     /// Glyph zero is always cached if it has an outline, so missing characters
     /// draw `.notdef`. Glyphs without outlines still advance without drawing.
     /// Returns [`LoadingError::AtlasFull`] if an outline or its bands cannot fit
-    /// one layer or allocation exceeds the device texture array layer limit.
-    /// Each default layer uses 16 MiB (initially 32 MiB; 4 GiB at 256 layers).
-    /// Growth temporarily retains both old and new textures. Previous
-    /// fonts remain usable and the failed font is not added.
+    /// one logical layer or allocation exceeds the device texture array layer limit.
+    /// Logical layers hold up to 16 MiB each. Only their used prefixes occupy GPU
+    /// texture storage, with at most one 8 KiB row of slack per physical layer.
+    /// Successful loads copy earlier data into a right-sized texture; both textures
+    /// coexist temporarily. Failed loads leave existing resources and fonts intact.
     /// Device and queue must belong together; GPU failures follow wgpu validation.
     /// Outline coordinates in the atlas are font units, not screen pixels.
     pub fn load_from_bytes(

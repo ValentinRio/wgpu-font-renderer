@@ -124,6 +124,33 @@ Without `REQUIRE_GPU=1`, GPU tests skip when no adapter is available. A software
 
 ## How it works
 
+Use `RenderMode::Cached` for static text drawn many times at the same pixel size.
+Bitmap pipelines and textures are created on the first cached preparation;
+analytic-only renderers allocate none. Unchanged cached paragraphs reuse their
+prepared instances without atlas lookups, uploads or GPU submissions.
+Set it with `Paragraph::set_render_mode` or `TextBlock::set_render_mode`; blocks
+apply it to every line. The GPU rasterizes misses with the same analytic coverage
+function into a padded R8 atlas. Cached pens snap x down to a quarter pixel.
+Each line’s baseline (paragraph y + font ascent) snaps to the nearest whole pixel;
+all glyphs in that line receive the same vertical correction. Exact sizes and
+font variations have separate entries.
+The atlas grows by doubling and copying existing coverage, evicts glyphs unused
+in the current preparation at its limit, and draws analytically when full.
+
+The outline atlas stores only loaded outline and y-band payloads, packed into
+512-texel-wide RGBA32Float rows. Each physical array layer has at most one unused
+8 KiB row. The empty atlas occupies one row; later loads copy and grow it.
+Logical streams remain limited to 16 MiB each, and allocation respects device
+array-layer limits. Failed loads preserve earlier fonts and GPU resources.
+Instance buffers allocate exactly the required bytes when growing and retain
+that high-water capacity for reuse; fixed geometry and viewport uniforms use
+140 bytes per renderer. The cached mode adds its bitmap resources lazily.
+
+`RenderMode::Analytic` remains the default, preserving exact positions and existing
+output. Prefer it for scaling, animation, large sizes and LCD. When LCD is active,
+Cached requests draw analytically. Bitmap coverage uses unfiltered texel loads
+and scales by the paragraph colour's alpha.
+
 Coverage is computed analytically, following Eric Lengyel's paper [GPU-Centered Font Rendering Directly from Glyph Outlines](https://jcgt.org/published/0006/02/02/) (JCGT, 2017), the method behind Slug. The shader was written from the paper, not from the reference implementation. The patent on the method (US 10,373,352) was dedicated to the public domain in March 2026.
 
 For each pixel the shader casts a horizontal and a vertical ray through the pixel centre and sums the signed crossings with the glyph's quadratic curves, so overlapping contours fill. Curves are split into up to 16 bands per axis and sorted, so each ray tests only the curves that can reach it and stops early. There is no cubic solve and no trigonometry. Two centre rays approximate a box filter: they are exact on axis-aligned edges and can be off by a fraction of a pixel's coverage where a vertex or a very tight feature sits inside the pixel.

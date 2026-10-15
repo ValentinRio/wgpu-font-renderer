@@ -9,7 +9,30 @@ API changes come only with a major version.
 
 ## [1.1.0] - Unreleased
 
+### Added
+
+- Additive `RenderMode::{Analytic, Cached}` selection on paragraphs and text blocks.
+  Analytic remains the default for scaling, animation, large sizes and LCD.
+  Cached suits static text drawn repeatedly at the same size: the GPU rasterizes
+  coverage into a growing R8 atlas, with quarter-pixel x pens and whole-pixel
+  baselines (paragraph y + font ascent), applied consistently to each line.
+  Atlas exhaustion and active LCD fall back to analytic drawing.
+- Bitmap resources are lazy: analytic-only renderers create no bitmap texture or
+  pipelines. Unchanged cached paragraphs reuse instances without uploads or submits.
+- Three-way glyphon benchmark includes cached GPU/CPU, zoom, memory and quality rows.
+
 ### Changed
+
+- The outline atlas packs only used outline/y-band payloads into 512-wide RGBA32Float
+  rows, with at most one 8 KiB row of slack per physical array layer. Stable logical
+  addresses use a small offset buffer; successful loads copy existing payloads,
+  while failed loads leave earlier resources intact. Logical streams retain their
+  16 MiB cap and device array-layer limits.
+- Stop storing unread x-band lists and low thresholds; y-band headers and descriptors
+  now occupy one texel each. Coverage maths and y-band membership are unchanged.
+- Renderer instance buffers grow to exactly the required byte size and retain their
+  high-water capacity. The memory benchmark splits outlines, bitmaps and buffers,
+  and reports actual outline/band bytes written per loaded font.
 
 - Coverage is now the analytic box integral of signed winding over each pixel, replacing centre-ray weighting. Almost every anti-aliased pixel changes slightly.
 

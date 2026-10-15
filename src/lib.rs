@@ -44,11 +44,15 @@
 //! visible substitutions and ligatures are retained.
 //! An empty `.notdef` advances without drawing. Loads that exhaust the atlas
 //! return [`LoadingError::AtlasFull`] without adding the font or affecting earlier
-//! fonts. An outline or its bands must fit a layer, and allocation must stay
-//! within the device's `max_texture_array_layers`. The default atlas uses 16 MiB
-//! per 512 × 2048 RGBA32Float layer, initially 32 MiB; 256 layers use 4 GiB.
-//! Growth temporarily retains both old and new textures. A load that grows the
-//! atlas and then fails restores allocations but keeps the larger texture.
+//! fonts. Each outline or band stream must fit one logical layer (4,194,304
+//! floats, or 16 MiB). Logical layers are append-only, up to the device array-layer
+//! limit. Their used prefixes are packed together into a 512-texel-wide RGBA32Float
+//! array. Rows are distributed across physical layers, leaving at most one 8 KiB
+//! row unused per physical layer. The empty atlas uses one row, not full layers.
+//! A small storage buffer maps stable logical addresses into packed texture rows.
+//! A successful load replaces the texture and copies earlier payloads; growth
+//! temporarily retains both textures. Failed loads discard staged writes and
+//! leave earlier fonts, allocations and GPU resources intact.
 //!
 //! Outlines come from `glyf`, then `CFF2`, then `CFF`; `VARC` is ignored. Loading
 //! enforces per-glyph work limits (65,535 points and 16,384 contours after
@@ -69,6 +73,23 @@
 //! CFF outline coordinates are unchanged; their bearings also position the ink.
 //! Both grayscale and LCD scale coverage by RGBA
 //! alpha; alpha zero draws nothing. In 0.2, grayscale ignored alpha.
+//!
+//! Use `RenderMode::Cached` for static text drawn many times at the same pixel size.
+//! Bitmap resources are created lazily on the first cached preparation.
+//! Unchanged cached paragraphs reuse their prepared instances without uploads.
+//! Set it with `Paragraph::set_render_mode` or `TextBlock::set_render_mode`; blocks
+//! apply it to every line. The GPU rasterizes misses with the same analytic coverage
+//! function into a padded R8 atlas. Cached pens snap x down to a quarter pixel.
+//! Each line’s baseline (paragraph y plus font ascent) snaps to the nearest whole
+//! pixel, with the same vertical correction applied to all its glyphs. Exact sizes
+//! and font variations have separate entries.
+//! The atlas grows by doubling and copying existing coverage, evicts glyphs unused
+//! in the current preparation at its limit, and draws analytically when full.
+//!
+//! `RenderMode::Analytic` remains the default, preserving exact positions and existing
+//! output. Prefer it for scaling, animation, large sizes and LCD. When LCD is active,
+//! Cached requests draw analytically. Bitmap coverage uses unfiltered texel loads
+//! and scales by the paragraph colour's alpha.
 //!
 //! Call [`TextRenderer::resize`] before the first render and on every viewport
 //! change. Later font loads are picked up by [`TextRenderer::prepare`].
@@ -142,6 +163,7 @@
 //!     _: wgpu_font_renderer::Align,
 //!     _: wgpu_font_renderer::LineHeight,
 //!     _: wgpu_font_renderer::TypeWriter,
+//!     _: wgpu_font_renderer::RenderMode,
 //!     _: wgpu_font_renderer::SubpixelOrder,
 //!     _: Option<wgpu_font_renderer::TextRenderer>,
 //!     _: Option<wgpu::TextureFormat>,
@@ -150,6 +172,7 @@
 //!     None, wgpu_font_renderer::TextLayout::default(),
 //!     wgpu_font_renderer::Align::Left, wgpu_font_renderer::LineHeight::Font,
 //!     wgpu_font_renderer::TypeWriter::default(),
+//!     wgpu_font_renderer::RenderMode::default(),
 //!     wgpu_font_renderer::SubpixelOrder::None, None, None);
 //! ```
 
@@ -163,7 +186,7 @@ mod renderer;
 mod typewriter;
 mod gsub;
 mod ortho;
-pub use renderer::{SubpixelOrder, TextRenderer};
+pub use renderer::{RenderMode, SubpixelOrder, TextRenderer};
 pub use store::{Axis, FontId, FontMetrics, FontStore};
 pub use loader::LoadingError;
 pub use typewriter::TypeWriter;
@@ -189,9 +212,35 @@ pub mod internals {
     }
     pub use crate::atlas::allocation::Allocation;
 
+    /// Reset the bitmap cache with a small initial and maximum size for tests.
+    pub fn set_bitmap_cache_limits(renderer: &mut crate::TextRenderer, device: &wgpu::Device, initial: u32, max: u32) {
+        renderer.set_bitmap_cache_limits(device, initial, max);
+    }
+    /// Current bitmap texture dimension (one byte per texel), or zero before initialization.
+    pub fn bitmap_cache_size(renderer: &crate::TextRenderer) -> u32 { renderer.bitmap_cache_size() }
+    /// Number of resident bitmap glyphs and cached instances in the frame.
+    pub fn bitmap_cache_counts(renderer: &crate::TextRenderer) -> (usize, usize) { renderer.bitmap_cache_counts() }
     /// Inspect a loaded font.
     pub fn font(store: &crate::FontStore, id: crate::FontId) -> Option<&Font> {
         store.get(id)
+    }
+    /// Atlas texture and logical-address buffer for shader probes.
+    pub fn atlas_resources(store: &crate::FontStore) -> (&wgpu::TextureView, &wgpu::Buffer) {
+        store.atlas().resources()
+    }
+    /// Number of bytes of outline and band payload uploaded, excluding row padding.
+    pub fn atlas_written_bytes(store: &crate::FontStore) -> u64 {
+        store.atlas().written_bytes()
+    }
+    /// Bytes of outline and band payload uploaded by one font instance.
+    pub fn font_written_bytes(store: &crate::FontStore, id: crate::FontId) -> Option<[u64; 2]> {
+        store.get(id).map(|font| {
+            font.glyph_cache.values().fold([0, 0], |mut sum, g| {
+                sum[0] += u64::from(g.allocation.size()) * 4;
+                sum[1] += u64::from(g.bands.size()) * 4;
+                sum
+            })
+        })
     }
     /// Inspect the current atlas view.
     pub fn atlas_view(store: &crate::FontStore) -> &wgpu::TextureView {

@@ -178,7 +178,7 @@ fn coverage_is_continuous_at_shared_extremum() {
     let pixels = probe::probe_pixels(
         &device,
         &queue,
-        internals::atlas_view(&store),
+        internals::atlas_resources(&store),
         &analytic::source(&body),
     );
     eprintln!(

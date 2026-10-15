@@ -411,8 +411,8 @@ fn c6_lcd_bands_match_full_list_and_are_taken() {
                 "if input.bands.z >= 0. && input.atlas_size > 0 {",
                 "if false {",
             );
-            let actual = probe::probe_pixels(&device, &queue, wgpu_font_renderer::internals::atlas_view(&store), &shader);
-            let expected = probe::probe_pixels(&device, &queue, wgpu_font_renderer::internals::atlas_view(&store), &full);
+            let actual = probe::probe_pixels(&device, &queue, wgpu_font_renderer::internals::atlas_resources(&store), &shader);
+            let expected = probe::probe_pixels(&device, &queue, wgpu_font_renderer::internals::atlas_resources(&store), &full);
             assert!(
                 expected.as_chunks::<4>().0.iter().any(|p| p[0] > 128),
                 "reference must contain ink"
@@ -435,7 +435,7 @@ fn c6_lcd_bands_match_full_list_and_are_taken() {
                 "if input.bands.z >= 0. && input.atlas_size > 0 {",
                 "if input.bands.z >= 0. && input.atlas_size > 0 { return vec3(1., 0., 0.);",
             );
-            let paths = probe::probe_pixels(&device, &queue, wgpu_font_renderer::internals::atlas_view(&store), &debug);
+            let paths = probe::probe_pixels(&device, &queue, wgpu_font_renderer::internals::atlas_resources(&store), &debug);
             // Includes the 12 px and 16 px tiles (indices 9 and 10).
             for tile in 0..12 {
                 assert_eq!(

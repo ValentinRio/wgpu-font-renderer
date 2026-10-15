@@ -1,16 +1,39 @@
-pub fn probe_pixels(
+use wgpu::util::DeviceExt;
+
+pub struct AtlasBindings<'a> {
+    view: &'a wgpu::TextureView,
+    offsets: Option<&'a wgpu::Buffer>,
+}
+impl<'a> From<&'a wgpu::TextureView> for AtlasBindings<'a> {
+    fn from(view: &'a wgpu::TextureView) -> Self {
+        Self {
+            view,
+            offsets: None,
+        }
+    }
+}
+impl<'a> From<(&'a wgpu::TextureView, &'a wgpu::Buffer)> for AtlasBindings<'a> {
+    fn from((view, offsets): (&'a wgpu::TextureView, &'a wgpu::Buffer)) -> Self {
+        Self {
+            view,
+            offsets: Some(offsets),
+        }
+    }
+}
+
+pub fn probe_pixels<'a>(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    atlas: &wgpu::TextureView,
+    atlas: impl Into<AtlasBindings<'a>>,
     source: &str,
 ) -> Vec<u8> {
     probe_pixels_with_blend(device, queue, atlas, source, None, wgpu::Color::WHITE)
 }
 
-pub fn probe_pixels_with_blend(
+pub fn probe_pixels_with_blend<'a>(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    atlas: &wgpu::TextureView,
+    atlas: impl Into<AtlasBindings<'a>>,
     source: &str,
     blend: Option<wgpu::BlendState>,
     background: wgpu::Color,
@@ -31,9 +54,9 @@ pub struct Probe {
 }
 
 impl Probe {
-    pub fn new(
+    pub fn new<'a>(
         device: &wgpu::Device,
-        atlas: &wgpu::TextureView,
+        atlas: impl Into<AtlasBindings<'a>>,
         source: &str,
         blend: Option<wgpu::BlendState>,
     ) -> Self {
@@ -47,7 +70,11 @@ impl Probe {
     }
 
     #[allow(dead_code)] // Only continuity probes need float readback.
-    pub fn new_float(device: &wgpu::Device, atlas: &wgpu::TextureView, source: &str) -> Self {
+    pub fn new_float<'a>(
+        device: &wgpu::Device,
+        atlas: impl Into<AtlasBindings<'a>>,
+        source: &str,
+    ) -> Self {
         Self::with_format(
             device,
             atlas,
@@ -57,13 +84,14 @@ impl Probe {
         )
     }
 
-    fn with_format(
+    fn with_format<'a>(
         device: &wgpu::Device,
-        atlas: &wgpu::TextureView,
+        atlas: impl Into<AtlasBindings<'a>>,
         source: &str,
         blend: Option<wgpu::BlendState>,
         format: wgpu::TextureFormat,
     ) -> Self {
+        let atlas = atlas.into();
         let row_bytes = 256 * format.block_copy_size(None).unwrap();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Band equivalence probe"),
@@ -92,16 +120,28 @@ impl Probe {
         });
         let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    view_dimension: wgpu::TextureViewDimension::D2Array,
-                    multisampled: false,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
@@ -154,13 +194,28 @@ impl Probe {
                 },
             ],
         });
+        // Synthetic single-layer probe textures use the identity logical address.
+        let identity = atlas.offsets.is_none().then(|| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Probe identity offset"),
+                usage: wgpu::BufferUsages::STORAGE,
+                contents: bytemuck::cast_slice(&[0u32]),
+            })
+        });
+        let offsets = atlas.offsets.or(identity.as_ref()).unwrap();
         let texture_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &pipeline.get_bind_group_layout(1),
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(atlas),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(atlas.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: offsets.as_entire_binding(),
+                },
+            ],
         });
         let target = device.create_texture(&wgpu::TextureDescriptor {
             label: None,

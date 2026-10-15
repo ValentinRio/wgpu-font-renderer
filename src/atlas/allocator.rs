@@ -36,7 +36,6 @@ impl Allocator {
         }
     }
 
-    #[cfg(test)]
     pub(super) fn used(&self) -> u32 { self.offset }
 
     /// Reserve a contiguous run of `size` float slots, or return `None` if full.

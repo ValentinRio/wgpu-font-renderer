@@ -1,9 +1,9 @@
 use super::allocator::Region;
 
 #[derive(Debug, Default)]
-/// A contiguous row-major run of floats in one atlas layer.
+/// A contiguous row-major run of floats in one logical atlas layer.
 pub struct Allocation {
-    /// Zero-based texture array layer.
+    /// Zero-based logical atlas layer.
     pub(crate) layer: usize,
     /// Float-slot start and count; a region may span rows.
     pub(crate) region: Region,
@@ -20,7 +20,7 @@ impl Allocation {
         self.region.size()
     }
 
-    /// Zero-based texture array layer index.
+    /// Zero-based logical atlas layer index.
     pub fn layer(&self) -> usize {
         self.layer
     }

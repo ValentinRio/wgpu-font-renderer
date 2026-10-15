@@ -90,7 +90,7 @@ fn wgsl_is_continuous_at_endpoints_and_interior_extrema() {
             "@group(0) @binding(2) var<uniform> probes: array<vec4<f32>, 1024>;\n{}",
             analytic::source(body)
         );
-        let probe = probe::Probe::new_float(&device, internals::atlas_view(&store), &source);
+        let probe = probe::Probe::new_float(&device, internals::atlas_resources(&store), &source);
         for ch in preset.chars() {
             let id = font.face().charmap().map(ch).unwrap();
             let glyph = &font.glyph_cache[&id.to_u32()];

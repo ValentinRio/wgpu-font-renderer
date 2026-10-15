@@ -84,7 +84,7 @@ fn c3_preset_glyphs_match_method_and_box_error_bounds() {
             return vec4(analytic_coverage(input, vec3(0.)), 1.);
         "#);
         let source = format!("@group(0) @binding(2) var<uniform> probe_inputs: array<vec4<f32>, 9>;\n{source}");
-        let probe = probe::Probe::new(&device, wgpu_font_renderer::internals::atlas_view(&store), &source, None);
+        let probe = probe::Probe::new(&device, wgpu_font_renderer::internals::atlas_resources(&store), &source, None);
         // These frozen coverage bounds describe the original preset corpus.
         // GSUB closure can add other shapes; its drawing is tested in text_pipeline.
         let face = font.face();
@@ -428,7 +428,7 @@ fn one_pixel_thin_glyph_maximum_matches_total_ink_area() {
         let pixels = probe::probe_pixels(
             &device,
             &queue,
-            wgpu_font_renderer::internals::atlas_view(&store),
+            wgpu_font_renderer::internals::atlas_resources(&store),
             &source,
         );
         let max = pixels

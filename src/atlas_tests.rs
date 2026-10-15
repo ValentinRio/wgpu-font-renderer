@@ -169,7 +169,7 @@ fn probe_fragment(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {{
                     "if input.bands.z >= 0. && input.atlas_size > 0 {",
                     "if input.bands.z >= 0. && input.atlas_size > 0 { return vec3(1., 1., 1.);",
                 );
-                let pixels = probe_pixels(&device, &queue, atlas.view(), &debug);
+                let pixels = probe_pixels(&device, &queue, atlas.resources(), &debug);
                 assert!(
                     pixels[8 * 256 * 64 * 4..9 * 256 * 64 * 4]
                         .as_chunks::<4>()
@@ -183,10 +183,10 @@ fn probe_fragment(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {{
                 "if input.bands.z >= 0. && input.atlas_size > 0 {",
                 "if false {",
             );
-            let reference = probe_pixels(&device, &queue, atlas.view(), &full);
+            let reference = probe_pixels(&device, &queue, atlas.resources(), &full);
             assert_ink_tiles(&reference);
             results.push((
-                probe_pixels(&device, &queue, atlas.view(), &source),
+                probe_pixels(&device, &queue, atlas.resources(), &source),
                 reference,
             ));
         }

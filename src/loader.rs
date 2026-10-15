@@ -5,8 +5,8 @@ use skrifa::{
     raw::TableProvider,
     FontRef as SkFontRef, GlyphId,
 };
-use swash::{CacheKey, FontRef};
 use skrifa::MetadataProvider;
+use swash::{CacheKey, FontRef};
 
 use crate::atlas::{allocation::Allocation, Atlas};
 
@@ -137,12 +137,23 @@ impl Font {
         let font = FontRef { data: &data, offset, key };
         let ids = closure_glyph_ids(&face, font, &characters)?;
         let checkpoint = atlas.checkpoint();
+        atlas.begin_load();
         let glyph_cache = create_glyph_cache(device, encoder, queue, &face,
             ids.into_iter(), (&location).into(), atlas);
         let glyph_cache = match glyph_cache {
             Ok(cache) => cache,
             Err(error) => { atlas.restore(checkpoint); return Err(error); }
         };
+        if !atlas.commit(device, queue) {
+            atlas.restore(checkpoint);
+            return Err(LoadingError::AtlasFull(
+                glyph_cache
+                    .iter()
+                    .filter(|(_, g)| g.allocation.size() > 0)
+                    .map(|(&id, _)| crate::GlyphId(id as u16))
+                    .collect(),
+            ));
+        }
         Ok(Self { data, characters, location, axes: axis_info, settings, metrics, ascender_delta,
             index: 0, offset, key, glyph_cache })
     }
@@ -161,7 +172,6 @@ impl Font {
         SkFontRef::from_index(&self.data, self.index).expect("validated font face")
     }
 }
-
 
 // Both parsers must accept the same face; keep its offset/key from swash.
 fn parse_font(data: &[u8], index: usize) -> Result<(SkFontRef<'_>, u32, CacheKey)> {
@@ -548,64 +558,49 @@ fn outline_glyph_at(face: &SkFontRef<'_>, id: GlyphId, pen: &mut impl OutlinePen
     glyph_bounding_box_at(face, id, location)
 }
 
-// Header: min x/y, band width/height, horizontal/vertical counts.
-// Descriptors: float offset/length, exact high/low membership thresholds. Curve padding: original index, maximum key.
+// One texel header: min y, band height, y-band count, padding.
+// One texel descriptor: relative float offset, length, exact high threshold, padding.
+// Only y bands are sampled; curve padding retains the index (sort tie-break) and max x.
 fn build_slug_bands(curves: &[f32]) -> Vec<f32> {
     let segments = curves.as_chunks::<8>().0;
-    let mut min = [f32::INFINITY; 2];
-    let mut max = [f32::NEG_INFINITY; 2];
+    let mut min = f32::INFINITY;
+    let mut max = f32::NEG_INFINITY;
     for s in segments {
-        for axis in 0..2 {
-            min[axis] = min[axis].min(s[axis]).min(s[axis + 2]).min(s[axis + 4]);
-            max[axis] = max[axis].max(s[axis]).max(s[axis + 2]).max(s[axis + 4]);
-        }
+        min = min.min(s[1]).min(s[3]).min(s[5]);
+        max = max.max(s[1]).max(s[3]).max(s[5]);
     }
     if segments.is_empty() {
-        min = [0.; 2];
-        max = [0.; 2];
+        min = 0.;
+        max = 0.;
     }
-    let counts: [usize; 2] =
-        std::array::from_fn(|axis| ((max[axis] - min[axis]) / 64.).floor().clamp(1., 16.) as usize);
-    let sizes: [f32; 2] =
-        std::array::from_fn(|axis| ((max[axis] - min[axis]) / counts[axis] as f32).max(1.));
-    let mut data = vec![0.; 8 * (1 + counts[0] + counts[1])];
-    data[..6].copy_from_slice(&[
-        min[0],
-        min[1],
-        sizes[0],
-        sizes[1],
-        counts[1] as f32,
-        counts[0] as f32,
-    ]);
-    let mut descriptor = 8;
-    for axis in [1, 0] {
-        for band in 0..counts[axis] {
-            let low = min[axis] + band as f32 * sizes[axis] - SLUG_BAND_EPSILON;
-            let high = min[axis] + (band + 1) as f32 * sizes[axis] + SLUG_BAND_EPSILON;
-            let mut list: Vec<_> = segments
-                .iter()
-                .enumerate()
-                .filter_map(|(index, s)| {
-                    let lo = s[axis].min(s[axis + 2]).min(s[axis + 4]);
-                    let hi = s[axis].max(s[axis + 2]).max(s[axis + 4]);
-                    if lo > high || hi < low {
-                        return None;
-                    }
-                    let other = 1 - axis;
-                    let mut record = *s;
-                    record[6] = index as f32;
-                    record[7] = s[other].max(s[other + 2]).max(s[other + 4]);
-                    Some(record)
-                })
-                .collect();
-            list.sort_by(|a, b| b[7].total_cmp(&a[7]).then(a[6].total_cmp(&b[6])));
-            data[descriptor] = data.len() as f32;
-            data[descriptor + 1] = (list.len() * 8) as f32;
-            data[descriptor + 2] = high;
-            data[descriptor + 3] = low;
-            data.extend(list.into_iter().flatten());
-            descriptor += 8;
-        }
+    let count = ((max - min) / 64.).floor().clamp(1., 16.) as usize;
+    let size = ((max - min) / count as f32).max(1.);
+    let mut data = vec![0.; 4 * (1 + count)];
+    data[..3].copy_from_slice(&[min, size, count as f32]);
+    for band in 0..count {
+        let low = min + band as f32 * size - SLUG_BAND_EPSILON;
+        let high = min + (band + 1) as f32 * size + SLUG_BAND_EPSILON;
+        let mut list: Vec<_> = segments
+            .iter()
+            .enumerate()
+            .filter_map(|(index, s)| {
+                let lo = s[1].min(s[3]).min(s[5]);
+                let hi = s[1].max(s[3]).max(s[5]);
+                if lo > high || hi < low {
+                    return None;
+                }
+                let mut record = *s;
+                record[6] = index as f32;
+                record[7] = s[0].max(s[2]).max(s[4]);
+                Some(record)
+            })
+            .collect();
+        list.sort_by(|a, b| b[7].total_cmp(&a[7]).then(a[6].total_cmp(&b[6])));
+        let descriptor = 4 + band * 4;
+        data[descriptor] = data.len() as f32;
+        data[descriptor + 1] = (list.len() * 8) as f32;
+        data[descriptor + 2] = high;
+        data.extend(list.into_iter().flatten());
     }
     data
 }
@@ -921,9 +916,11 @@ mod tests {
         assert!(!builder.curves.is_empty());
         assert_eq!(builder.curves.len() % 8, 0);
         let bands = build_slug_bands(&builder.curves);
-        assert!((0..bands[4] as usize).any(|band|
-            (bands[9 + band * 8] as usize) < builder.curves.len()),
-            "a typical glyph's band must contain fewer curves than its full list");
+        assert!(
+            (0..bands[2] as usize)
+                .any(|band| (bands[5 + band * 4] as usize) < builder.curves.len()),
+            "a typical glyph's band must contain fewer curves than its full list"
+        );
         // All three points must be in the flipped font bounding box; padding is zero.
         assert!(builder.curves.as_chunks::<8>().0.iter().all(|segment| {
             segment[6..] == [0., 0.]

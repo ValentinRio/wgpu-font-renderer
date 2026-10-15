@@ -4,101 +4,79 @@ use super::{outline_glyph, parse_font, GlyphId, LocationRef, MetadataProvider, O
 fn check_bands(curves: &[f32]) {
     let data = build_slug_bands(curves);
     let segments = curves.as_chunks::<8>().0;
-    assert_eq!(data.len() % 8, 0);
-    assert_eq!(&data[6..8], &[0., 0.]);
-    let mut minimum = [0.; 2];
-    let mut size = [1.; 2];
-    let mut count = [1usize; 2];
-    for axis in 0..2 {
-        let values: Vec<_> = segments
-            .iter()
-            .flat_map(|s| [s[axis], s[axis + 2], s[axis + 4]])
-            .collect();
-        if !values.is_empty() {
-            minimum[axis] = values.iter().copied().fold(f32::INFINITY, f32::min);
-            let maximum = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-            count[axis] = (((maximum - minimum[axis]) / 64.).floor() as usize).clamp(1, 16);
-            size[axis] = ((maximum - minimum[axis]) / count[axis] as f32).max(1.);
+    assert_eq!(data.len() % 4, 0);
+    assert_eq!(data[3], 0.);
+    let values: Vec<_> = segments.iter().flat_map(|s| [s[1], s[3], s[5]]).collect();
+    let minimum = values.iter().copied().fold(f32::INFINITY, f32::min);
+    let maximum = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let (minimum, maximum) = if values.is_empty() {
+        (0., 0.)
+    } else {
+        (minimum, maximum)
+    };
+    let count = (((maximum - minimum) / 64.).floor() as usize).clamp(1, 16);
+    let size = ((maximum - minimum) / count as f32).max(1.);
+    assert_eq!(&data[..3], &[minimum, size, count as f32]);
+    let mut next = 4 * (1 + count);
+    for band in 0..count {
+        let descriptor = 4 + band * 4;
+        let offset = data[descriptor] as usize;
+        let length = data[descriptor + 1] as usize;
+        assert_eq!(data[descriptor], offset as f32);
+        assert_eq!(data[descriptor + 1], length as f32);
+        assert_eq!(
+            data[descriptor + 2].to_bits(),
+            (minimum + (band + 1) as f32 * size + 0.05).to_bits()
+        );
+        assert_eq!(data[descriptor + 3], 0.);
+        assert_eq!(
+            offset, next,
+            "lists must follow descriptors without overlap"
+        );
+        assert_eq!(offset % 4, 0);
+        assert_eq!(length % 8, 0);
+        assert!(offset + length <= data.len());
+        let list = data[offset..offset + length].as_chunks::<8>().0;
+        let mut occurrences = vec![0; segments.len()];
+        for record in list {
+            let index = record[6] as usize;
+            assert!(index < segments.len());
+            assert_eq!(record[6], index as f32);
+            occurrences[index] += 1;
+            assert_eq!(&record[..6], &segments[index][..6]);
+            let key = segments[index][..6]
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|p| p[0])
+                .fold(f32::NEG_INFINITY, f32::max);
+            assert_eq!(record[7], key);
         }
-        assert_eq!(data[axis], minimum[axis]);
-        assert_eq!(data[axis + 2], size[axis]);
-        assert_eq!(data[5 - axis], count[axis] as f32);
-    }
-    let descriptor_end = 8 * (1 + count[0] + count[1]);
-    let mut descriptor = 8;
-    let mut next = descriptor_end;
-    for axis in [1, 0] {
-        for band in 0..count[axis] {
-            let offset = data[descriptor] as usize;
-            let length = data[descriptor + 1] as usize;
-            assert_eq!(data[descriptor], offset as f32);
-            assert_eq!(data[descriptor + 1], length as f32);
-            assert_eq!(
-                data[descriptor + 2].to_bits(),
-                (minimum[axis] + (band + 1) as f32 * size[axis] + 0.05).to_bits()
+        for pair in list.windows(2) {
+            assert!(
+                pair[0][7] > pair[1][7] || (pair[0][7] == pair[1][7] && pair[0][6] < pair[1][6])
             );
-            assert_eq!(
-                data[descriptor + 3].to_bits(),
-                (minimum[axis] + band as f32 * size[axis] - 0.05).to_bits()
-            );
-            assert_eq!(&data[descriptor + 4..descriptor + 8], &[0.; 4]);
-            assert_eq!(
-                offset, next,
-                "lists must follow descriptors without overlap"
-            );
-            assert_eq!(offset % 8, 0);
-            assert_eq!(length % 8, 0);
-            assert!(offset + length <= data.len());
-            let list = data[offset..offset + length].as_chunks::<8>().0;
-            let mut occurrences = vec![0; segments.len()];
-            for record in list {
-                let index = record[6] as usize;
-                assert!(index < segments.len());
-                assert_eq!(record[6], index as f32);
-                occurrences[index] += 1;
-                assert_eq!(&record[..6], &segments[index][..6]);
-                let key = segments[index][..6]
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|p| p[1 - axis])
-                    .fold(f32::NEG_INFINITY, f32::max);
-                assert_eq!(record[7], key);
-            }
-            for pair in list.windows(2) {
-                assert!(
-                    pair[0][7] > pair[1][7]
-                        || (pair[0][7] == pair[1][7] && pair[0][6] < pair[1][6])
-                );
-            }
-            let low = minimum[axis] + band as f32 * size[axis];
-            let high = minimum[axis] + (band + 1) as f32 * size[axis];
-            for (index, s) in segments.iter().enumerate() {
-                let extent: Vec<_> = [s[axis], s[axis + 2], s[axis + 4]].into_iter().collect();
-                let outside = extent.iter().all(|&v| v < low - 0.05)
-                    || extent.iter().all(|&v| v > high + 0.05);
-                assert_eq!(
-                    occurrences[index],
-                    usize::from(!outside),
-                    "axis {axis}, band {band}, record {index}"
-                );
-            }
-            next = offset + length;
-            descriptor += 8;
         }
+        let low = minimum + band as f32 * size;
+        let high = minimum + (band + 1) as f32 * size;
+        for (index, s) in segments.iter().enumerate() {
+            let extent = [s[1], s[3], s[5]];
+            let outside =
+                extent.iter().all(|&v| v < low - 0.05) || extent.iter().all(|&v| v > high + 0.05);
+            assert_eq!(
+                occurrences[index],
+                usize::from(!outside),
+                "y band {band}, record {index}"
+            );
+        }
+        next = offset + length;
     }
     assert_eq!(next, data.len());
 }
 
 #[test]
 fn empty_degenerate_ties_and_epsilon_boundaries() {
-    assert_eq!(
-        build_slug_bands(&[]),
-        [
-            0., 0., 1., 1., 1., 1., 0., 0., 24., 0., 1.05, -0.05, 0., 0., 0., 0., 24., 0., 1.05,
-            -0.05, 0., 0., 0., 0.,
-        ]
-    );
+    assert_eq!(build_slug_bands(&[]), [0., 1., 1., 0., 8., 0., 1.05, 0.],);
     check_bands(&[]);
     check_bands(&[2., -3., 2., -3., 2., -3., 9., 9.]);
     let mut curves = vec![
