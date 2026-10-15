@@ -10,6 +10,15 @@ BENCH_ROUNDS=7 BENCH_FRAMES=40 BENCH_WARMUP=10 cargo bench --all-features --offl
 
 Set the `WGPU_BACKEND` environment variable to `dx12` or `vulkan` to select the backend (POSIX shells: `WGPU_BACKEND=dx12 cargo bench --all-features ...`; PowerShell: `$env:WGPU_BACKEND = "dx12"`; cmd: `set WGPU_BACKEND=dx12`). Leave it unset for wgpu's defaults. Some Vulkan drivers return zero timestamps (seen on an AMD RX 9070 XT with the proprietary driver); DX12 works there.
 
+Both benchmarks default to `PowerPreference::HighPerformance`, preferring the
+discrete GPU when available. `WGPU_POWER_PREF=low|high|none` overrides this using
+wgpu's parser (`none` removes the power preference; unset or unrecognized values
+use the high-performance default). `WGPU_ADAPTER_NAME` takes priority over the
+power preference and selects the first adapter whose name contains that value,
+case-insensitively, following wgpu's substring matching. An unmatched name exits
+with a clear error. Each benchmark prints every enumerated adapter's name,
+backend and device type, then the chosen adapter, before running measurements.
+
 Defaults are **5 rounds**, each with 10 discarded warm-up frames and 30 measured
 frames per scene. Override them with `BENCH_ROUNDS`, `BENCH_WARMUP` and
 `BENCH_FRAMES` (minimum 3 rounds and 10 measured frames). The scene order rotates

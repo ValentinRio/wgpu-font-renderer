@@ -1,3 +1,5 @@
+#[path = "../adapter/mod.rs"]
+mod adapter;
 #[path = "memory.rs"]
 mod memory;
 #[path = "quality.rs"]
@@ -696,8 +698,7 @@ pub fn run() -> Result<()> {
     }
     let instance =
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-    let adapter =
-        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
+    let adapter = adapter::select(&instance)?;
     let info = adapter.get_info();
     let mut features = adapter.features() & wgpu::Features::TIMESTAMP_QUERY;
     if !features.is_empty() {
