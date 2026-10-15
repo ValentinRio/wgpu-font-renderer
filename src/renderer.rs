@@ -181,7 +181,7 @@ impl TextRenderer {
             layout: Some(&layout),
             vertex: VertexState {
                 module: &shader,
-                entry_point: Some("vs_main"),
+                entry_point: Some(if lcd { "vs_lcd" } else { "vs_main" }),
                 compilation_options: Default::default(),
                 buffers: &[
                     Some(VertexBufferLayout {

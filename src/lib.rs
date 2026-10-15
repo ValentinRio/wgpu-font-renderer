@@ -11,6 +11,14 @@
 //! hard-break-delimited paragraphs into a [`TextBlock`] using [`TextLayout`], Unicode break opportunities and font
 //! metrics. [`TextRenderer`] prepares glyph instances and draws them
 //! with shader-computed coverage, without rasterizing glyphs on the CPU.
+//! Coverage is the clamped absolute signed winding integral over each pixel
+//! box. For ordinary contours without overlap this is the ink area. It is not
+//! the nonzero union area: same-direction contours that overlap partly within
+//! a pixel can overcount before clamping. Opposite-direction contours subtract
+//! their signed areas. This overlap limitation also existed in the previous
+//! centre-ray method. Very small thin strokes can appear lighter with area
+//! integration because their coverage reflects their actual ink area.
+//!
 //! Cubic outlines are approximated by quadratics within 0.25 font units, with a
 //! depth cap of 10 for pathological inputs that may exceed this tolerance.
 //! CFF2 outlines can be loaded and converted. [`FontStore::load_variation`] selects

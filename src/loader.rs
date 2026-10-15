@@ -549,7 +549,7 @@ fn outline_glyph_at(face: &SkFontRef<'_>, id: GlyphId, pen: &mut impl OutlinePen
 }
 
 // Header: min x/y, band width/height, horizontal/vertical counts.
-// Descriptors: float offset/length. Curve padding: original index, maximum key.
+// Descriptors: float offset/length, exact high/low membership thresholds. Curve padding: original index, maximum key.
 fn build_slug_bands(curves: &[f32]) -> Vec<f32> {
     let segments = curves.as_chunks::<8>().0;
     let mut min = [f32::INFINITY; 2];
@@ -601,6 +601,8 @@ fn build_slug_bands(curves: &[f32]) -> Vec<f32> {
             list.sort_by(|a, b| b[7].total_cmp(&a[7]).then(a[6].total_cmp(&b[6])));
             data[descriptor] = data.len() as f32;
             data[descriptor + 1] = (list.len() * 8) as f32;
+            data[descriptor + 2] = high;
+            data[descriptor + 3] = low;
             data.extend(list.into_iter().flatten());
             descriptor += 8;
         }
@@ -1031,3 +1033,7 @@ mod closure_counts {
         }
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32"), feature = "unstable-internals"))]
+#[path = "../tests/unit/coverage_continuity.rs"]
+mod coverage_continuity;

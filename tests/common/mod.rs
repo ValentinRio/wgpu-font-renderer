@@ -3,7 +3,7 @@
 #[allow(dead_code)]
 pub mod reference;
 #[allow(dead_code)]
-pub mod centre;
+pub mod box_integral;
 #[allow(dead_code)]
 pub mod coverage_limits;
 

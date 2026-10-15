@@ -49,9 +49,31 @@ pub(super) fn pixels(
     let [bx, by] = b.position();
     let mut shader = include_str!("../../src/shader.wgsl").to_owned();
     if !weighted {
-        let weighted_return = "return select((x + y) * .5, (x * wx + y * wy) / max(denominator, vec3(1e-20)), denominator > vec3(0.));";
-        assert!(shader.contains(weighted_return));
-        shader = shader.replace(weighted_return, "return (x + y) * .5;");
+        // Keep the old unweighted centre-ray baseline for the thin-stem
+        // comparison; production coverage is now the clipped area integral.
+        shader = shader.replace("fn analytic_coverage(", "fn area_coverage(");
+        shader.push_str(r#"
+fn analytic_coverage(input: VertexOutput, offsets: vec3<f32>) -> vec3<f32> {
+    let address = atlas_address();
+    let start = i32(input.atlas_pos.y) * address.float_width + i32(input.atlas_pos.x);
+    var sums = vec2(0.);
+    for (var axis = 0u; axis < 2u; axis += 1u) {
+        let other = 1u - axis;
+        for (var i = 0; i < input.atlas_size; i += 8) {
+            let ac = atlas_texel(start + i, i32(input.layer), address);
+            let end = atlas_texel(start + i + 4, i32(input.layer), address);
+            let line = all(ac.zw == end.xy);
+            let roots = ray_roots(vec3(ac[other], ac[other + 2u], end[other]) - input.uv[other], line);
+            let u = vec2(1.) - roots.t;
+            var positions = u * u * ac[axis] + 2. * u * roots.t * ac[axis + 2u] + roots.t * roots.t * end[axis];
+            if line { positions = mix(vec2(ac[axis]), vec2(end[axis]), roots.t); }
+            sums[axis] += dot(clamp(vec2(.5) + (positions - vec2(input.uv[axis])) * input.pixel_scale,
+                vec2(0.), vec2(1.)), roots.winding);
+        }
+    }
+    return vec3((clamp(abs(sums.x), 0., 1.) + clamp(abs(sums.y), 0., 1.)) * .5);
+}
+"#);
     }
     let source = format!(
         r#"{shader}
@@ -133,12 +155,14 @@ fn c5_endpoints_extrema_lines_and_degenerate_records_have_no_streaks() {
     let Some((actual, _)) = pixels(&curves, [0., 0.], 1., true) else {
         return;
     };
-    use common::centre::CentreModel;
+    use common::box_integral::BoxIntegralModel;
     use common::coverage_limits::{
         C3_MAX_ERROR, C5_NO_STREAK_ERROR, C5_STRAIGHT_ERROR, READBACK_ERROR,
     };
     let reference = common::reference::reference_coverage(&curves, 0., 0., 1., 256, 768);
-    let centre = CentreModel::new(&curves).image([0., 0.], 1., 256, 768);
+    // Supplemental arithmetic parity only; reference_coverage above/below
+    // remains the independent nonzero correctness oracle.
+    let model = BoxIntegralModel::new(&curves).image([0., 0.], 1., 256, 768);
     let vertices: Vec<_> = curves
         .as_chunks::<8>()
         .0
@@ -153,10 +177,10 @@ fn c5_endpoints_extrema_lines_and_degenerate_records_have_no_streaks() {
         for x in 0..256 {
             let index = y * 256 + x;
             let a = actual[index * 4] as f32 / 255.;
-            let difference = (a - centre[index]).abs();
+            let difference = (a - model[index]).abs();
             if difference > method_max {
                 method_max = difference;
-                method_worst = format!("pixel {x},{y}: GPU {a:.8}, CPU {:.8}", centre[index]);
+                method_worst = format!("pixel {x},{y}: GPU {a:.8}, CPU {:.8}", model[index]);
             }
             // Distance from the entire pixel box to each on-curve vertex.
             // This excludes pixels containing a vertex and its one-pixel halo.
@@ -184,7 +208,7 @@ fn c5_endpoints_extrema_lines_and_degenerate_records_have_no_streaks() {
     }
     eprintln!(
         "C5 method: pixels {}, worst {method_max:.8}; {method_worst}",
-        centre.len()
+        model.len()
     );
     eprintln!("C5 no streaks: pixels {away_count}, worst {away_max:.8}; {away_worst}; nearby max {nearby_max:.8}");
     eprintln!("C5 straight no-streak worst {straight_max:.8}");
@@ -326,5 +350,67 @@ fn diagonal_edge_and_extensions_match_full_list() {
             (observed - expected).abs() <= 1. / 255.,
             "diagonal at {origin}: {observed}, {expected}"
         );
+    }
+}
+
+#[test]
+fn partial_same_direction_overlap_measures_signed_winding_contract() {
+    for (side, shift, integral, union) in [(0.5, 0.25, 0.5, 0.4375), (0.75, 0.25, 1., 0.875)] {
+        let mut curves = square([20., 20.], [20. + side, 20. + side], false);
+        curves.extend(square(
+            [20. + shift, 20. + shift],
+            [20. + shift + side, 20. + shift + side],
+            false,
+        ));
+        let Some((actual, _)) = pixels(&curves, [0., 0.], 1., true) else {
+            return;
+        };
+        let reference = common::reference::reference_coverage(&curves, 0., 0., 1., 24, 24);
+        let expected = reference[20 * 24 + 20];
+        assert_eq!(expected, union);
+        let gpu = f32::from(actual[(20 * 256 + 20) * 4]) / 255.;
+        assert!((gpu - integral).abs() <= 1. / 255.);
+        let error = (gpu - expected).abs();
+        assert!((error - (integral - union)).abs() <= 1. / 255.);
+        eprintln!("partial overlap side={side}: signed integral {integral}, nonzero union {expected}, GPU {gpu:.9}, nonzero error {error:.9}");
+    }
+}
+
+#[test]
+fn cff2_control_hulls_on_stored_band_thresholds_match_full_list() {
+    use skrifa::MetadataProvider;
+    let (face, _, _) =
+        super::parse_font(include_bytes!("../../fonts/Cantarell-VF.otf"), 0).unwrap();
+    let id = face.charmap().map('@').unwrap();
+    let bounds = super::glyph_bounding_box(&face, id).unwrap();
+    let (_, _, original, _) = super::prepare_glyph(&face, id, bounds).unwrap();
+    let data = build_slug_bands(&original);
+    let threshold = data[10]; // first horizontal descriptor's exact high bound
+    let record = original
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .position(|c| c[1] > threshold && c[5] > threshold && c[2..4] != c[4..6])
+        .unwrap();
+    for y in [threshold.next_down(), threshold, threshold.next_up()] {
+        let mut curves = original.clone();
+        curves[record * 8 + 3] = y;
+        let bands = build_slug_bands(&curves);
+        assert_eq!(
+            bands[10].to_bits(),
+            threshold.to_bits(),
+            "global bounds must stay fixed"
+        );
+        let start = bands[8] as usize;
+        let len = bands[9] as usize;
+        let present = bands[start..start + len]
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .any(|c| c[6] as usize == record);
+        assert_eq!(present, y <= threshold);
+        for scale in [24. / 1000., 96. / 1000.] {
+            let _ = pixels(&curves, [0., threshold - 1. / scale], scale, true);
+        }
     }
 }

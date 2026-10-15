@@ -1,6 +1,6 @@
-// Centre rays approximate a box filter: vertices and tight features inside a
-// pixel can change area without changing either centre ray. These frozen bounds
-// describe that approximation, not allowance for implementation mistakes.
+// Frozen accuracy limits from the previous centre-ray implementation, measured
+// against the independent nonzero supersampling reference. Box integration keeps
+// these limits; signed-winding overlap can still differ from nonzero union area.
 pub const C3_MAX_ERROR: f32 = 0.39; // Measured weighted maximum: 0.343367 (13.6% headroom).
 pub const C3_MEAN_ERRORS: [(f32, f64); 5] = [
     (12., 0.018),   // Measured worst font mean: 0.014783 (21.8% headroom).
@@ -19,8 +19,8 @@ pub const C3_DENSE_MEAN_ERRORS: [(f32, f64); 5] = [
     (200., 0.0019), // Measured Noto Serif SC mean: 0.001587 (19.7% headroom).
 ];
 pub const READBACK_ERROR: f32 = 1.5 / 255.;
-// Measured worst vertex-free curved-edge error: 0.07421875. Curvature
-// and corner-only intersections of a pixel still differ from two centre rays.
+// Historical vertex-free curved-edge limit (measured centre-ray error
+// 0.07421875), retained for the independent nonzero reference checks.
 pub const C5_NO_STREAK_ERROR: f32 = 0.075;
 // Measured straight-edge worst: 0.00196081 (half a readback step).
 pub const C5_STRAIGHT_ERROR: f32 = 0.0021;
