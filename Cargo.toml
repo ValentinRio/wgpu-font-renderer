@@ -27,6 +27,8 @@ etagere = "0.3.0"
 winit = "0.30"
 # Backends for the tests, the benchmark and the example.
 wgpu = { version = "30" }
+glyphon = "0.12"
+ab_glyph = "0.2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 pollster = "1.0"
@@ -65,4 +67,9 @@ required-features = ["unstable-internals"]
 
 [[test]]
 name = "input_robustness"
+required-features = ["unstable-internals"]
+
+[[bench]]
+name = "vs_glyphon"
+harness = false
 required-features = ["unstable-internals"]
