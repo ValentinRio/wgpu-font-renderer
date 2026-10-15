@@ -2066,6 +2066,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "vs-glyphon"
+version = "0.0.0"
+dependencies = [
+ "ab_glyph",
+ "etagere",
+ "glyphon",
+ "pollster",
+ "serde_json",
+ "skrifa 0.44.0",
+ "wgpu",
+ "wgpu-font-renderer",
+]
+
+[[package]]
 name = "walkdir"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2364,11 +2378,9 @@ dependencies = [
 name = "wgpu-font-renderer"
 version = "1.0.0"
 dependencies = [
- "ab_glyph",
  "bytemuck",
  "console_error_panic_hook",
  "etagere",
- "glyphon",
  "pollster",
  "serde_json",
  "skrifa 0.44.0",

@@ -30,5 +30,5 @@ fn main() {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[path = "vs_glyphon/harness.rs"]
+#[path = "harness.rs"]
 mod native;

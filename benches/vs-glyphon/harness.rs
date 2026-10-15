@@ -992,7 +992,7 @@ pub fn run() -> Result<()> {
         Value::Null
     };
     let artifacts = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target/vs-glyphon")
+        .join("../../target/vs-glyphon")
         .join(&save);
     report["quality"] = if quality_enabled {
         quality::run(&gpu, &artifacts)?
@@ -1003,7 +1003,7 @@ pub fn run() -> Result<()> {
         report["quality"]["adapter"] = report["adapter"].clone();
     }
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target/vs-glyphon")
+        .join("../../target/vs-glyphon")
         .join(format!("{save}.json"));
     std::fs::create_dir_all(path.parent().ok_or("missing report directory")?)?;
     std::fs::write(&path, serde_json::to_vec_pretty(&report)?)?;

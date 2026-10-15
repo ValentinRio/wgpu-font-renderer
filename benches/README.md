@@ -181,16 +181,18 @@ uses exact size keys without prewarming. Quality retains both glyphon hinting
 variants and adds cached coverage with its documented pen snapping.
 
 This native harness compares wgpu-font-renderer (analytic and cached) with glyphon 0.12 on one wgpu
-30 device. It requires `unstable-internals` for memory inspection; `--all-features`
-enables it. All dependencies and fonts must already be available locally:
+30 device. It lives in the unpublished `vs-glyphon` workspace crate, which enables
+`unstable-internals` on the library for memory inspection and requires Rust 1.89
+or newer (the library keeps its Rust 1.88 MSRV). Run from the repository root;
+all dependencies and fonts must already be available locally:
 
 ```sh
-BENCH_ROUNDS=3 BENCH_FRAMES=10 BENCH_WARMUP=3 cargo bench --all-features --offline --bench vs_glyphon
-BENCH_SAVE=my-run cargo bench --all-features --offline --bench vs_glyphon
+BENCH_ROUNDS=3 BENCH_FRAMES=10 BENCH_WARMUP=3 cargo bench -p vs-glyphon --all-features --offline
+BENCH_SAVE=my-run cargo bench -p vs-glyphon --all-features --offline
 # Zoom only, including its memory checkpoints:
-BENCH_SCENES=0 BENCH_QUALITY=0 cargo bench --all-features --offline --bench vs_glyphon
+BENCH_SCENES=0 BENCH_QUALITY=0 cargo bench -p vs-glyphon --all-features --offline
 # Quality only:
-BENCH_SCENES=0 BENCH_ZOOM=0 BENCH_MEMORY=0 cargo bench --all-features --offline --bench vs_glyphon
+BENCH_SCENES=0 BENCH_ZOOM=0 BENCH_MEMORY=0 cargo bench -p vs-glyphon --all-features --offline
 ```
 
 Every section is enabled by default. Reports replace

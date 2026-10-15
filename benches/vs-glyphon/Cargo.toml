@@ -1,0 +1,21 @@
+[package]
+name = "vs-glyphon"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.89"
+publish = false
+
+[[bench]]
+name = "vs_glyphon"
+path = "bench.rs"
+harness = false
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+wgpu-font-renderer = { path = "../..", features = ["unstable-internals"] }
+wgpu = "30"
+glyphon = "0.12"
+ab_glyph = "0.2"
+skrifa = { version = "0.44", default-features = false, features = ["std"] }
+etagere = "0.3.0"
+pollster = "1.0"
+serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
