@@ -197,7 +197,7 @@ impl TextRenderer {
         });
 
         let lcd_constants = [("LCD_BGR", if subpixel_order == SubpixelOrder::Bgr { 1. } else { 0. })];
-        let descriptor = RenderPipelineDescriptor {
+        let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
             label: Some("Text pipeline"),
             layout: Some(&layout),
             vertex: VertexState {
@@ -239,9 +239,7 @@ impl TextRenderer {
             }),
             multiview_mask: None,
             cache: None,
-        };
-
-        let pipeline = device.create_render_pipeline(&descriptor);
+        });
 
         let vertices = device.create_buffer_init(&util::BufferInitDescriptor {
             label: Some("Text vertex buffer"),
