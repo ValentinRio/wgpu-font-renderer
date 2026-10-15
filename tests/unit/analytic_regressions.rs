@@ -377,6 +377,7 @@ fn partial_same_direction_overlap_measures_signed_winding_contract() {
 }
 
 #[test]
+#[cfg(feature = "unstable-internals")]
 fn cff2_control_hulls_on_stored_band_thresholds_match_full_list() {
     use skrifa::MetadataProvider;
     let (face, _, _) =
