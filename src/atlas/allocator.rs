@@ -9,12 +9,14 @@ pub struct Allocator {
 #[derive(Clone, Debug, Default)]
 /// Contiguous linear run of float slots, potentially spanning several rows.
 pub struct Region {
+    #[cfg(any(test, feature = "unstable-internals"))]
     position: [u32; 2],
     size: u32,
 }
 
 impl Region {
     /// Start float-slot [x, y], origin top left, x rightward, y downward.
+    #[cfg(any(test, feature = "unstable-internals"))]
     pub fn position(&self) -> [u32; 2] {
         self.position
     }
@@ -44,7 +46,9 @@ impl Allocator {
     /// Panics on layer-area overflow in debug builds.
     pub fn allocate(&mut self, size: u32) -> Option<Region> {
         // Flatten rows so outline streams need no per-glyph rectangular padding.
+        #[cfg(any(test, feature = "unstable-internals"))]
         let x =self.offset as f32 % self.size as f32;
+        #[cfg(any(test, feature = "unstable-internals"))]
         let row_index = f32::floor(self.offset as f32 / self.size as f32);
         let total_size = (self.size * self.size) as f32;
         let size_left = total_size - self.offset as f32;
@@ -54,6 +58,7 @@ impl Allocator {
             self.offset += size;
             self.allocations += 1;
             Some(Region {
+                #[cfg(any(test, feature = "unstable-internals"))]
                 position: [x as u32, row_index as u32],
                 size,
             })

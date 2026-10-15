@@ -16,6 +16,20 @@ use wgpu::{
 
 use crate::{ortho::orthographic_projection_matrix, typewriter::Paragraph, FontStore};
 
+mod bitmap;
+
+/// Glyph rendering strategy.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RenderMode {
+    /// Analytic coverage for scaling, animation, large sizes and LCD.
+    #[default]
+    Analytic,
+    /// GPU rasterized coverage for repeated drawing at the same size.
+    /// Snaps pen x to quarter pixels and each line’s baseline to whole pixels. LCD uses Analytic.
+    Cached,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 /// Horizontal physical subpixel order. LCD requires dual-source blending.
 #[non_exhaustive]
@@ -32,6 +46,13 @@ pub enum SubpixelOrder {
 /// GPU pipeline and prepared glyph instances for a target format.
 /// Screen coordinates are physical pixels, origin top left, y downward.
 pub struct TextRenderer {
+    bitmap: Option<bitmap::BitmapCache>,
+    bitmap_limits: Option<(u32, u32)>,
+    prepared_cached: Vec<Paragraph>,
+    constant_layout: BindGroupLayout,
+    sampler: wgpu::Sampler,
+    format: wgpu::TextureFormat,
+    cached: Vec<bool>,
     subpixel_order: SubpixelOrder,
     pipeline: RenderPipeline,
     uniforms: Buffer,
@@ -155,7 +176,7 @@ impl TextRenderer {
                         multisampled: false,
                     },
                     count: None,
-                }
+                },
             ],
         });
 
@@ -183,33 +204,7 @@ impl TextRenderer {
                 module: &shader,
                 entry_point: Some(if lcd { "vs_lcd" } else { "vs_main" }),
                 compilation_options: Default::default(),
-                buffers: &[
-                    Some(VertexBufferLayout {
-                        array_stride: mem::size_of::<Vertex>() as u64,
-                        step_mode: VertexStepMode::Vertex,
-                        attributes: &[VertexAttribute {
-                            shader_location: 0,
-                            format: VertexFormat::Float32x2,
-                            offset: 0,
-                        }],
-                    }),
-                    Some(VertexBufferLayout {
-                        array_stride: mem::size_of::<Instance>() as u64,
-                        step_mode: VertexStepMode::Instance,
-                        attributes: &vertex_attr_array!(
-                            1 => Float32x2,
-                            2 => Float32,
-                            3 => Float32,
-                            4 => Float32x2,
-                            5 => Float32x2,
-                            6 => Uint32,
-                            7 => Float32,
-                            8 => Sint32,
-                            9 => Float32x4,
-                            10 => Float32x3
-                        ),
-                    })
-                ],
+                buffers: &instance_layouts(),
             },
             primitive: PrimitiveState {
                 topology: PrimitiveTopology::TriangleList,
@@ -261,17 +256,22 @@ impl TextRenderer {
         let texture = device.create_bind_group(&BindGroupDescriptor {
             label: Some("Text texture atlas bind group"),
             layout: &texture_layout,
-            entries:  &[
+            entries: &[
                 BindGroupEntry {
                     binding: 0,
-                    resource: BindingResource::TextureView(
-                        atlas.view(),
-                    ),
+                    resource: BindingResource::TextureView(atlas.view()),
                 },
             ],
         });
 
         Self {
+            bitmap: None,
+            bitmap_limits: None,
+            prepared_cached: Vec::new(),
+            constant_layout,
+            sampler,
+            format,
+            cached: Vec::new(),
             subpixel_order,
             pipeline,
             uniforms,
@@ -288,6 +288,20 @@ impl TextRenderer {
         }
     }
 
+    #[cfg(feature = "unstable-internals")]
+    pub(crate) fn set_bitmap_cache_limits(&mut self, device: &Device, initial: u32, max: u32) {
+        self.bitmap_limits = Some((initial, max));
+        self.prepared_cached.clear();
+        if let Some(bitmap) = &mut self.bitmap { bitmap.reset(device, initial, max); }
+    }
+    #[cfg(feature = "unstable-internals")]
+    pub(crate) fn bitmap_cache_size(&self) -> u32 { self.bitmap.as_ref().map_or(0, |b| b.size) }
+    #[cfg(feature = "unstable-internals")]
+    pub(crate) fn bitmap_cache_counts(&self) -> (usize, usize) { (self.bitmap.as_ref().map_or(0, |b| b.count()), self.cached.iter().filter(|&&x| x).count()) }
+    #[cfg(feature = "unstable-internals")]
+    pub(crate) fn benchmark_raster(&mut self, device: &Device, queries: Option<(wgpu::QuerySet, bool)>) {
+        self.bitmap.get_or_insert_with(|| bitmap::BitmapCache::new(device, self.format, &self.constant_layout, &self.texture_layout, &self.sampler)).timestamps = queries;
+    }
     /// Whether this renderer actually uses LCD antialiasing.
     pub fn lcd_active(&self) -> bool {
         self.subpixel_order != SubpixelOrder::None
@@ -311,17 +325,39 @@ impl TextRenderer {
         store: &FontStore,
     ) {
         let atlas = store.atlas();
-        if self.texture_version != atlas.version {
+        let atlas_changed = self.texture_version != atlas.version;
+        if atlas_changed {
             self.texture = device.create_bind_group(&BindGroupDescriptor {
                 label: Some("Text texture atlas bind group"),
                 layout: &self.texture_layout,
-                entries: &[BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::TextureView(atlas.view()),
-                }],
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::TextureView(atlas.view()),
+                    },
+                ],
             });
             self.texture_version = atlas.version;
         }
+        let paragraphs: Vec<_> = paragraphs.into_iter().collect();
+        let has_cached = !self.lcd_active() && paragraphs.iter().any(|p| p.render_mode() == RenderMode::Cached);
+        // Paragraphs are mutable and cloneable: compare their drawing inputs, not addresses.
+        // A warm hit avoids glyph hashing, instance building, uploads and queue submissions.
+        if has_cached && !atlas_changed && paragraphs.len() == self.prepared_cached.len()
+            && paragraphs.iter().zip(&self.prepared_cached).all(|(a,b)| same_paragraph(a,b)) {
+            return;
+        }
+        if has_cached && self.bitmap.is_none() {
+            let mut bitmap = bitmap::BitmapCache::new(device, self.format, &self.constant_layout, &self.texture_layout, &self.sampler);
+            if let Some((initial, max)) = self.bitmap_limits { bitmap.reset(device, initial, max); }
+            self.bitmap = Some(bitmap);
+        }
+        self.prepared_cached.clear();
+        if has_cached { self.prepared_cached.extend(paragraphs.iter().map(|p| (*p).clone())); }
+        let mut requests = Vec::new();
+        let mut encoder = None;
+        let mut jobs = Vec::new();
+        self.cached.clear();
         self.instances.clear();
         self.paragraph_offsets.clear();
 
@@ -334,6 +370,8 @@ impl TextRenderer {
 
             let units_per_em = font.face().metrics(Size::unscaled(), &font.location).units_per_em as f32;
 
+            let baseline =
+                paragraph.position()[1] + font.metrics.ascent * (paragraph.size() / units_per_em);
             let mut glyph_x = paragraph.position()[0];
 
             paragraph.glyphs().iter().for_each(|shaped| {
@@ -351,18 +389,23 @@ impl TextRenderer {
                         _left_side_bearing: glyph.left_side_bearing as f32,
                         _font_size: paragraph.size(),
                         _size: size,
-                        _position_in_atlas: [glyph.allocation.position()[0] as f32, glyph.allocation.position()[1] as f32],
+                        _position_in_atlas: [glyph.allocation.packed_position()[0] as f32, glyph.allocation.packed_position()[1] as f32],
                         _size_in_atlas: glyph.allocation.size(),
                         _units_per_em: units_per_em,
                         _layer: glyph.allocation.layer() as u32,
                         _color: paragraph.color(),
                         _bands: [
-                            glyph.bands.position()[0] as f32,
-                            glyph.bands.position()[1] as f32,
+                            glyph.bands.packed_position()[0] as f32,
+                            glyph.bands.packed_position()[1] as f32,
                             glyph.bands.layer() as f32,
                         ],
                     };
 
+                    if paragraph.render_mode() == RenderMode::Cached && !self.lcd_active() {
+                        let pen = [glyph_x + shaped.offset[0], baseline];
+                        requests.push((self.instances.len(), bitmap::key(paragraph, shaped.glyph.0, &instance, pen), pen));
+                    }
+                    self.cached.push(false);
                     self.instances.push(instance);
                 }
                 
@@ -372,6 +415,23 @@ impl TextRenderer {
 
         self.paragraph_offsets.push(self.instances.len() as u32);
 
+        if let Some(bitmap) = self.bitmap.as_mut().filter(|_| has_cached) {
+            let used = requests.iter().map(|&(_, key, _)| key).collect();
+            for (index, key, pen) in requests {
+                if let Some(instance) = bitmap.glyph(device, &mut encoder, &mut jobs, &used,
+                    key, (self.instances[index], pen)) {
+                    self.instances[index] = instance;
+                    self.cached[index] = true;
+                }
+            }
+        }
+        if !jobs.is_empty() {
+            if let Some(bitmap) = &self.bitmap {
+                bitmap.rasterize(device, encoder.get_or_insert_with(|| device.create_command_encoder(&Default::default())), &jobs, &self.texture, &self.vertices, &self.indices);
+            }
+        }
+        if let Some(encoder) = encoder { queue.submit(Some(encoder.finish())); }
+        // Exact byte size on growth; retain the high-water buffer across smaller batches.
         let bytes = bytemuck::cast_slice(&self.instances);
         if !bytes.is_empty() {
             if let Some(buffer) = self.instances_buffer.as_ref().filter(|buffer| buffer.size() >= bytes.len() as u64) {
@@ -472,9 +532,22 @@ impl TextRenderer {
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint16);
         pass.set_vertex_buffer(0, self.vertices.slice(..));
         pass.set_vertex_buffer(1, buffer.slice(..));
-        pass.draw_indexed(0..INDICES.len() as u32, 0, instances);
+        let mut start = instances.start;
+        while start < instances.end {
+            let cached = self.cached[start as usize];
+            let mut end = start + 1;
+            while end < instances.end && self.cached[end as usize] == cached { end += 1; }
+            if let Some(bitmap) = self.bitmap.as_ref().filter(|_| cached) {
+                pass.set_pipeline(&bitmap.draw);
+                pass.set_bind_group(1, &bitmap.binding, &[]);
+            } else {
+                pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(1, &self.texture, &[]);
+            }
+            pass.draw_indexed(0..INDICES.len() as u32, 0, start..end);
+            start = end;
+        }
     }
-
 }
 
 #[repr(C)]
@@ -533,3 +606,44 @@ const VERTICES: [Vertex; 4] = [
         _position: [0., 1., 0.]
     }
 ];
+
+fn same_paragraph(a: &Paragraph, b: &Paragraph) -> bool {
+    a.font() == b.font()
+        && a.position() == b.position()
+        && a.size().to_bits() == b.size().to_bits()
+        && a.color() == b.color()
+        && a.render_mode() == b.render_mode()
+        && a.glyphs() == b.glyphs()
+}
+
+fn instance_layouts() -> [Option<VertexBufferLayout<'static>>; 2] {
+    [
+        Some(VertexBufferLayout {
+            array_stride: mem::size_of::<Vertex>() as u64,
+            step_mode: VertexStepMode::Vertex,
+            attributes: &[VertexAttribute {
+                shader_location: 0,
+                format: VertexFormat::Float32x2,
+                offset: 0,
+            }],
+        }),
+        Some(VertexBufferLayout {
+            array_stride: mem::size_of::<Instance>() as u64,
+            step_mode: VertexStepMode::Instance,
+            attributes: &INSTANCE_ATTRIBUTES,
+        }),
+    ]
+}
+
+const INSTANCE_ATTRIBUTES: [VertexAttribute; 10] = vertex_attr_array!(
+    1 => Float32x2,
+    2 => Float32,
+    3 => Float32,
+    4 => Float32x2,
+    5 => Float32x2,
+    6 => Uint32,
+    7 => Float32,
+    8 => Sint32,
+    9 => Float32x4,
+    10 => Float32x3
+);

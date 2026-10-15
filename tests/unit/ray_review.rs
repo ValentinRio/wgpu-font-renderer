@@ -184,7 +184,7 @@ fn glyph_scale_grazing_ray_keeps_both_gpu_crossings() {
         return vec4(abs(roots.winding), min(abs(roots.t.x - roots.t.y) * 1024., 1.), 1.);
     "#
     );
-    let actual = probe::probe_pixels(&device, &queue, atlas.view(), &analytic::source(&body));
+    let actual = probe::probe_pixels(&device, &queue, atlas.resources(), &analytic::source(&body));
     assert!(
         actual
             .as_chunks::<4>()

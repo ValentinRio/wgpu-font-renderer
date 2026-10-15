@@ -866,3 +866,34 @@ fn round2_khmer_parser_seed_is_cached() {
         "synthetic Khmer vowel glyph 39 missing"
     );
 }
+
+
+#[test]
+fn bitmap_and_analytic_preserve_paint_order_and_ranges() {
+    use wgpu_font_renderer::RenderMode;
+    let Some((device, queue, _)) = common::gpu() else { return; };
+    let mut store = FontStore::new(&device);
+    let font = store.load_from_bytes(&device, &queue, include_bytes!("../fonts/Roboto-Regular.ttf"), "A").unwrap();
+    let mut writer = TypeWriter::new();
+    let mut paragraphs: Vec<_> = [[1.,0.,0.,1.], [0.,1.,0.,1.], [0.,0.,1.,1.]].into_iter()
+        .map(|color| writer.shape_text(&store, font, [12., 20. - store.metrics(font, 24.).unwrap().ascent], 24., color, "A").unwrap()).collect();
+    let mut renderer = TextRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm, &store);
+    renderer.resize(&queue, [128,128]);
+    renderer.prepare(&device, &queue, &paragraphs, &store);
+    let analytic = draw_targets(&device, &queue, &renderer, [128,128], &[None, Some(0..1), Some(1..2), Some(2..3)]);
+    for cached in [[true,false,true], [false,true,false]] {
+        for (p, mode) in paragraphs.iter_mut().zip(cached) {
+            p.set_render_mode(if mode { RenderMode::Cached } else { RenderMode::Analytic });
+        }
+        renderer.prepare(&device, &queue, &paragraphs, &store);
+        let mixed = draw_targets(&device, &queue, &renderer, [128,128], &[None, Some(0..1), Some(1..2), Some(2..3), Some(0..3)]);
+        assert_eq!(mixed[0], mixed[4]);
+        for (i, (a,b)) in analytic.iter().zip(&mixed).enumerate() {
+            let error = a.iter().zip(b).map(|(a,b)| a.abs_diff(*b)).max().unwrap();
+            // Each blended R8 coverage can add one byte of quantization error.
+            assert!(error <= if i == 0 { 3 } else { 1 }, "paint error {error}");
+        }
+        // The blue final paragraph must cover the red and green at solid ink.
+        assert!(mixed[0].as_chunks::<4>().0.contains(&[0,0,255,255]));
+    }
+}

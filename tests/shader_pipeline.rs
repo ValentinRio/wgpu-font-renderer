@@ -147,8 +147,8 @@ fn compare_shader_pixels() {
             let a = &glyph.allocation;
             let b = &glyph.bands;
             let input = analytic::glyph_input(
-                (a.position(), a.size(), a.layer()),
-                (b.position(), b.layer()),
+                (a.packed_position(), a.size(), a.layer()),
+                (b.packed_position(), b.layer()),
                 1.,
             );
             let body = format!(
@@ -165,9 +165,9 @@ fn compare_shader_pixels() {
             );
             let source = analytic::source(&body);
             let full = analytic::full(&source);
-            let expected = probe_pixels(&device, &queue, wgpu_font_renderer::internals::atlas_view(&store), &full);
+            let expected = probe_pixels(&device, &queue, wgpu_font_renderer::internals::atlas_resources(&store), &full);
             assert_ink_tiles(&expected);
-            let actual = probe_pixels(&device, &queue, wgpu_font_renderer::internals::atlas_view(&store), &source);
+            let actual = probe_pixels(&device, &queue, wgpu_font_renderer::internals::atlas_resources(&store), &source);
             let differences: Vec<_> = actual
                 .as_chunks::<4>()
                 .0
@@ -184,7 +184,7 @@ fn compare_shader_pixels() {
             let paths = probe_pixels(
                 &device,
                 &queue,
-                wgpu_font_renderer::internals::atlas_view(&store),
+                wgpu_font_renderer::internals::atlas_resources(&store),
                 &analytic::band_debug(&source),
             );
             assert!(
@@ -214,8 +214,8 @@ fn analytic_inside_opaque() {
     let a = &glyph.allocation;
     let b = &glyph.bands;
     let input = analytic::glyph_input(
-        (a.position(), a.size(), a.layer()),
-        (b.position(), b.layer()),
+        (a.packed_position(), a.size(), a.layer()),
+        (b.packed_position(), b.layer()),
         1.,
     );
     let body = format!(
@@ -232,7 +232,7 @@ fn analytic_inside_opaque() {
     let pixels = probe_pixels(
         &device,
         &queue,
-        wgpu_font_renderer::internals::atlas_view(&store),
+        wgpu_font_renderer::internals::atlas_resources(&store),
         &analytic::source(&body),
     );
     assert!(pixels.as_chunks::<4>().0.iter().all(|p| p[0] == 255));

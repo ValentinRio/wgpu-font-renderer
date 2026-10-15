@@ -45,8 +45,8 @@ pub(super) fn pixels(
         )
         .unwrap();
     queue.submit(Some(encoder.finish()));
-    let [x, y] = a.position();
-    let [bx, by] = b.position();
+    let [x, y] = a.packed_position();
+    let [bx, by] = b.packed_position();
     let mut shader = include_str!("../../src/shader.wgsl").to_owned();
     if !weighted {
         // Keep the old unweighted centre-ray baseline for the thin-stem
@@ -103,8 +103,8 @@ fn analytic_coverage(input: VertexOutput, offsets: vec3<f32>) -> vec3<f32> {
         "if false {",
     );
     assert_ne!(full, source);
-    let actual = probe::probe_pixels(&device, &queue, atlas.view(), &source);
-    let expected = probe::probe_pixels(&device, &queue, atlas.view(), &full);
+    let actual = probe::probe_pixels(&device, &queue, atlas.resources(), &source);
+    let expected = probe::probe_pixels(&device, &queue, atlas.resources(), &full);
     assert_eq!(
         actual, expected,
         "bands including early exit must match all curves"
@@ -276,10 +276,10 @@ fn rounded_neighbor_band_retains_ray_crossings() {
         glyph.close();
     }
     let data = build_slug_bands(&glyph.curves);
-    let band = ((-0.0001_f32 - data[1]) / data[3]).floor() as usize;
+    let band = ((-0.0001_f32 - data[0]) / data[1]).floor() as usize;
     assert_eq!(band, 8);
-    let start = data[8 + band * 8] as usize;
-    let len = data[9 + band * 8] as usize;
+    let start = data[4 + band * 4] as usize;
+    let len = data[5 + band * 4] as usize;
     assert!(data[start..start + len]
         .as_chunks::<8>()
         .0
@@ -386,7 +386,7 @@ fn cff2_control_hulls_on_stored_band_thresholds_match_full_list() {
     let bounds = super::glyph_bounding_box(&face, id).unwrap();
     let (_, _, original, _) = super::prepare_glyph(&face, id, bounds).unwrap();
     let data = build_slug_bands(&original);
-    let threshold = data[10]; // first horizontal descriptor's exact high bound
+    let threshold = data[6]; // first horizontal descriptor's exact high bound
     let record = original
         .as_chunks::<8>()
         .0
@@ -398,12 +398,12 @@ fn cff2_control_hulls_on_stored_band_thresholds_match_full_list() {
         curves[record * 8 + 3] = y;
         let bands = build_slug_bands(&curves);
         assert_eq!(
-            bands[10].to_bits(),
+            bands[6].to_bits(),
             threshold.to_bits(),
             "global bounds must stay fixed"
         );
-        let start = bands[8] as usize;
-        let len = bands[9] as usize;
+        let start = bands[4] as usize;
+        let len = bands[5] as usize;
         let present = bands[start..start + len]
             .as_chunks::<8>()
             .0
