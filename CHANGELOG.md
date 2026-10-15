@@ -19,9 +19,12 @@ API changes come only with a major version.
   Atlas exhaustion and active LCD fall back to analytic drawing.
 - Bitmap resources are lazy: analytic-only renderers create no bitmap texture or
   pipelines. Unchanged cached paragraphs reuse instances without uploads or submits.
+- The cached atlas evicts bitmaps unused in the current frame before growing, is capped
+  at 16 MiB resident, and releases its capacity on reset.
 
 ### Changed
 
+- Coverage is now the analytic box integral of signed winding over each pixel, replacing centre-ray weighting. Almost every anti-aliased pixel changes slightly.
 - The outline atlas packs only used outline/y-band payloads into 512-wide RGBA32Float
   rows, with at most one 8 KiB row of slack per physical array layer. Stable logical
   allocations carry permanent packed addresses resolved into instance data, with
@@ -33,15 +36,7 @@ API changes come only with a major version.
 - Renderer instance buffers grow to exactly the required byte size and retain their
   high-water capacity.
 
-- Coverage is now the analytic box integral of signed winding over each pixel, replacing centre-ray weighting. Almost every anti-aliased pixel changes slightly.
-
 ### Fixed
-
-- Restore analytic rendering speed by removing the GPU atlas offset table and
-  avoiding integer division for single-layer textures; coverage maths is unchanged.
-- Cache keys include the actual rasterized y phase after vertical shaping, and
-  entries retain their raster dimensions. Evict unused bitmaps before growing;
-  cap the resident R8 atlas at 16 MiB and release capacity on reset.
 
 - Coverage is continuous at curve endpoints and extrema, so moving text by whole pixels no longer changes how a glyph looks (within one readback byte in the grayscale and RGB tests). In 1.0, moving a glyph one pixel vertically could change a pixel by up to 17/255.
 - LCD glyph quads now cover the full subpixel filter, so the outer colour fringe of a glyph whose edge falls less than a third of a pixel into its first column is no longer clipped.
